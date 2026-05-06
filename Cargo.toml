@@ -1,0 +1,27 @@
+[package]
+name = "solo3_gpui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gpui = { path = "/Users/shijianzhong/sking/zed/crates/gpui", default-features = false, features = ["font-kit"] }
+gpui_platform = { path = "/Users/shijianzhong/sking/zed/crates/gpui_platform", features = ["font-kit"] }
+gpui_macros = { path = "/Users/shijianzhong/sking/zed/crates/gpui_macros" }
+gpui_util = { path = "/Users/shijianzhong/sking/zed/crates/gpui_util" }
+gpui_shared_string = { path = "/Users/shijianzhong/sking/zed/crates/gpui_shared_string" }
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { path = "/Users/shijianzhong/sking/zed/crates/gpui_linux" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true

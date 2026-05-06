@@ -103,19 +103,6 @@ impl Render for AppState {
             .flex()
             .size_full()
             .bg(CARD_BG)
-            .on_drag_move(cx.listener(
-                move |this: &mut AppState, e: &DragMoveEvent<DraggedResizer>, _window, _cx| {
-                    if let (Some(initial_x), Some(initial_width)) = (this.terminal_resize_initial_mouse_x, this.terminal_resize_initial_width) {
-                        let current_x: f32 = e.event.position.x.into();
-                        let delta = current_x - initial_x;
-                        let new_width = initial_width + delta;
-                        eprintln!("drag_move: initial_x={}, current_x={}, delta={}, new_width={}", initial_x, current_x, delta, new_width);
-                        if new_width >= 200.0 && new_width <= 800.0 {
-                            this.terminal_width = new_width;
-                        }
-                    }
-                },
-            ))
             .child(self.render_nav())
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_chat(cx))
@@ -404,7 +391,7 @@ impl AppState {
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedResizer>, _window, _cx| {
                 if let (Some(initial_x), Some(initial_width)) = (this.terminal_resize_initial_mouse_x, this.terminal_resize_initial_width) {
                     let current_x: f32 = e.event.position.x.into();
-                    let delta = current_x - initial_x;
+                    let delta = initial_x - current_x;
                     let new_width = initial_width + delta;
                     eprintln!("drag_move: initial_x={}, current_x={}, delta={}, new_width={}", initial_x, current_x, delta, new_width);
                     if new_width >= 200.0 && new_width <= 800.0 {

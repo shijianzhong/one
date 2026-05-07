@@ -1,9 +1,10 @@
 use gpui::{
-    App, AppContext as _, Bounds, Context, DragMoveEvent,
-    Hsla, IntoElement, ParentElement, px, size, Render,
-    Styled, Window, WindowOptions, WindowBounds, div, prelude::*
+    App, AppContext as _, Bounds, Context, DragMoveEvent, EntityId,
+    Hsla, IntoElement, ParentElement, px, size, Render, Task, VisualContext,
+    Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*
 };
 use gpui_platform::application;
+use std::path::PathBuf;
 
 use gpui::FontWeight;
 
@@ -24,31 +25,30 @@ const MUTED_TEXT: Hsla = Hsla { h: 0.0, s: 0.02, l: 0.55, a: 1.0 };
 const BRAND_BLUE: Hsla = Hsla { h: 0.62, s: 1.0, l: 0.52, a: 1.0 };
 const BORDER_LIGHT: Hsla = Hsla { h: 0.0, s: 0.03, l: 0.90, a: 1.0 };
 const ACTIVE_BG: Hsla = Hsla { h: 0.62, s: 0.3, l: 0.95, a: 1.0 };
+const WORKSPACE_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
 
 const NAV_WIDTH: f32 = 240.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
 
 struct AppState {
-    chat: Vec<ChatItem>,
-    chat_title: String,
-    active_nav: &'static str,
-    active_task_id: usize,
+    workspaces: Vec<Workspace>,
+    active_workspace_id: Option<usize>,
+    active_task_id: Option<usize>,
     sidebar_visible: bool,
     terminal_visible: bool,
     terminal_width: f32,
     terminal_resize_initial_mouse_x: Option<f32>,
     terminal_resize_initial_width: Option<f32>,
-    tasks: Vec<TaskItem>,
-    todos: Vec<String>,
-    artifacts: Vec<String>,
-    references: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-struct ChatItem {
-    role: &'static str,
-    content: String,
+struct Workspace {
+    id: usize,
+    name: String,
+    path: PathBuf,
+    tasks: Vec<TaskItem>,
+    expanded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -61,38 +61,53 @@ struct TaskItem {
 impl AppState {
     fn new() -> Self {
         Self {
-            chat: vec![
-                ChatItem {
-                    role: "assistant",
-                    content: "Hello! I'm your SOLO 3.0 assistant. How can I help you today?".to_string(),
-                }
-            ],
-            chat_title: "Design UI mockups".to_string(),
-            active_nav: "tasks",
-            active_task_id: 1,
+            workspaces: vec![],
+            active_workspace_id: None,
+            active_task_id: None,
             sidebar_visible: false,
             terminal_visible: false,
             terminal_width: 500.0,
             terminal_resize_initial_mouse_x: None,
             terminal_resize_initial_width: None,
-            tasks: vec![
-                TaskItem { id: 1, title: "Design UI mockups".to_string(), status: "in_progress" },
-                TaskItem { id: 2, title: "Implement navigation".to_string(), status: "todo" },
-                TaskItem { id: 3, title: "Add chat functionality".to_string(), status: "todo" },
-                TaskItem { id: 4, title: "Test and polish".to_string(), status: "todo" },
-            ],
-            todos: vec!["Create wireframes", "Design color palette", "Test on mobile"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            artifacts: vec!["mockups.fig", "style-guide.pdf", "components.zip"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            references: vec!["https://trae.ai", "https://docs.example.com"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+        }
+    }
+
+    fn get_active_workspace(&self) -> Option<&Workspace> {
+        self.active_workspace_id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
+    }
+
+    fn get_active_workspace_mut(&mut self) -> Option<&mut Workspace> {
+        self.active_workspace_id.and_then(|id| self.workspaces.iter_mut().find(|w| w.id == id))
+    }
+
+    fn get_active_task(&self) -> Option<&TaskItem> {
+        self.get_active_workspace()
+            .and_then(|w| w.tasks.iter().find(|t| Some(t.id) == self.active_task_id))
+    }
+
+    fn add_workspace(&mut self, path: PathBuf, name: String) {
+        let id = self.workspaces.len() + 1;
+        let workspace = Workspace {
+            id,
+            name,
+            path,
+            tasks: vec![],
+            expanded: true,
+        };
+        self.workspaces.push(workspace);
+        self.active_workspace_id = Some(id);
+    }
+
+    fn add_task_to_workspace(&mut self, workspace_id: usize, title: String, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) {
+            let id = workspace.tasks.len() + 1;
+            workspace.tasks.push(TaskItem {
+                id,
+                title,
+                status: "todo",
+            });
+            self.active_task_id = Some(id);
+            cx.notify();
         }
     }
 }
@@ -103,7 +118,7 @@ impl Render for AppState {
             .flex()
             .size_full()
             .bg(CARD_BG)
-            .child(self.render_nav())
+            .child(self.render_nav(cx))
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_chat(cx))
             .when(self.sidebar_visible, |this| {
@@ -118,44 +133,42 @@ impl Render for AppState {
 }
 
 impl AppState {
-    fn render_nav(&self) -> impl IntoElement {
+    fn render_nav(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .w(px(NAV_WIDTH))
             .h_full()
             .bg(NAV_BG)
-            .child(self.render_nav_header())
+            .child(self.render_nav_header(cx))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_nav_buttons())
+            .child(self.render_nav_buttons(cx))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_task_list())
+            .child(self.render_task_list(cx))
     }
 
-    fn render_nav_header(&self) -> impl IntoElement {
+    fn render_nav_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
             .h(px(40.0))
             .px_4()
-            .child(div().text_base().text_color(PRIMARY_TEXT).font_weight(FontWeight::BOLD).child("SOLO"))
+            .child(div().text_base().text_color(PRIMARY_TEXT).font_weight(FontWeight::BOLD).child("ONE"))
     }
 
-    fn render_nav_buttons(&self) -> impl IntoElement {
+    fn render_nav_buttons(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
-            .child(self.make_nav_item("New Task", "⌘N", "tasks", true))
-            .child(self.make_nav_item("Skills", "⌘S", "skills", false))
-            .child(self.make_nav_item("Automation", "⌘A", "automation", false))
+            .child(self.make_nav_item("New Task", "⌘N", cx))
+            .child(self.make_nav_item("Skills", "⌘S", cx))
+            .child(self.make_nav_item("Automation", "⌘A", cx))
     }
 
-    fn make_nav_item(&self, label: &'static str, shortcut: &'static str, nav_id: &'static str, _active: bool) -> impl IntoElement {
-        let is_active = self.active_nav == nav_id;
-        let bg = if is_active { ACTIVE_BG } else { CARD_BG };
-        let text_color = if is_active { BRAND_BLUE } else { SECONDARY_TEXT };
+    fn make_nav_item(&mut self, label: &'static str, shortcut: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_new_task = label == "New Task";
 
         div()
             .flex()
@@ -164,56 +177,178 @@ impl AppState {
             .px_3()
             .py_2()
             .rounded_md()
-            .bg(bg)
             .cursor_pointer()
-            .child(div().text_sm().text_color(text_color).child(label))
+            .when(is_new_task, |this| {
+                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.handle_new_task_click(cx);
+                }))
+            })
+            .child(div().text_sm().text_color(SECONDARY_TEXT).child(label))
             .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child(shortcut))
     }
 
-    fn render_task_list(&self) -> impl IntoElement {
-        div()
+    fn pick_folder_dialog() -> Option<(PathBuf, String)> {
+        use std::process::Command;
+        let output = Command::new("osascript")
+            .args(["-e", "POSIX path of (choose folder)"])
+            .output()
+            .ok()?;
+        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path_str.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(&path_str);
+        let name = path.file_name()?.to_string_lossy().to_string();
+        Some((path, name))
+    }
+
+    fn handle_new_task_click(&mut self, cx: &mut Context<Self>) {
+        if let Some((path, name)) = Self::pick_folder_dialog() {
+            self.add_workspace(path, name);
+            if let Some(ws_id) = self.active_workspace_id {
+                self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+            }
+        }
+    }
+
+    fn render_task_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspaces = self.workspaces.clone();
+        let active_workspace_id = self.active_workspace_id;
+        let active_task_id = self.active_task_id;
+
+        let mut result = div()
             .flex()
             .flex_col()
             .flex_1()
-            .overflow_hidden()
-            .p_3()
-            .child(div().text_xs().text_color(MUTED_TEXT).mb_3().child("TASKS"))
-            .children(self.tasks.iter().map(|task| {
-                let is_active = task.id == 1;
-                let bg = if is_active { ACTIVE_BG } else { CARD_BG };
-                let text_color = if is_active { BRAND_BLUE } else { PRIMARY_TEXT };
+            .p_3();
 
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(bg)
-                    .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(if is_active { BRAND_BLUE } else { MUTED_TEXT }))
-                    .child(div().text_sm().text_color(text_color).child(task.title.clone()))
-            }))
+        result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child("WORKSPACES"));
+
+        for workspace in workspaces {
+            let is_active_ws = active_workspace_id == Some(workspace.id);
+            let ws_bg = if is_active_ws { CARD_BG } else { NAV_BG };
+            let ws_id = workspace.id;
+
+            // Workspace row - clicking selects workspace (but doesn't toggle expand)
+            let ws_row = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(ws_bg)
+                .cursor_pointer()
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                    this.active_workspace_id = Some(ws_id);
+                }));
+
+            // Workspace expand/collapse icon - separate clickable area
+            let expand_icon = if workspace.expanded { "▾" } else { "▸" };
+            let expand_btn = div()
+                .text_base()
+                .text_color(MUTED_TEXT)
+                .px_1()
+                .py_1()
+                .cursor_pointer()
+                .id("expand-btn")
+                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, _cx| {
+                    this.active_workspace_id = Some(ws_id);
+                    if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                        ws.expanded = !ws.expanded;
+                    }
+                }));
+            // Add button (+)
+            let add_btn = div()
+                .text_base()
+                .text_color(MUTED_TEXT)
+                .px_1()
+                .py_1()
+                .cursor_pointer()
+                .id("add-btn")
+                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, cx| {
+                    this.active_workspace_id = Some(ws_id);
+                    this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                }));
+
+            let ws_label = format!("📁 {}", workspace.name);
+            result = result.child(
+                ws_row.child(
+                    expand_btn.child(expand_icon)
+                ).child(
+                    div().text_sm().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
+                ).child(
+                    div().ml_auto().child(add_btn.child("+"))
+                )
+            );
+
+            // Tasks under workspace (if expanded) - each workspace's tasks are in their own scrollable container
+            if workspace.expanded {
+                let mut tasks_container = div()
+                    .flex_col()
+                    .ml_4()
+                    .max_h(px(200.0))
+                    .id("tasks-container")
+                    .overflow_y_scroll();
+
+                for task in &workspace.tasks {
+                    let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);
+                    let task_bg = if is_active_task { ACTIVE_BG } else { CARD_BG };
+
+                    let mut task_div = div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(task_bg)
+                        .cursor_pointer();
+
+                    let task_id = task.id;
+                    let ws_id = workspace.id;
+
+                    task_div = task_div.on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                        this.active_workspace_id = Some(ws_id);
+                        this.active_task_id = Some(task_id);
+                        _cx.notify();
+                    }));
+
+                    tasks_container = tasks_container.child(
+                        task_div.child(
+                            div().w(px(6.0)).h(px(6.0)).rounded_full()
+                                .bg(if is_active_task { BRAND_BLUE } else { MUTED_TEXT })
+                        ).child(
+                            div().text_sm().text_color(if is_active_task { BRAND_BLUE } else { PRIMARY_TEXT }).child(task.title.clone())
+                        )
+                    );
+                }
+
+                result = result.child(tasks_container);
+            }
+        }
+
+        result
     }
 
     fn render_chat(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.get_active_task().map(|t| t.title.clone()).unwrap_or_else(|| "No task selected".to_string());
+        let sidebar_visible = self.sidebar_visible;
+        let terminal_visible = self.terminal_visible;
+
         div()
             .flex()
             .flex_col()
             .flex_1()
             .h_full()
             .min_w(px(350.0))
-            .child(self.render_chat_header(cx))
+            .child(self.render_chat_header(title, sidebar_visible, terminal_visible, cx))
             .child(div().flex_1().overflow_hidden().p_4().child(self.render_chat_messages()))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_composer())
     }
 
-    fn render_chat_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.tasks.iter().find(|t| t.id == self.active_task_id).map(|t| t.title.clone()).unwrap_or_default();
-        let sidebar_visible = self.sidebar_visible;
-        let terminal_visible = self.terminal_visible;
-
+    fn render_chat_header(&mut self, title: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
@@ -289,27 +424,19 @@ impl AppState {
             .flex_col()
             .gap_4()
             .w_full()
-            .children(self.chat.iter().map(|item| {
-                let (bg, border_color, role_text) = if item.role == "user" {
-                    (ACTIVE_BG, BRAND_BLUE, "You")
-                } else {
-                    (CARD_BG, BORDER_LIGHT, "Assistant")
-                };
-
-                let text_color = if item.role == "user" { PRIMARY_TEXT } else { SECONDARY_TEXT };
-
+            .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .p_4()
                     .rounded_lg()
-                    .bg(bg)
+                    .bg(CARD_BG)
                     .border_1()
-                    .border_color(border_color)
-                    .child(div().text_xs().text_color(MUTED_TEXT).child(role_text))
-                    .child(div().text_base().text_color(text_color).child(item.content.clone()))
-            }))
+                    .border_color(BORDER_LIGHT)
+                    .child(div().text_xs().text_color(MUTED_TEXT).child("Assistant"))
+                    .child(div().text_base().text_color(PRIMARY_TEXT).child("Hello! I'm your SOLO 3.0 assistant. Select or create a task to get started."))
+            )
     }
 
     fn render_composer(&mut self) -> impl IntoElement {
@@ -352,30 +479,19 @@ impl AppState {
             .w(px(280.0))
             .h_full()
             .bg(sidebar_bg)
-            .child(self.render_sidebar_section("Todo".to_string(), self.todos.clone()))
+            .child(self.render_sidebar_section("Todo".to_string(), vec![]))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_sidebar_section("Artifacts".to_string(), self.artifacts.clone()))
+            .child(self.render_sidebar_section("Artifacts".to_string(), vec![]))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_sidebar_section("References".to_string(), self.references.clone()))
+            .child(self.render_sidebar_section("References".to_string(), vec![]))
     }
 
-    fn render_sidebar_section(&self, title: String, items: Vec<String>) -> impl IntoElement {
+    fn render_sidebar_section(&self, title: String, _items: Vec<String>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .p_3()
             .child(div().text_xs().text_color(MUTED_TEXT).mb_2().child(title))
-            .children(items.into_iter().map(|item| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .py_1()
-                    .text_sm()
-                    .text_color(SECONDARY_TEXT)
-                    .child(div().text_color(TERTIARY_TEXT).child("○"))
-                    .child(item)
-            }))
     }
 
     fn render_terminal_resizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

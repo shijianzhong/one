@@ -1,12 +1,120 @@
 use gpui::{
-    App, AppContext as _, Bounds, Context, DragMoveEvent, EntityId,
-    Hsla, IntoElement, ParentElement, px, size, Render, Task, VisualContext,
-    Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*
+    App, AppContext as _, Bounds, Context, DragMoveEvent,
+    Hsla, IntoElement, ParentElement, px, size, Render,
+    Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
+    Focusable
 };
 use gpui_platform::application;
+use editor::Editor;
+use menu::Confirm;
+use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
+use theme;
+use theme_settings;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use gpui::FontWeight;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Config {
+    model_base_url: String,
+    model_api_key: String,
+    model_name: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            model_base_url: "https://api.openai.com/v1".to_string(),
+            model_api_key: "".to_string(),
+            model_name: "gpt-4".to_string(),
+        }
+    }
+}
+
+fn get_config_path() -> PathBuf {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".solo3_gpui");
+    std::fs::create_dir_all(&config_dir).ok();
+    config_dir.join("config.json")
+}
+
+fn load_config() -> Config {
+    let path = get_config_path();
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str(&content) {
+                return config;
+            }
+        }
+    }
+    Config::default()
+}
+
+fn save_config(config: &Config) -> anyhow::Result<()> {
+    let path = get_config_path();
+    let content = serde_json::to_string_pretty(config)?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+fn call_chat_api(base_url: &str, api_key: &str, model: &str, messages: &[ChatMessage]) -> Result<String, String> {
+    let client = reqwest::blocking::Client::new();
+
+    #[derive(serde::Serialize)]
+    struct RequestBody {
+        model: String,
+        messages: Vec<serde_json::Value>,
+    }
+
+    let chat_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
+        serde_json::json!({
+            "role": m.role,
+            "content": m.content
+        })
+    }).collect();
+
+    let request_body = RequestBody {
+        model: model.to_string(),
+        messages: chat_messages,
+    };
+
+    let url = format!("{}/chat/completions", base_url);
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .map_err(|e: reqwest::Error| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("API error: {}", response.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ApiResponse {
+        choices: Vec<Choice>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Choice {
+        message: Message,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Message {
+        content: String,
+    }
+
+    let api_response: ApiResponse = response.json().map_err(|e: reqwest::Error| e.to_string())?;
+
+    Ok(api_response.choices.first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_default())
+}
 
 struct DraggedResizer;
 
@@ -15,6 +123,16 @@ impl Render for DraggedResizer {
         div().size(px(0.0)).into_element()
     }
 }
+
+gpui::actions!(
+    app,
+    [
+        OpenModelConfigDialog,
+        SaveModelConfig,
+        CancelModelConfig,
+        SendMessage,
+    ]
+);
 
 const NAV_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.98, a: 1.0 };
 const CARD_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 };
@@ -40,6 +158,20 @@ struct AppState {
     terminal_width: f32,
     terminal_resize_initial_mouse_x: Option<f32>,
     terminal_resize_initial_width: Option<f32>,
+    show_model_config_dialog: bool,
+    model_base_url: String,
+    model_api_key: String,
+    model_name: String,
+    editing_model_name: String,
+    editing_base_url: String,
+    editing_api_key: String,
+    messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Clone)]
+struct ChatMessage {
+    role: String,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +191,7 @@ struct TaskItem {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(_window: &mut Window, cx: &mut Context<Self>, config: Config) -> Self {
         Self {
             workspaces: vec![],
             active_workspace_id: None,
@@ -69,6 +201,14 @@ impl AppState {
             terminal_width: 500.0,
             terminal_resize_initial_mouse_x: None,
             terminal_resize_initial_width: None,
+            show_model_config_dialog: false,
+            model_base_url: config.model_base_url,
+            model_api_key: config.model_api_key,
+            model_name: config.model_name,
+            editing_model_name: "gpt-4".to_string(),
+            editing_base_url: "https://api.openai.com/v1".to_string(),
+            editing_api_key: "".to_string(),
+            messages: vec![],
         }
     }
 
@@ -110,6 +250,40 @@ impl AppState {
             cx.notify();
         }
     }
+
+    // Action handlers for model config dialog
+    fn open_model_config_dialog(&mut self, _: &OpenModelConfigDialog, _: &mut Window, cx: &mut Context<Self>) {
+        self.editing_model_name = self.model_name.clone();
+        self.editing_base_url = self.model_base_url.clone();
+        self.editing_api_key = self.model_api_key.clone();
+        self.show_model_config_dialog = true;
+        cx.notify();
+    }
+
+    fn save_model_config(&mut self, _: &SaveModelConfig, _: &mut Window, cx: &mut Context<Self>) {
+        self.model_name = self.editing_model_name.clone();
+        self.model_base_url = self.editing_base_url.clone();
+        self.model_api_key = self.editing_api_key.clone();
+        self.show_model_config_dialog = false;
+
+        // Save config to file
+        let config = Config {
+            model_base_url: self.model_base_url.clone(),
+            model_api_key: self.model_api_key.clone(),
+            model_name: self.model_name.clone(),
+        };
+        if let Err(e) = save_config(&config) {
+            eprintln!("Failed to save config: {}", e);
+        }
+
+        cx.notify();
+    }
+
+    fn cancel_model_config(&mut self, _: &CancelModelConfig, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_model_config_dialog = false;
+        cx.notify();
+    }
+
 }
 
 impl Render for AppState {
@@ -120,7 +294,7 @@ impl Render for AppState {
             .bg(CARD_BG)
             .child(self.render_nav(cx))
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_chat(cx))
+            .child(self.render_chat(_window, cx))
             .when(self.sidebar_visible, |this| {
                 this.child(div().w(px(1.0)).bg(BORDER_LIGHT))
                     .child(self.render_sidebar())
@@ -128,6 +302,9 @@ impl Render for AppState {
             .when(self.terminal_visible, |this| {
                 this.child(self.render_terminal_resizer(cx))
                     .child(self.render_terminal())
+            })
+            .when(self.show_model_config_dialog, |this| {
+                this.child(self.render_model_config_dialog(_window, cx))
             })
     }
 }
@@ -157,18 +334,23 @@ impl AppState {
     }
 
     fn render_nav_buttons(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let mut nav = div()
             .flex()
             .flex_col()
             .gap_1()
-            .p_2()
-            .child(self.make_nav_item("New Task", "⌘N", cx))
-            .child(self.make_nav_item("Skills", "⌘S", cx))
-            .child(self.make_nav_item("Automation", "⌘A", cx))
+            .p_2();
+
+        nav = nav.child(self.make_nav_item("New Task", "⌘N", cx));
+        nav = nav.child(self.make_nav_item("Skills", "⌘S", cx));
+        nav = nav.child(self.make_nav_item("Automation", "⌘A", cx));
+        nav = nav.child(self.make_nav_item("Model Config", "⌘M", cx));
+
+        nav
     }
 
     fn make_nav_item(&mut self, label: &'static str, shortcut: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let is_new_task = label == "New Task";
+        let is_model_config = label == "Model Config";
 
         div()
             .flex()
@@ -181,6 +363,11 @@ impl AppState {
             .when(is_new_task, |this| {
                 this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                     this.handle_new_task_click(cx);
+                }))
+            })
+            .when(is_model_config, |this| {
+                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.open_model_config_dialog(&OpenModelConfigDialog, _window, cx);
                 }))
             })
             .child(div().text_sm().text_color(SECONDARY_TEXT).child(label))
@@ -331,7 +518,7 @@ impl AppState {
         result
     }
 
-    fn render_chat(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.get_active_task().map(|t| t.title.clone()).unwrap_or_else(|| "No task selected".to_string());
         let sidebar_visible = self.sidebar_visible;
         let terminal_visible = self.terminal_visible;
@@ -345,7 +532,7 @@ impl AppState {
             .child(self.render_chat_header(title, sidebar_visible, terminal_visible, cx))
             .child(div().flex_1().overflow_hidden().p_4().child(self.render_chat_messages()))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_composer())
+            .child(self.render_composer(window, cx))
     }
 
     fn render_chat_header(&mut self, title: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -418,13 +605,186 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&self) -> impl IntoElement {
+    fn render_model_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = &mut *cx;
+
+        let model_name_editor = window.use_keyed_state("model_name_editor", app, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(self.editing_model_name.clone(), window, cx);
+            editor
+        });
+
+        let base_url_editor = window.use_keyed_state("base_url_editor", app, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(self.editing_base_url.clone(), window, cx);
+            editor
+        });
+
+        let api_key_editor = window.use_keyed_state("api_key_editor", app, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("sk-...", window, cx);
+            editor.set_text(self.editing_api_key.clone(), window, cx);
+            editor
+        });
+
+        let model_name_focus = model_name_editor.read(cx).focus_handle(cx);
+        let base_url_focus = base_url_editor.read(cx).focus_handle(cx);
+        let api_key_focus = api_key_editor.read(cx).focus_handle(cx);
+
+        let weak_model_name = model_name_editor.downgrade();
+        let weak_base_url = base_url_editor.downgrade();
+        let weak_api_key = api_key_editor.downgrade();
+
+        // Overlay
         div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                this.cancel_model_config(&CancelModelConfig, _window, cx);
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(400.0))
+                    .p_5()
+                    .bg(CARD_BG)
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .shadow_md()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child("Model Service Config")
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Model Name"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&model_name_focus)
+                                    .child(model_name_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Base URL"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&base_url_focus)
+                                    .child(base_url_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("API Key"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&api_key_focus)
+                                    .child(api_key_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        this.cancel_model_config(&CancelModelConfig, _window, cx);
+                                    }))
+                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child("Cancel"))
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(BRAND_BLUE)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        if let Some(editor) = weak_model_name.upgrade() {
+                                            this.editing_model_name = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        if let Some(editor) = weak_base_url.upgrade() {
+                                            this.editing_base_url = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        if let Some(editor) = weak_api_key.upgrade() {
+                                            this.editing_api_key = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        this.save_model_config(&SaveModelConfig, _window, cx);
+                                    }))
+                                    .child(div().text_sm().text_color(gpui::white()).child("Save"))
+                            )
+                    )
+            )
+    }
+
+    fn render_chat_messages(&self) -> impl IntoElement {
+        let messages = self.messages.clone();
+        let mut result = div()
             .flex()
             .flex_col()
             .gap_4()
-            .w_full()
-            .child(
+            .w_full();
+
+        if messages.is_empty() {
+            result = result.child(
                 div()
                     .flex()
                     .flex_col()
@@ -436,10 +796,41 @@ impl AppState {
                     .border_color(BORDER_LIGHT)
                     .child(div().text_xs().text_color(MUTED_TEXT).child("Assistant"))
                     .child(div().text_base().text_color(PRIMARY_TEXT).child("Hello! I'm your SOLO 3.0 assistant. Select or create a task to get started."))
-            )
+            );
+        } else {
+            for msg in messages {
+                let role_label = if msg.role == "user" { "You" } else { "Assistant" };
+                let role_color = if msg.role == "user" { BRAND_BLUE } else { MUTED_TEXT };
+                result = result.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_4()
+                        .rounded_lg()
+                        .bg(CARD_BG)
+                        .border_1()
+                        .border_color(BORDER_LIGHT)
+                        .child(div().text_xs().text_color(role_color).child(role_label))
+                        .child(div().text_base().text_color(PRIMARY_TEXT).child(msg.content))
+                );
+            }
+        }
+
+        result
     }
 
-    fn render_composer(&mut self) -> impl IntoElement {
+    fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let composer_editor = window.use_keyed_state("composer_editor", &mut *cx, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Type a message...", window, cx);
+            editor
+        });
+
+        let composer_focus = composer_editor.read(cx).focus_handle(cx);
+        let weak_composer = composer_editor.downgrade();
+        let weak_composer_for_action = weak_composer.clone();
+
         div()
             .flex()
             .gap_3()
@@ -454,9 +845,40 @@ impl AppState {
                     .bg(CARD_BG)
                     .border_1()
                     .border_color(BORDER_LIGHT)
-                    .text_base()
-                    .text_color(PRIMARY_TEXT)
-                    .child("Type a message...")
+                    .track_focus(&composer_focus)
+                    .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                        if let Some(editor) = weak_composer_for_action.upgrade() {
+                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                            if !text.is_empty() {
+                                let user_message = text.clone();
+                                this.messages.push(ChatMessage {
+                                    role: "user".to_string(),
+                                    content: user_message,
+                                });
+                                editor.update(cx, |editor, cx| {
+                                    editor.set_text("", _window, cx);
+                                });
+                                cx.notify();
+
+                                // Synchronous API call (UI will be slightly blocked during network request)
+                                match call_chat_api(&this.model_base_url, &this.model_api_key, &this.model_name, &this.messages) {
+                                    Ok(response) => {
+                                        if !response.is_empty() {
+                                            this.messages.push(ChatMessage {
+                                                role: "assistant".to_string(),
+                                                content: response,
+                                            });
+                                            cx.notify();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("API error: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }))
+                    .child(composer_editor)
             )
             .child(
                 div()
@@ -464,8 +886,41 @@ impl AppState {
                     .py_3()
                     .rounded_lg()
                     .bg(BRAND_BLUE)
+                    .cursor_pointer()
                     .text_color(gpui::white())
                     .text_base()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                        if let Some(editor) = weak_composer.upgrade() {
+                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                            if !text.is_empty() {
+                                let user_message = text.clone();
+                                this.messages.push(ChatMessage {
+                                    role: "user".to_string(),
+                                    content: user_message,
+                                });
+                                editor.update(cx, |editor, cx| {
+                                    editor.set_text("", _window, cx);
+                                });
+                                cx.notify();
+
+                                // Call API synchronously (blocks UI, but works for local APIs)
+                                match call_chat_api(&this.model_base_url, &this.model_api_key, &this.model_name, &this.messages) {
+                                    Ok(response) => {
+                                        if !response.is_empty() {
+                                            this.messages.push(ChatMessage {
+                                                role: "assistant".to_string(),
+                                                content: response,
+                                            });
+                                            cx.notify();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("API error: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }))
                     .child("Send")
             )
     }
@@ -565,7 +1020,23 @@ fn main() {
 
     env_logger::init();
 
-    application().run(|cx: &mut App| {
+    // Load config from file
+    let config = load_config();
+
+    application().run(move |cx: &mut App| {
+        settings::init(cx);
+        theme_settings::init(theme::LoadThemes::JustBase, cx);
+        editor::init(cx);
+
+        // Load default keymap so Editor actions like Delete, Backspace work
+        cx.bind_keys(
+            KeymapFile::load_asset_allow_partial_failure(
+                DEFAULT_KEYMAP_PATH,
+                cx,
+            )
+            .expect("failed to load default keymap"),
+        );
+
         let bounds = Bounds::centered(None, size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)), cx);
         cx.open_window(
             WindowOptions {
@@ -574,7 +1045,7 @@ fn main() {
                 window_min_size: Some(size(px(800.0), px(600.0))),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| AppState::new()),
+            move |window, cx| cx.new(|cx| AppState::new(window, cx, config.clone())),
         ).unwrap();
         cx.activate(true);
     });

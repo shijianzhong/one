@@ -10,11 +10,22 @@ gpui_platform = { path = "/Users/shijianzhong/sking/zed/crates/gpui_platform", f
 gpui_macros = { path = "/Users/shijianzhong/sking/zed/crates/gpui_macros" }
 gpui_util = { path = "/Users/shijianzhong/sking/zed/crates/gpui_util" }
 gpui_shared_string = { path = "/Users/shijianzhong/sking/zed/crates/gpui_shared_string" }
+editor = { path = "/Users/shijianzhong/sking/zed/crates/editor" }
+settings = { path = "/Users/shijianzhong/sking/zed/crates/settings" }
+theme = { path = "/Users/shijianzhong/sking/zed/crates/theme" }
+theme_settings = { path = "/Users/shijianzhong/sking/zed/crates/theme_settings" }
+menu = { path = "/Users/shijianzhong/sking/zed/crates/menu" }
+solo3_components = { path = "./components" }
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_linux = { path = "/Users/shijianzhong/sking/zed/crates/gpui_linux" }

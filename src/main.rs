@@ -2,7 +2,7 @@ use gpui::{
     App, AppContext as _, Bounds, Context, DragMoveEvent,
     Hsla, IntoElement, ParentElement, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
-    Focusable
+    Focusable,
 };
 use gpui_platform::application;
 use editor::Editor;
@@ -59,8 +59,15 @@ fn save_config(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn call_chat_api(base_url: &str, api_key: &str, model: &str, messages: &[ChatMessage]) -> Result<String, String> {
-    let client = reqwest::blocking::Client::new();
+fn call_chat_api_sync(base_url: &str, api_key: &str, model: &str, messages: &[ChatMessage]) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    eprintln!("[DEBUG] API call starting...");
+    eprintln!("[DEBUG] base_url: {}, model: {}", base_url, model);
+    eprintln!("[DEBUG] messages count: {}", messages.len());
 
     #[derive(serde::Serialize)]
     struct RequestBody {
@@ -81,18 +88,26 @@ fn call_chat_api(base_url: &str, api_key: &str, model: &str, messages: &[ChatMes
     };
 
     let url = format!("{}/chat/completions", base_url);
+    eprintln!("[DEBUG] URL: {}", url);
 
-    let response = client
-        .post(&url)
+    let body_str = serde_json::to_string(&request_body).unwrap();
+    eprintln!("[DEBUG] Request body: {}", body_str);
+
+    eprintln!("[DEBUG] Sending request...");
+    let response = client.post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
-        .json(&request_body)
+        .body(body_str)
         .send()
-        .map_err(|e: reqwest::Error| e.to_string())?;
+        .map_err(|e| e.to_string())?;
+    eprintln!("[DEBUG] Response received, status: {}", response.status());
 
     if !response.status().is_success() {
         return Err(format!("API error: {}", response.status()));
     }
+
+    let body_str = response.text().map_err(|e| e.to_string())?;
+    eprintln!("[DEBUG] Response body: {}", body_str);
 
     #[derive(serde::Deserialize)]
     struct ApiResponse {
@@ -109,11 +124,13 @@ fn call_chat_api(base_url: &str, api_key: &str, model: &str, messages: &[ChatMes
         content: String,
     }
 
-    let api_response: ApiResponse = response.json().map_err(|e: reqwest::Error| e.to_string())?;
+    let api_response: ApiResponse = serde_json::from_str(&body_str).map_err(|e| e.to_string())?;
 
-    Ok(api_response.choices.first()
+    let result = api_response.choices.first()
         .map(|c| c.message.content.clone())
-        .unwrap_or_default())
+        .unwrap_or_default();
+    eprintln!("[DEBUG] Result: {}", result);
+    Ok(result)
 }
 
 struct DraggedResizer;
@@ -817,7 +834,12 @@ impl AppState {
             }
         }
 
-        result
+        div()
+            .id("chat_messages")
+            .overflow_scroll()
+            .flex_1()
+            .w_full()
+            .child(result)
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -860,21 +882,52 @@ impl AppState {
                                 });
                                 cx.notify();
 
-                                // Synchronous API call (UI will be slightly blocked during network request)
-                                match call_chat_api(&this.model_base_url, &this.model_api_key, &this.model_name, &this.messages) {
-                                    Ok(response) => {
-                                        if !response.is_empty() {
-                                            this.messages.push(ChatMessage {
-                                                role: "assistant".to_string(),
-                                                content: response,
+                                // Use tokio runtime to spawn blocking task
+                                let base_url = this.model_base_url.clone();
+                                let api_key = this.model_api_key.clone();
+                                let model = this.model_name.clone();
+                                let messages = this.messages.clone();
+
+                                eprintln!("[DEBUG] Spawning tokio async task");
+
+                                cx.spawn(async move |this, cx| {
+                                    eprintln!("[DEBUG] Inside cx.spawn");
+
+                                    // Spawn async work on tokio runtime
+                                    let result = gpui_tokio::Tokio::spawn(cx, async move {
+                                        eprintln!("[DEBUG] Tokio task started");
+                                        // Use spawn_blocking for the synchronous HTTP call
+                                        tokio::task::spawn_blocking(move || {
+                                            eprintln!("[DEBUG] Thread started");
+                                            call_chat_api_sync(&base_url, &api_key, &model, &messages)
+                                        }).await
+                                    }).await;
+
+                                    eprintln!("[DEBUG] Received result");
+
+                                    match result {
+                                        Ok(Ok(Ok(resp))) => {
+                                            eprintln!("[DEBUG] HTTP OK, updating UI");
+                                            let _ = this.update(cx, |this, cx| {
+                                                this.messages.push(ChatMessage {
+                                                    role: "assistant".to_string(),
+                                                    content: resp,
+                                                });
+                                                cx.notify();
                                             });
-                                            cx.notify();
+                                            eprintln!("[DEBUG] UI updated");
+                                        }
+                                        Ok(Ok(Err(e))) => {
+                                            eprintln!("API error: {}", e);
+                                        }
+                                        Ok(Err(e)) => {
+                                            eprintln!("Spawn error: {:?}", e);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Tokio error: {:?}", e);
                                         }
                                     }
-                                    Err(e) => {
-                                        eprintln!("API error: {}", e);
-                                    }
-                                }
+                                }).detach();
                             }
                         }
                     }))
@@ -903,21 +956,52 @@ impl AppState {
                                 });
                                 cx.notify();
 
-                                // Call API synchronously (blocks UI, but works for local APIs)
-                                match call_chat_api(&this.model_base_url, &this.model_api_key, &this.model_name, &this.messages) {
-                                    Ok(response) => {
-                                        if !response.is_empty() {
-                                            this.messages.push(ChatMessage {
-                                                role: "assistant".to_string(),
-                                                content: response,
+                                // Use tokio runtime to spawn blocking task
+                                let base_url = this.model_base_url.clone();
+                                let api_key = this.model_api_key.clone();
+                                let model = this.model_name.clone();
+                                let messages = this.messages.clone();
+
+                                eprintln!("[DEBUG] Spawning tokio async task");
+
+                                cx.spawn(async move |this, cx| {
+                                    eprintln!("[DEBUG] Inside cx.spawn");
+
+                                    // Spawn async work on tokio runtime
+                                    let result = gpui_tokio::Tokio::spawn(cx, async move {
+                                        eprintln!("[DEBUG] Tokio task started");
+                                        // Use spawn_blocking for the synchronous HTTP call
+                                        tokio::task::spawn_blocking(move || {
+                                            eprintln!("[DEBUG] Thread started");
+                                            call_chat_api_sync(&base_url, &api_key, &model, &messages)
+                                        }).await
+                                    }).await;
+
+                                    eprintln!("[DEBUG] Received result");
+
+                                    match result {
+                                        Ok(Ok(Ok(resp))) => {
+                                            eprintln!("[DEBUG] HTTP OK, updating UI");
+                                            let _ = this.update(cx, |this, cx| {
+                                                this.messages.push(ChatMessage {
+                                                    role: "assistant".to_string(),
+                                                    content: resp,
+                                                });
+                                                cx.notify();
                                             });
-                                            cx.notify();
+                                            eprintln!("[DEBUG] UI updated");
+                                        }
+                                        Ok(Ok(Err(e))) => {
+                                            eprintln!("API error: {}", e);
+                                        }
+                                        Ok(Err(e)) => {
+                                            eprintln!("Spawn error: {:?}", e);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Tokio error: {:?}", e);
                                         }
                                     }
-                                    Err(e) => {
-                                        eprintln!("API error: {}", e);
-                                    }
-                                }
+                                }).detach();
                             }
                         }
                     }))
@@ -1027,6 +1111,7 @@ fn main() {
         settings::init(cx);
         theme_settings::init(theme::LoadThemes::JustBase, cx);
         editor::init(cx);
+        gpui_tokio::init(cx);
 
         // Load default keymap so Editor actions like Delete, Backspace work
         cx.bind_keys(

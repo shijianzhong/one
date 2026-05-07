@@ -10,6 +10,9 @@ gpui_platform = { path = "/Users/shijianzhong/sking/zed/crates/gpui_platform", f
 gpui_macros = { path = "/Users/shijianzhong/sking/zed/crates/gpui_macros" }
 gpui_util = { path = "/Users/shijianzhong/sking/zed/crates/gpui_util" }
 gpui_shared_string = { path = "/Users/shijianzhong/sking/zed/crates/gpui_shared_string" }
+gpui_tokio = { path = "/Users/shijianzhong/sking/zed/crates/gpui_tokio" }
+reqwest_client = { path = "/Users/shijianzhong/sking/zed/crates/reqwest_client" }
+http = "1"
 editor = { path = "/Users/shijianzhong/sking/zed/crates/editor" }
 settings = { path = "/Users/shijianzhong/sking/zed/crates/settings" }
 theme = { path = "/Users/shijianzhong/sking/zed/crates/theme" }
@@ -26,6 +29,7 @@ serde_json = "1"
 dirs = "5"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_linux = { path = "/Users/shijianzhong/sking/zed/crates/gpui_linux" }

@@ -361,6 +361,7 @@ impl AppState {
                 .px_1()
                 .py_1();
             // Add button (+)
+            // Add button (+) - stops propagation so only adds task, doesn't toggle expand
             let add_btn = div()
                 .text_base()
                 .text_color(MUTED_TEXT)
@@ -368,7 +369,8 @@ impl AppState {
                 .py_1()
                 .cursor_pointer()
                 .id(format!("add-btn-{}", ws_id))
-                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, cx| {
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
                     this.active_workspace_id = Some(ws_id);
                     this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                 }));

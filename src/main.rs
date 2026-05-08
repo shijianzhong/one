@@ -208,7 +208,7 @@ struct TaskItem {
 }
 
 impl AppState {
-    fn new(_window: &mut Window, cx: &mut Context<Self>, config: Config) -> Self {
+    fn new(_window: &mut Window, _cx: &mut Context<Self>, config: Config) -> Self {
         Self {
             workspaces: vec![],
             active_workspace_id: None,
@@ -547,7 +547,15 @@ impl AppState {
             .h_full()
             .min_w(px(350.0))
             .child(self.render_chat_header(title, sidebar_visible, terminal_visible, cx))
-            .child(div().flex_1().overflow_hidden().p_4().child(self.render_chat_messages()))
+            .child(
+                div()
+                    .id("chat_container")
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .p_4()
+                    .child(self.render_chat_messages())
+            )
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_composer(window, cx))
     }
@@ -794,14 +802,14 @@ impl AppState {
 
     fn render_chat_messages(&self) -> impl IntoElement {
         let messages = self.messages.clone();
-        let mut result = div()
-            .flex()
+
+        div()
             .flex_col()
             .gap_4()
-            .w_full();
-
-        if messages.is_empty() {
-            result = result.child(
+            .w_full()
+            .children(messages.iter().map(|msg| {
+                let role_label = if msg.role == "user" { "You" } else { "Assistant" };
+                let role_color = if msg.role == "user" { BRAND_BLUE } else { MUTED_TEXT };
                 div()
                     .flex()
                     .flex_col()
@@ -811,35 +819,9 @@ impl AppState {
                     .bg(CARD_BG)
                     .border_1()
                     .border_color(BORDER_LIGHT)
-                    .child(div().text_xs().text_color(MUTED_TEXT).child("Assistant"))
-                    .child(div().text_base().text_color(PRIMARY_TEXT).child("Hello! I'm your SOLO 3.0 assistant. Select or create a task to get started."))
-            );
-        } else {
-            for msg in messages {
-                let role_label = if msg.role == "user" { "You" } else { "Assistant" };
-                let role_color = if msg.role == "user" { BRAND_BLUE } else { MUTED_TEXT };
-                result = result.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_4()
-                        .rounded_lg()
-                        .bg(CARD_BG)
-                        .border_1()
-                        .border_color(BORDER_LIGHT)
-                        .child(div().text_xs().text_color(role_color).child(role_label))
-                        .child(div().text_base().text_color(PRIMARY_TEXT).child(msg.content))
-                );
-            }
-        }
-
-        div()
-            .id("chat_messages")
-            .overflow_scroll()
-            .flex_1()
-            .w_full()
-            .child(result)
+                    .child(div().text_xs().text_color(role_color).child(role_label))
+                    .child(div().text_base().text_color(PRIMARY_TEXT).child(msg.content.clone()))
+            }))
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

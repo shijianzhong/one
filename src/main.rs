@@ -1,5 +1,5 @@
 use gpui::{
-    App, AppContext as _, Bounds, Context, DragMoveEvent,
+    App, AppContext as _, Bounds, Context, DragMoveEvent, KeyDownEvent,
     Hsla, IntoElement, ParentElement, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable,
@@ -15,9 +15,11 @@ use std::path::PathBuf;
 use gpui::FontWeight;
 
 mod memory;
+mod sandbox;
 mod services;
 
 use memory::types::ChatMessage;
+use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
 use services::api::call_chat_api_sync;
 
@@ -71,6 +73,18 @@ struct AppState {
     editing_base_url: String,
     editing_api_key: String,
     messages: Vec<ChatMessage>,
+    sandbox_backend: Backend,
+    // Terminal state
+    terminal_output: Vec<TerminalLine>,
+    terminal_input: String,
+    terminal_history: Vec<String>,
+    terminal_history_index: isize,
+}
+
+#[derive(Debug, Clone)]
+struct TerminalLine {
+    command: Option<String>,
+    output: String,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +122,11 @@ impl AppState {
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
             messages: vec![],
+            sandbox_backend: futures::executor::block_on(Backend::detect()),
+            terminal_output: vec![],
+            terminal_input: String::new(),
+            terminal_history: vec![],
+            terminal_history_index: -1,
         }
     }
 
@@ -200,7 +219,7 @@ impl Render for AppState {
             })
             .when(self.terminal_visible, |this| {
                 this.child(self.render_terminal_resizer(cx))
-                    .child(self.render_terminal())
+                    .child(self.render_terminal(_window, cx))
             })
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(_window, cx))
@@ -897,6 +916,43 @@ impl AppState {
             .child(div().text_xs().text_color(MUTED_TEXT).mb_2().child(title))
     }
 
+    fn execute_terminal_command(&mut self, cx: &mut Context<Self>) {
+        let cmd = self.terminal_input.trim().to_string();
+        if cmd.is_empty() {
+            return;
+        }
+
+        // Add to history
+        if !self.terminal_history.contains(&cmd) {
+            self.terminal_history.push(cmd.clone());
+        }
+        self.terminal_history_index = self.terminal_history.len() as isize;
+        self.terminal_input.clear();
+
+        let task_id = self.active_task_id.unwrap_or(0);
+
+        // Clone backend for use in async task
+        let sandbox_backend = self.sandbox_backend.clone();
+
+        // Execute command in sandbox using tokio::spawn
+        tokio::spawn(async move {
+            let output = match &sandbox_backend {
+                Backend::Docker(b) => b.exec_command(task_id, vec![&cmd]).await,
+                Backend::Pty(b) => b.exec_command(task_id, vec![&cmd]).await,
+            };
+
+            let result = match output {
+                Ok(out) => out,
+                Err(e) => format!("Error: {}", e),
+            };
+
+            // Note: Since we can't easily update state from a raw tokio::spawn,
+            // we log the result for now. In a real implementation, we'd use
+            // a channel or different approach to communicate back to the UI.
+            eprintln!("[Terminal] {}: {}\n{}", cmd, result, result);
+        });
+    }
+
     fn render_terminal_resizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("terminal-resizer")
@@ -926,17 +982,33 @@ impl AppState {
             }))
     }
 
-    fn render_terminal(&mut self) -> impl IntoElement {
-        eprintln!("render_terminal called with width: {}", self.terminal_width);
+    fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let terminal_bg = Hsla { h: 0.0, s: 0.0, l: 0.08, a: 1.0 };
         let terminal_text = Hsla { h: 0.0, s: 0.0, l: 0.90, a: 1.0 };
         let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.65, a: 1.0 };
+        let error_color = Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
         let width = self.terminal_width;
+
+        // Get working directory based on active task
+        let work_dir = self.active_task_id
+            .map(|id| format!("/tmp/solo3_task_{}", id))
+            .unwrap_or_else(|| "~/solo3".to_string());
+
+        // Create terminal input editor
+        let terminal_editor = window.use_keyed_state("terminal_editor", &mut *cx, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Type a command...", window, cx);
+            editor
+        });
+
+        let terminal_focus = terminal_editor.read(cx).focus_handle(cx);
+        let weak_terminal = terminal_editor.downgrade();
 
         div()
             .flex()
             .flex_col()
             .w(px(width))
+            .bg(terminal_bg)
             .child(
                 div()
                     .flex()
@@ -945,21 +1017,111 @@ impl AppState {
                     .px_3()
                     .bg(Hsla { h: 0.0, s: 0.0, l: 0.12, a: 1.0 })
                     .child(div().text_xs().text_color(MUTED_TEXT).child("Terminal"))
-                    .child(div().text_xs().text_color(TERTIARY_TEXT).ml_auto().child("bash"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT)
+                            .ml_auto()
+                            .child(format!("{} | {}", work_dir, match &self.sandbox_backend {
+                                Backend::Docker(_) => "docker",
+                                Backend::Pty(_) => "pty",
+                            }))
+                    )
             )
             .child(
                 div()
+                    .id("terminal-content")
                     .flex_1()
+                    .overflow_scroll()
                     .p_3()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .children(vec![
-                        div().flex().gap_2().child(div().text_sm().text_color(prompt_color).child("➜")).child(div().text_sm().text_color(terminal_text).child("~/solo3")),
-                        div().text_sm().text_color(terminal_text).child(""),
-                        div().text_sm().text_color(terminal_text).child("Type a message to start..."),
-                    ])
+                    .children(self.terminal_output.iter().map(|line| {
+                        let prompt_color = prompt_color;
+                        let terminal_text = terminal_text;
+                        let error_color = error_color;
+                        let output = line.output.clone();
+                        let is_error = output.contains("Error") || output.contains("error:");
+                        div()
+                            .flex_col()
+                            .gap_1()
+                            .children(line.command.iter().map(|cmd| {
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(div().text_sm().text_color(prompt_color).child("➜"))
+                                    .child(div().text_sm().text_color(terminal_text).child(cmd.clone()))
+                            }))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(if is_error { error_color } else { terminal_text })
+                                    .child(output)
+                            )
+                            .into_any_element()
+                    }))
             )
+            .child(
+                div()
+                    .id("terminal-input-line")
+                    .h(px(40.0))
+                    .px_3()
+                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.10, a: 1.0 })
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().text_color(prompt_color).child("➜"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .rounded_lg()
+                            .bg(Hsla { h: 0.0, s: 0.0, l: 0.15, a: 1.0 })
+                            .track_focus(&terminal_focus)
+                            .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                                if let Some(editor) = weak_terminal.upgrade() {
+                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                    if !text.is_empty() {
+                                        let task_id = this.active_task_id.unwrap_or(0);
+                                        let sandbox_backend = this.sandbox_backend.clone();
+
+                                        // Clear editor first
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_text("", _window, cx);
+                                        });
+
+                                        // Execute command and update UI using gpui_tokio::spawn
+                                        cx.spawn(async move |this, cx| {
+                                            // Execute command and capture result
+                                            let cmd_for_output = text.clone();
+                                            let exec_result = gpui_tokio::Tokio::spawn(cx, async move {
+                                                match &sandbox_backend {
+                                                    Backend::Docker(b) => b.exec_command(task_id, vec![&text]).await,
+                                                    Backend::Pty(b) => b.exec_command(task_id, vec![&text]).await,
+                                                }
+                                            }).await;
+
+                                            let output = match exec_result {
+                                                Ok(Ok(out)) => out,
+                                                Ok(Err(e)) => format!("Error: {}", e),
+                                                Err(e) => format!("Spawn error: {}", e),
+                                            };
+
+                                            // Update UI with command output
+                                            this.update(cx, |this, cx| {
+                                                this.terminal_output.push(TerminalLine {
+                                                    command: Some(cmd_for_output),
+                                                    output,
+                                                });
+                                                cx.notify();
+                                            });
+                                        }).detach();
+                                    }
+                                }
+                            }))
+                            .child(terminal_editor)
+                    ))
     }
 }
 

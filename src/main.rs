@@ -326,7 +326,9 @@ impl AppState {
             .flex()
             .flex_col()
             .flex_1()
-            .p_3();
+            .p_3()
+            .id("task-list")
+            .overflow_scroll();
 
         result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child("WORKSPACES"));
 
@@ -401,10 +403,7 @@ impl AppState {
             if workspace.expanded {
                 let mut tasks_container = div()
                     .flex_col()
-                    .ml_4()
-                    .max_h(px(200.0))
-                    .id("tasks-container")
-                    .overflow_y_scroll();
+                    .ml_4();
 
                 for task in &workspace.tasks {
                     let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);

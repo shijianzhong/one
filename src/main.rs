@@ -337,7 +337,7 @@ impl AppState {
             let ws_bg = if is_active_ws { CARD_BG } else { CARD_BG };
             let ws_id = workspace.id;
 
-            // Workspace row - clicking selects workspace (but doesn't toggle expand)
+            // Workspace row - clicking toggles expand/collapse
             let ws_row = div()
                 .flex()
                 .items_center()
@@ -349,22 +349,17 @@ impl AppState {
                 .cursor_pointer()
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
                     this.active_workspace_id = Some(ws_id);
-                }));
-
-            // Workspace expand/collapse icon - separate clickable area
-            let expand_btn = div()
-                .text_base()
-                .text_color(MUTED_TEXT)
-                .px_1()
-                .py_1()
-                .cursor_pointer()
-                .id(format!("expand-btn-{}", ws_id))
-                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, _cx| {
-                    this.active_workspace_id = Some(ws_id);
                     if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
                         ws.expanded = !ws.expanded;
                     }
                 }));
+
+            // Workspace expand/collapse icon - visual only, click handled by ws_row
+            let expand_btn = div()
+                .text_base()
+                .text_color(MUTED_TEXT)
+                .px_1()
+                .py_1();
             // Add button (+)
             let add_btn = div()
                 .text_base()

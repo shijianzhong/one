@@ -983,10 +983,10 @@ impl AppState {
     }
 
     fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let terminal_bg = Hsla { h: 0.0, s: 0.0, l: 0.08, a: 1.0 };
-        let terminal_text = Hsla { h: 0.0, s: 0.0, l: 0.90, a: 1.0 };
-        let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.65, a: 1.0 };
-        let error_color = Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
+        let terminal_bg = CARD_BG;
+        let terminal_text = PRIMARY_TEXT;
+        let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.45, a: 1.0 };
+        let error_color = Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 };
         let width = self.terminal_width;
 
         // Get working directory based on active task
@@ -1015,7 +1015,7 @@ impl AppState {
                     .items_center()
                     .h(px(36.0))
                     .px_3()
-                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.12, a: 1.0 })
+                    .bg(WORKSPACE_BG)
                     .child(div().text_xs().text_color(MUTED_TEXT).child("Terminal"))
                     .child(
                         div()
@@ -1067,7 +1067,7 @@ impl AppState {
                     .id("terminal-input-line")
                     .h(px(40.0))
                     .px_3()
-                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.10, a: 1.0 })
+                    .bg(CARD_BG)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -1077,7 +1077,7 @@ impl AppState {
                             .flex_1()
                             .px_2()
                             .rounded_lg()
-                            .bg(Hsla { h: 0.0, s: 0.0, l: 0.15, a: 1.0 })
+                            .bg(WORKSPACE_BG)
                             .track_focus(&terminal_focus)
                             .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
                                 if let Some(editor) = weak_terminal.upgrade() {

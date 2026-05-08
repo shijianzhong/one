@@ -358,7 +358,7 @@ impl AppState {
                 .px_1()
                 .py_1()
                 .cursor_pointer()
-                .id("expand-btn")
+                .id(format!("expand-btn-{}", ws_id))
                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, _cx| {
                     this.active_workspace_id = Some(ws_id);
                     if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
@@ -372,7 +372,7 @@ impl AppState {
                 .px_1()
                 .py_1()
                 .cursor_pointer()
-                .id("add-btn")
+                .id(format!("add-btn-{}", ws_id))
                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, cx| {
                     this.active_workspace_id = Some(ws_id);
                     this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);

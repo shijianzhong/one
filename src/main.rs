@@ -10,128 +10,16 @@ use menu::Confirm;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 use theme;
 use theme_settings;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use gpui::FontWeight;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Config {
-    model_base_url: String,
-    model_api_key: String,
-    model_name: String,
-}
+mod memory;
+mod services;
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            model_base_url: "https://api.openai.com/v1".to_string(),
-            model_api_key: "".to_string(),
-            model_name: "gpt-4".to_string(),
-        }
-    }
-}
-
-fn get_config_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".solo3_gpui");
-    std::fs::create_dir_all(&config_dir).ok();
-    config_dir.join("config.json")
-}
-
-fn load_config() -> Config {
-    let path = get_config_path();
-    if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(config) = serde_json::from_str(&content) {
-                return config;
-            }
-        }
-    }
-    Config::default()
-}
-
-fn save_config(config: &Config) -> anyhow::Result<()> {
-    let path = get_config_path();
-    let content = serde_json::to_string_pretty(config)?;
-    std::fs::write(&path, content)?;
-    Ok(())
-}
-
-fn call_chat_api_sync(base_url: &str, api_key: &str, model: &str, messages: &[ChatMessage]) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    eprintln!("[DEBUG] API call starting...");
-    eprintln!("[DEBUG] base_url: {}, model: {}", base_url, model);
-    eprintln!("[DEBUG] messages count: {}", messages.len());
-
-    #[derive(serde::Serialize)]
-    struct RequestBody {
-        model: String,
-        messages: Vec<serde_json::Value>,
-    }
-
-    let chat_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
-        serde_json::json!({
-            "role": m.role,
-            "content": m.content
-        })
-    }).collect();
-
-    let request_body = RequestBody {
-        model: model.to_string(),
-        messages: chat_messages,
-    };
-
-    let url = format!("{}/chat/completions", base_url);
-    eprintln!("[DEBUG] URL: {}", url);
-
-    let body_str = serde_json::to_string(&request_body).unwrap();
-    eprintln!("[DEBUG] Request body: {}", body_str);
-
-    eprintln!("[DEBUG] Sending request...");
-    let response = client.post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .send()
-        .map_err(|e| e.to_string())?;
-    eprintln!("[DEBUG] Response received, status: {}", response.status());
-
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
-    }
-
-    let body_str = response.text().map_err(|e| e.to_string())?;
-    eprintln!("[DEBUG] Response body: {}", body_str);
-
-    #[derive(serde::Deserialize)]
-    struct ApiResponse {
-        choices: Vec<Choice>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Choice {
-        message: Message,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Message {
-        content: String,
-    }
-
-    let api_response: ApiResponse = serde_json::from_str(&body_str).map_err(|e| e.to_string())?;
-
-    let result = api_response.choices.first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default();
-    eprintln!("[DEBUG] Result: {}", result);
-    Ok(result)
-}
+use memory::types::ChatMessage;
+use services::{Config, load_config, save_config};
+use services::api::call_chat_api_sync;
 
 struct DraggedResizer;
 
@@ -183,12 +71,6 @@ struct AppState {
     editing_base_url: String,
     editing_api_key: String,
     messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Clone)]
-struct ChatMessage {
-    role: String,
-    content: String,
 }
 
 #[derive(Debug, Clone)]

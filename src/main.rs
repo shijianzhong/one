@@ -1,4 +1,5 @@
 use gpui::{
+    svg,
     App, AppContext as _, Bounds, Context, DragMoveEvent, KeyDownEvent,
     Hsla, IntoElement, ParentElement, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
@@ -331,7 +332,7 @@ impl AppState {
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
-            let ws_bg = if is_active_ws { CARD_BG } else { NAV_BG };
+            let ws_bg = if is_active_ws { CARD_BG } else { CARD_BG };
             let ws_id = workspace.id;
 
             // Workspace row - clicking selects workspace (but doesn't toggle expand)
@@ -349,7 +350,6 @@ impl AppState {
                 }));
 
             // Workspace expand/collapse icon - separate clickable area
-            let expand_icon = if workspace.expanded { "▾" } else { "▸" };
             let expand_btn = div()
                 .text_base()
                 .text_color(MUTED_TEXT)
@@ -376,12 +376,22 @@ impl AppState {
                     this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                 }));
 
-            let ws_label = format!("📁 {}", workspace.name);
+            let ws_label = workspace.name.clone();
             result = result.child(
                 ws_row.child(
-                    expand_btn.child(expand_icon)
+                    if workspace.expanded {
+                        expand_btn.child(
+                            svg().external_path("assets/expand.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                        )
+                    } else {
+                        expand_btn.child(
+                            svg().external_path("assets/fold.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                        )
+                    }
                 ).child(
-                    div().text_sm().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
+                    svg().external_path("assets/folder.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                ).child(
+                    div().text_sm().ml_1().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
                 ).child(
                     div().ml_auto().child(add_btn.child("+"))
                 )
@@ -398,7 +408,6 @@ impl AppState {
 
                 for task in &workspace.tasks {
                     let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);
-                    let task_bg = if is_active_task { ACTIVE_BG } else { CARD_BG };
 
                     let mut task_div = div()
                         .flex()
@@ -406,8 +415,8 @@ impl AppState {
                         .gap_2()
                         .px_3()
                         .py_2()
+                        .ml_4()
                         .rounded_md()
-                        .bg(task_bg)
                         .cursor_pointer();
 
                     let task_id = task.id;

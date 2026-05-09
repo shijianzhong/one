@@ -5,13 +5,16 @@ use gpui::{
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable,
 };
+use std::sync::Arc;
+use std::path::PathBuf;
+use image::RgbaImage;
+
 use gpui_platform::application;
 use editor::Editor;
 use menu::Confirm;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 use theme;
 use theme_settings;
-use std::path::PathBuf;
 
 use gpui::FontWeight;
 
@@ -1138,6 +1141,18 @@ fn main() {
     // Load config from file
     let config = load_config();
 
+    // Load app icon
+    let icon_path = std::path::Path::new("assets/logo.png");
+    let icon_image = if icon_path.exists() {
+        image::open(icon_path).ok().map(|img| img.to_rgba8()).map(|rgba| {
+            let (width, height) = rgba.dimensions();
+            Arc::new(image::RgbaImage::from_raw(width, height, rgba.into_raw()).unwrap())
+        })
+    } else {
+        eprintln!("[App] Icon not found at assets/logo.png");
+        None
+    };
+
     application().run(move |cx: &mut App| {
         settings::init(cx);
         theme_settings::init(theme::LoadThemes::JustBase, cx);
@@ -1159,6 +1174,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 is_resizable: true,
                 window_min_size: Some(size(px(800.0), px(600.0))),
+                icon: icon_image.clone(),
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| AppState::new(window, cx, config.clone())),

@@ -8415,6 +8415,7 @@ dependencies = [
  "gpui_tokio",
  "gpui_util",
  "http",
+ "image",
  "log",
  "menu",
  "portable-pty",

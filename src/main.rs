@@ -1,9 +1,9 @@
 use gpui::{
     svg,
-    App, AppContext as _, Bounds, Context, DragMoveEvent, KeyDownEvent,
+    App, AppContext as _, Bounds, Context, DragMoveEvent,
     Hsla, IntoElement, ParentElement, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
-    Focusable,
+    Focusable, ScrollHandle,
 };
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -77,6 +77,7 @@ struct AppState {
     editing_base_url: String,
     editing_api_key: String,
     messages: Vec<ChatMessage>,
+    chat_scroll_handle: ScrollHandle,
     sandbox_backend: Backend,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
@@ -126,6 +127,7 @@ impl AppState {
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
             messages: vec![],
+            chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
             terminal_input: String::new(),
@@ -448,6 +450,7 @@ impl AppState {
         let title = self.get_active_task().map(|t| t.title.clone()).unwrap_or_else(|| "No task selected".to_string());
         let sidebar_visible = self.sidebar_visible;
         let terminal_visible = self.terminal_visible;
+        let scroll_handle = self.chat_scroll_handle.clone();
 
         div()
             .flex()
@@ -461,9 +464,10 @@ impl AppState {
                     .id("chat_container")
                     .flex_1()
                     .w_full()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll_handle)
                     .p_4()
-                    .child(self.render_chat_messages())
+                    .child(self.render_chat_messages(&scroll_handle, cx))
             )
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_composer(window, cx))
@@ -709,27 +713,105 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&self) -> impl IntoElement {
+    fn render_chat_messages(&self, scroll_handle: &ScrollHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
+        let is_user = |role: &str| role == "user";
+
+        // Auto-scroll to bottom when messages change
+        if !messages.is_empty() {
+            scroll_handle.scroll_to_bottom();
+        }
 
         div()
             .flex_col()
             .gap_4()
             .w_full()
             .children(messages.iter().map(|msg| {
-                let role_label = if msg.role == "user" { "You" } else { "Assistant" };
-                let role_color = if msg.role == "user" { BRAND_BLUE } else { MUTED_TEXT };
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_4()
-                    .rounded_lg()
-                    .bg(CARD_BG)
-                    .border_1()
-                    .border_color(BORDER_LIGHT)
-                    .child(div().text_xs().text_color(role_color).child(role_label))
-                    .child(div().text_base().text_color(PRIMARY_TEXT).child(msg.content.clone()))
+                let is_user_msg = is_user(&msg.role);
+                let bubble_bg = if is_user_msg {
+                    Hsla { h: 0.58, s: 0.75, l: 0.45, a: 1.0 } // Blue bg for user
+                } else {
+                    Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 } // Light gray bg for assistant
+                };
+                let text_color = if is_user_msg { gpui::white() } else { Hsla { h: 0.0, s: 0.0, l: 0.15, a: 1.0 } };
+                let avatar_icon = if is_user_msg { "👤" } else { "🤖" };
+                let role_label = if is_user_msg { "You" } else { "Assistant" };
+
+                // User messages: right aligned, Assistant messages: left aligned
+                let message_container = if is_user_msg {
+                    div()
+                        .flex()
+                        .justify_end()
+                        .w_full()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_end()
+                                .gap_1()
+                                .p_4()
+                                .rounded_2xl()
+                                .bg(bubble_bg)
+                                .max_w(px(520.0))
+                                .child(
+                                    div()
+                                        .text_base()
+                                        .text_color(text_color)
+                                        .whitespace_normal()
+                                        .child(msg.content.clone())
+                                )
+                        )
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap_2()
+                        .w_full()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(MUTED_TEXT)
+                                        .child(avatar_icon)
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(MUTED_TEXT)
+                                        .child(role_label)
+                                )
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_start()
+                                .w_full()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .p_4()
+                                        .rounded_2xl()
+                                        .bg(bubble_bg)
+                                        .max_w(px(520.0))
+                                        .child(
+                                            div()
+                                                .text_base()
+                                                .text_color(text_color)
+                                                .whitespace_normal()
+                                                .child(msg.content.clone())
+                                        )
+                                )
+                        )
+                };
+
+                message_container
             }))
     }
 

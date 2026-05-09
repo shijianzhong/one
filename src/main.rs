@@ -78,6 +78,7 @@ struct AppState {
     editing_api_key: String,
     messages: Vec<ChatMessage>,
     chat_scroll_handle: ScrollHandle,
+    needs_auto_scroll: bool,
     sandbox_backend: Backend,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
@@ -127,6 +128,7 @@ impl AppState {
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
             messages: vec![],
+            needs_auto_scroll: false,
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
@@ -713,13 +715,14 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&self, scroll_handle: &ScrollHandle, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
         let is_user = |role: &str| role == "user";
 
-        // Auto-scroll to bottom when messages change
-        if !messages.is_empty() {
+        // Auto-scroll to bottom only when needs_auto_scroll is set
+        if self.needs_auto_scroll && !messages.is_empty() {
             scroll_handle.scroll_to_bottom();
+            self.needs_auto_scroll = false;
         }
 
         div()
@@ -745,7 +748,6 @@ impl AppState {
                         .w_full()
                         .child(
                             div()
-                                .flex()
                                 .flex_col()
                                 .items_end()
                                 .gap_1()
@@ -763,7 +765,6 @@ impl AppState {
                         )
                 } else {
                     div()
-                        .flex()
                         .flex_col()
                         .items_start()
                         .gap_2()
@@ -788,25 +789,20 @@ impl AppState {
                         )
                         .child(
                             div()
-                                .flex()
-                                .justify_start()
+                                .flex_col()
+                                .items_start()
+                                .gap_1()
+                                .p_4()
+                                .rounded_2xl()
+                                .bg(bubble_bg)
+                                .max_w(px(520.0))
                                 .w_full()
                                 .child(
                                     div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .p_4()
-                                        .rounded_2xl()
-                                        .bg(bubble_bg)
-                                        .max_w(px(520.0))
-                                        .child(
-                                            div()
-                                                .text_base()
-                                                .text_color(text_color)
-                                                .whitespace_normal()
-                                                .child(msg.content.clone())
-                                        )
+                                        .text_base()
+                                        .text_color(text_color)
+                                        .whitespace_normal()
+                                        .child(msg.content.clone())
                                 )
                         )
                 };
@@ -850,6 +846,7 @@ impl AppState {
                                     role: "user".to_string(),
                                     content: user_message,
                                 });
+                                this.needs_auto_scroll = true;
                                 editor.update(cx, |editor, cx| {
                                     editor.set_text("", _window, cx);
                                 });
@@ -886,6 +883,7 @@ impl AppState {
                                                     role: "assistant".to_string(),
                                                     content: resp,
                                                 });
+                                                this.needs_auto_scroll = true;
                                                 cx.notify();
                                             });
                                             eprintln!("[DEBUG] UI updated");
@@ -924,6 +922,7 @@ impl AppState {
                                     role: "user".to_string(),
                                     content: user_message,
                                 });
+                                this.needs_auto_scroll = true;
                                 editor.update(cx, |editor, cx| {
                                     editor.set_text("", _window, cx);
                                 });
@@ -960,6 +959,7 @@ impl AppState {
                                                     role: "assistant".to_string(),
                                                     content: resp,
                                                 });
+                                                this.needs_auto_scroll = true;
                                                 cx.notify();
                                             });
                                             eprintln!("[DEBUG] UI updated");

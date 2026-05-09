@@ -727,7 +727,7 @@ impl AppState {
 
         div()
             .flex_col()
-            .gap_4()
+            .gap_5()
             .w_full()
             .children(messages.iter().map(|msg| {
                 let is_user_msg = is_user(&msg.role);
@@ -746,15 +746,17 @@ impl AppState {
                         .flex()
                         .justify_end()
                         .w_full()
+                        .mb_3()
                         .child(
                             div()
                                 .flex_col()
                                 .items_end()
-                                .gap_1()
+                                .gap_2()
                                 .p_4()
                                 .rounded_2xl()
                                 .bg(bubble_bg)
                                 .max_w(px(520.0))
+                                .min_w(px(35.0))
                                 .child(
                                     div()
                                         .text_base()
@@ -769,6 +771,7 @@ impl AppState {
                         .items_start()
                         .gap_2()
                         .w_full()
+                        .mb_3()
                         .child(
                             div()
                                 .flex()
@@ -791,11 +794,12 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_start()
-                                .gap_1()
+                                .gap_2()
                                 .p_4()
                                 .rounded_2xl()
                                 .bg(bubble_bg)
                                 .max_w(px(520.0))
+                                .min_w(px(35.0))
                                 .w_full()
                                 .child(
                                     div()

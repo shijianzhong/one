@@ -8426,6 +8426,7 @@ dependencies = [
  "serde_yaml",
  "settings",
  "solo3_components",
+ "sqlez",
  "theme",
  "theme_settings",
  "tokio",

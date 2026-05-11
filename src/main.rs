@@ -21,6 +21,7 @@ use gpui::FontWeight;
 mod memory;
 mod sandbox;
 mod services;
+mod task_db;
 
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
@@ -61,6 +62,7 @@ const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
 
 struct AppState {
+    db: task_db::Database,
     workspaces: Vec<Workspace>,
     active_workspace_id: Option<usize>,
     active_task_id: Option<usize>,
@@ -111,8 +113,38 @@ struct TaskItem {
 
 impl AppState {
     fn new(_window: &mut Window, _cx: &mut Context<Self>, config: Config) -> Self {
+        let db = task_db::Database::new().expect("Failed to initialize database");
+
+        // Load workspaces and tasks from database
+        let workspaces = {
+            let conn = &db.conn;
+            let db_workspaces = task_db::load_workspaces(conn).unwrap_or_default();
+            db_workspaces
+                .into_iter()
+                .map(|w| {
+                    let tasks = task_db::load_tasks(conn, w.id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|t| TaskItem {
+                            id: t.id,
+                            title: t.title,
+                            status: Box::leak(t.status.into_boxed_str()),
+                        })
+                        .collect();
+                    Workspace {
+                        id: w.id,
+                        name: w.name,
+                        path: PathBuf::from(w.path),
+                        tasks,
+                        expanded: w.expanded,
+                    }
+                })
+                .collect()
+        };
+
         Self {
-            workspaces: vec![],
+            db,
+            workspaces,
             active_workspace_id: None,
             active_task_id: None,
             sidebar_visible: false,
@@ -152,7 +184,9 @@ impl AppState {
     }
 
     fn add_workspace(&mut self, path: PathBuf, name: String) {
-        let id = self.workspaces.len() + 1;
+        let path_str = path.to_string_lossy().to_string();
+        let id = task_db::insert_workspace(&self.db.conn, &name, &path_str)
+            .unwrap_or(self.workspaces.len() + 1);
         let workspace = Workspace {
             id,
             name,
@@ -166,7 +200,9 @@ impl AppState {
 
     fn add_task_to_workspace(&mut self, workspace_id: usize, title: String, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) {
-            let id = workspace.tasks.len() + 1;
+            let id = task_db::insert_task(&self.db.conn, workspace_id, &title)
+                .unwrap_or(workspace.tasks.len() + 1);
+
             workspace.tasks.push(TaskItem {
                 id,
                 title,
@@ -358,6 +394,7 @@ impl AppState {
                     this.active_workspace_id = Some(ws_id);
                     if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
                         ws.expanded = !ws.expanded;
+                        task_db::update_workspace_expanded(&this.db.conn, ws_id, ws.expanded).ok();
                     }
                 }));
 
@@ -425,11 +462,12 @@ impl AppState {
                     let task_id = task.id;
                     let ws_id = workspace.id;
 
-                    task_div = task_div.on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                        this.active_workspace_id = Some(ws_id);
-                        this.active_task_id = Some(task_id);
-                        _cx.notify();
-                    }));
+                    task_div = task_div
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                            this.active_workspace_id = Some(ws_id);
+                            this.active_task_id = Some(task_id);
+                            _cx.notify();
+                        }));
 
                     tasks_container = tasks_container.child(
                         task_div.child(
@@ -437,6 +475,24 @@ impl AppState {
                                 .bg(if is_active_task { BRAND_BLUE } else { MUTED_TEXT })
                         ).child(
                             div().text_sm().text_color(if is_active_task { BRAND_BLUE } else { PRIMARY_TEXT }).child(task.title.clone())
+                        ).child(
+                            div()
+                                .ml_auto()
+                                .text_xs()
+                                .text_color(MUTED_TEXT)
+                                .cursor_pointer()
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                                        ws.tasks.retain(|t| t.id != task_id);
+                                        task_db::delete_task(&this.db.conn, task_id).ok();
+                                        if this.active_task_id == Some(task_id) {
+                                            this.active_task_id = None;
+                                        }
+                                        cx.notify();
+                                    }
+                                }))
+                                .child("×")
                         )
                     );
                 }

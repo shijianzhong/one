@@ -75,13 +75,18 @@ AppState (main struct)
 solo3_gpui/
 ├── Cargo.toml              # Main application manifest
 ├── src/
-│   └── main.rs            # Single-file application (~800 lines)
-│                           # Contains: AppState, all render methods, event handlers
-└── components/             # Reusable GPUI components crate
+│   ├── main.rs           # AppState, all render methods, event handlers (~1270 lines)
+│   ├── memory/           # Session/memory management (types, storage, search, snapshots)
+│   ├── sandbox/         # Terminal backends (Pty, optional Docker)
+│   └── services/        # Config loading and chat API calls
+└── components/           # Reusable GPUI components crate
     ├── Cargo.toml
     └── src/
         ├── lib.rs
-        └── text_input.rs  # TextInput component (Entity-based, implements keyboard input)
+        ├── text_input.rs   # Entity-based text input with keyboard handling
+        ├── button.rs       # Button with interaction states
+        ├── checkbox.rs    # Checkbox with checked/indeterminate
+        └── traits/        # Component state and trait definitions
 ```
 
 ## Important Patterns

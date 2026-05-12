@@ -8,6 +8,7 @@ use gpui::{
 use std::sync::Arc;
 use std::path::PathBuf;
 use image::RgbaImage;
+use dirs;
 
 use gpui_platform::application;
 use editor::Editor;
@@ -66,6 +67,7 @@ struct AppState {
     workspaces: Vec<Workspace>,
     active_workspace_id: Option<usize>,
     active_task_id: Option<usize>,
+    default_work_dir: PathBuf,
     sidebar_visible: bool,
     terminal_visible: bool,
     terminal_width: f32,
@@ -142,11 +144,12 @@ impl AppState {
                 .collect()
         };
 
-        Self {
+        let mut state = Self {
             db,
             workspaces,
             active_workspace_id: None,
             active_task_id: None,
+            default_work_dir: dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
             sidebar_visible: false,
             terminal_visible: false,
             terminal_width: 500.0,
@@ -167,7 +170,21 @@ impl AppState {
             terminal_input: String::new(),
             terminal_history: vec![],
             terminal_history_index: -1,
+        };
+
+        // Ensure default workspace exists if no workspaces loaded
+        if state.workspaces.is_empty() {
+            let default_ws = Workspace {
+                id: 1,
+                name: "Default".to_string(),
+                path: state.default_work_dir.clone(),
+                tasks: vec![],
+                expanded: true,
+            };
+            state.workspaces.push(default_ws);
         }
+
+        state
     }
 
     fn get_active_workspace(&self) -> Option<&Workspace> {
@@ -181,6 +198,14 @@ impl AppState {
     fn get_active_task(&self) -> Option<&TaskItem> {
         self.get_active_workspace()
             .and_then(|w| w.tasks.iter().find(|t| Some(t.id) == self.active_task_id))
+    }
+
+    fn get_work_dir(&self) -> String {
+        if let Some(id) = self.active_task_id {
+            format!("/tmp/solo3_task_{}", id)
+        } else {
+            self.default_work_dir.to_string_lossy().to_string()
+        }
     }
 
     fn add_workspace(&mut self, path: PathBuf, name: String) {
@@ -352,15 +377,44 @@ impl AppState {
     }
 
     fn handle_new_task_click(&mut self, cx: &mut Context<Self>) {
+        // First ensure default workspace exists
+        self.ensure_default_workspace();
+
         if let Some((path, name)) = Self::pick_folder_dialog() {
             self.add_workspace(path, name);
             if let Some(ws_id) = self.active_workspace_id {
                 self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
             }
+        } else {
+            // No folder selected - add task to first workspace (default)
+            if let Some(ws) = self.workspaces.first() {
+                if self.active_workspace_id.is_none() {
+                    self.active_workspace_id = Some(ws.id);
+                }
+                if let Some(ws_id) = self.active_workspace_id {
+                    self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                }
+            }
+        }
+    }
+
+    fn ensure_default_workspace(&mut self) {
+        if self.workspaces.is_empty() {
+            let default_ws = Workspace {
+                id: 1,
+                name: "Default".to_string(),
+                path: self.default_work_dir.clone(),
+                tasks: vec![],
+                expanded: true,
+            };
+            self.workspaces.push(default_ws);
         }
     }
 
     fn render_task_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Ensure default workspace exists before rendering
+        self.ensure_default_workspace();
+
         let workspaces = self.workspaces.clone();
         let active_workspace_id = self.active_workspace_id;
         let active_task_id = self.active_task_id;
@@ -506,6 +560,7 @@ impl AppState {
 
     fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.get_active_task().map(|t| t.title.clone()).unwrap_or_else(|| "No task selected".to_string());
+        let work_dir = self.get_work_dir();
         let sidebar_visible = self.sidebar_visible;
         let terminal_visible = self.terminal_visible;
         let scroll_handle = self.chat_scroll_handle.clone();
@@ -516,7 +571,7 @@ impl AppState {
             .flex_1()
             .h_full()
             .min_w(px(350.0))
-            .child(self.render_chat_header(title, sidebar_visible, terminal_visible, cx))
+            .child(self.render_chat_header(title, work_dir, sidebar_visible, terminal_visible, cx))
             .child(
                 div()
                     .id("chat_container")
@@ -531,7 +586,7 @@ impl AppState {
             .child(self.render_composer(window, cx))
     }
 
-    fn render_chat_header(&mut self, title: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_header(&mut self, title: String, work_dir: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
@@ -543,7 +598,14 @@ impl AppState {
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT)
+                            .child(format!("📁 {}", work_dir))
+                    )
                     .child(
                         div()
                             .id("terminal-toggle")
@@ -1140,9 +1202,7 @@ impl AppState {
         let width = self.terminal_width;
 
         // Get working directory based on active task
-        let work_dir = self.active_task_id
-            .map(|id| format!("/tmp/solo3_task_{}", id))
-            .unwrap_or_else(|| "~/solo3".to_string());
+        let work_dir = self.get_work_dir();
 
         // Create terminal input editor
         let terminal_editor = window.use_keyed_state("terminal_editor", &mut *cx, |window, cx| {

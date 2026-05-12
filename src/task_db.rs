@@ -114,6 +114,18 @@ pub fn delete_task(conn: &Connection, task_id: usize) -> Result<()> {
     Ok(())
 }
 
+pub fn delete_workspace(conn: &Connection, workspace_id: usize) -> Result<()> {
+    // Delete all tasks in the workspace first
+    let mut stmt = Statement::prepare(conn, "DELETE FROM tasks WHERE workspace_id = ?")?;
+    stmt.with_bindings(&workspace_id)?;
+    stmt.exec()?;
+    // Delete the workspace
+    let mut stmt = Statement::prepare(conn, "DELETE FROM workspaces WHERE id = ?")?;
+    stmt.with_bindings(&workspace_id)?;
+    stmt.exec()?;
+    Ok(())
+}
+
 pub fn update_workspace_expanded(conn: &Connection, workspace_id: usize, expanded: bool) -> Result<()> {
     let mut stmt = Statement::prepare(conn, "UPDATE workspaces SET expanded = ? WHERE id = ?")?;
     let expanded_i64 = expanded as i64;

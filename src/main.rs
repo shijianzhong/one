@@ -84,6 +84,8 @@ struct AppState {
     chat_scroll_handle: ScrollHandle,
     needs_auto_scroll: bool,
     sandbox_backend: Backend,
+    hovered_workspace_id: Option<usize>,
+    delete_confirm_workspace_id: Option<usize>,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
     terminal_input: String,
@@ -170,6 +172,8 @@ impl AppState {
             terminal_input: String::new(),
             terminal_history: vec![],
             terminal_history_index: -1,
+            hovered_workspace_id: None,
+            delete_confirm_workspace_id: None,
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -449,6 +453,9 @@ impl AppState {
                 .rounded_md()
                 .bg(ws_bg)
                 .cursor_pointer()
+                .on_mouse_move(cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
+                    this.hovered_workspace_id = Some(ws_id);
+                }))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
                     this.active_workspace_id = Some(ws_id);
                     if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
@@ -479,6 +486,50 @@ impl AppState {
                 }));
 
             let ws_label = workspace.name.clone();
+
+            let show_more = self.hovered_workspace_id == Some(ws_id) && self.delete_confirm_workspace_id != Some(ws_id);
+            let show_delete = self.delete_confirm_workspace_id == Some(ws_id);
+
+            let action_div = div().ml_auto().flex().items_center().gap_3();
+            let action_div = if show_more {
+                action_div.child(
+                    div()
+                        .id(format!("more-btn-{}", ws_id))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
+                            cx.stop_propagation();
+                            this.delete_confirm_workspace_id = Some(ws_id);
+                        }))
+                        .child(svg().external_path("assets/more.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT))
+                ).child(add_btn.child("+"))
+            } else if show_delete {
+                action_div.child(
+                    div()
+                        .text_base()
+                        .text_color(PRIMARY_TEXT)
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(BORDER_LIGHT)
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
+                            cx.stop_propagation();
+                            this.workspaces.retain(|w| w.id != ws_id);
+                            task_db::delete_workspace(&this.db.conn, ws_id).ok();
+                            if this.active_workspace_id == Some(ws_id) {
+                                this.active_workspace_id = None;
+                            }
+                            if this.active_task_id.is_some() && this.hovered_workspace_id == Some(ws_id) {
+                                this.active_task_id = None;
+                            }
+                            this.delete_confirm_workspace_id = None;
+                            this.hovered_workspace_id = None;
+                            cx.notify();
+                        }))
+                        .child("Delete")
+                )
+            } else {
+                action_div.child(add_btn.child("+"))
+            };
+
             result = result.child(
                 ws_row.child(
                     if workspace.expanded {
@@ -495,7 +546,7 @@ impl AppState {
                 ).child(
                     div().text_sm().ml_1().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
                 ).child(
-                    div().ml_auto().child(add_btn.child("+"))
+                    div().ml_auto().flex().items_center().gap_3().child(action_div)
                 )
             );
 

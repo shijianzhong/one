@@ -201,8 +201,13 @@ impl AppState {
     }
 
     fn get_work_dir(&self) -> String {
-        if let Some(id) = self.active_task_id {
-            format!("/tmp/one_task_{}", id)
+        // 优先使用 active workspace 的真实路径
+        if let Some(ws) = self.get_active_workspace() {
+            return ws.path.to_string_lossy().to_string();
+        }
+        // fallback 到临时目录（只有当没有任何 workspace 时）
+        if let Some(task_id) = self.active_task_id {
+            format!("/tmp/one_task_{}", task_id)
         } else {
             self.default_work_dir.to_string_lossy().to_string()
         }

@@ -1,7 +1,7 @@
 //! Base Component trait for reusable UI elements.
 //!
 //! The `Component` trait is the foundation for building stateful widgets
-//! in the solo3_gpui component library. It follows the Elm architecture
+//! in the one_gpui component library. It follows the Elm architecture
 //! pattern adapted for GPUI's Entity/Context system.
 //!
 //! # Lifecycle
@@ -120,7 +120,7 @@ impl InteractionState {
     }
 }
 
-/// Base trait for all components in the solo3_gpui component library.
+/// Base trait for all components in the one_gpui component library.
 ///
 /// Components are self-contained UI elements that manage their own state
 /// and respond to user interactions through a message-based system.

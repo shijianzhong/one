@@ -5924,6 +5924,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "one"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal 0.26.0",
+ "anyhow",
+ "async-trait",
+ "bollard",
+ "dirs 5.0.1",
+ "editor",
+ "env_logger",
+ "futures",
+ "gpui",
+ "gpui_linux",
+ "gpui_macros",
+ "gpui_platform",
+ "gpui_shared_string",
+ "gpui_tokio",
+ "gpui_util",
+ "http",
+ "image",
+ "log",
+ "menu",
+ "one_components",
+ "portable-pty",
+ "reqwest",
+ "reqwest_client",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "settings",
+ "sqlez",
+ "theme",
+ "theme_settings",
+ "tokio",
+]
+
+[[package]]
+name = "one_components"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_linux",
+ "gpui_macros",
+ "gpui_shared_string",
+ "gpui_util",
+]
+
+[[package]]
 name = "oo7"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8382,54 +8430,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "solo3_components"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "gpui_linux",
- "gpui_macros",
- "gpui_shared_string",
- "gpui_util",
-]
-
-[[package]]
-name = "solo3_gpui"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal 0.26.0",
- "anyhow",
- "async-trait",
- "bollard",
- "dirs 5.0.1",
- "editor",
- "env_logger",
- "futures",
- "gpui",
- "gpui_linux",
- "gpui_macros",
- "gpui_platform",
- "gpui_shared_string",
- "gpui_tokio",
- "gpui_util",
- "http",
- "image",
- "log",
- "menu",
- "portable-pty",
- "reqwest",
- "reqwest_client",
- "serde",
- "serde_json",
- "serde_yaml",
- "settings",
- "solo3_components",
- "sqlez",
- "theme",
- "theme_settings",
- "tokio",
 ]
 
 [[package]]

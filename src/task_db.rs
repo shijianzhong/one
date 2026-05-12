@@ -12,7 +12,7 @@ pub struct Database {
 impl Database {
     pub fn new() -> Result<Self> {
         let db_path = get_db_path();
-        let conn = Connection::open_file(db_path.to_str().unwrap_or("solo3.db"));
+        let conn = Connection::open_file(db_path.to_str().unwrap_or("one.db"));
         let conn_ref = &conn;
 
         // Create tables
@@ -38,9 +38,9 @@ impl Database {
 fn get_db_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".solo3_gpui");
+        .join(".one");
     std::fs::create_dir_all(&config_dir).ok();
-    config_dir.join("solo3.db")
+    config_dir.join("one.db")
 }
 
 #[derive(Debug, Clone)]

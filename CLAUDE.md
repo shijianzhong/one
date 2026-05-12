@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**solo3_gpui** is a Rust GUI application built on GPUI (Zed editor's GUI framework) for the SOLO 3.0 project. It provides a chat-based UI with workspace/task management, terminal integration, and model service configuration.
+**one** is a Rust GUI application built on GPUI (Zed editor's GUI framework) for the ONE project. It provides a chat-based UI with workspace/task management, terminal integration, and model service configuration.
 
 ## Build & Run Commands
 
@@ -16,7 +16,7 @@ cargo build
 cargo run
 
 # Build a specific crate
-cargo build -p solo3_components
+cargo build -p one_components
 
 # Clean and rebuild
 cargo clean && cargo build
@@ -72,7 +72,7 @@ AppState (main struct)
 ## Project Structure
 
 ```
-solo3_gpui/
+one_gpui/
 ├── Cargo.toml              # Main application manifest
 ├── src/
 │   ├── main.rs           # AppState, all render methods, event handlers (~1270 lines)

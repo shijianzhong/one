@@ -21,7 +21,7 @@ impl Default for Config {
 fn get_config_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".solo3_gpui");
+        .join(".one");
     std::fs::create_dir_all(&config_dir).ok();
     config_dir.join("config.json")
 }

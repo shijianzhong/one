@@ -202,7 +202,7 @@ impl AppState {
 
     fn get_work_dir(&self) -> String {
         if let Some(id) = self.active_task_id {
-            format!("/tmp/solo3_task_{}", id)
+            format!("/tmp/one_task_{}", id)
         } else {
             self.default_work_dir.to_string_lossy().to_string()
         }
@@ -1336,7 +1336,7 @@ impl AppState {
 }
 
 fn main() {
-    println!("SOLO 3.0 GUI PoC - Starting...");
+    println!("ONE GUI - Starting...");
 
     env_logger::init();
 

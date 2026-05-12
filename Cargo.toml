@@ -1,5 +1,5 @@
 [package]
-name = "solo3_gpui"
+name = "one"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -18,7 +18,7 @@ settings = { path = "/Users/shijianzhong/sking/zed/crates/settings" }
 theme = { path = "/Users/shijianzhong/sking/zed/crates/theme" }
 theme_settings = { path = "/Users/shijianzhong/sking/zed/crates/theme_settings" }
 menu = { path = "/Users/shijianzhong/sking/zed/crates/menu" }
-solo3_components = { path = "./components" }
+one_components = { path = "./components" }
 sqlez = { path = "/Users/shijianzhong/sking/zed/crates/sqlez" }
 alacritty_terminal = "0.26"
 portable-pty = "0.9"

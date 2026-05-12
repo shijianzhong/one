@@ -38,7 +38,7 @@ impl PtyBackend {
     }
 
     fn get_working_dir(&self, task_id: usize) -> PathBuf {
-        PathBuf::from(format!("/tmp/solo3_task_{}", task_id))
+        PathBuf::from(format!("/tmp/one_task_{}", task_id))
     }
 }
 
@@ -191,7 +191,7 @@ pub mod docker {
             let container = self.docker
                 .create_container(
                     Some(CreateContainerOptions {
-                        name: format!("solo3-task-{}", task_id),
+                        name: format!("one-task-{}", task_id),
                         platform: None,
                     }),
                     config,

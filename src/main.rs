@@ -1,7 +1,7 @@
 use gpui::{
     svg,
     App, AppContext as _, Bounds, Context, DragMoveEvent,
-    Hsla, IntoElement, ParentElement, px, size, Render,
+    Hsla, IntoElement, ParentElement, Point, Pixels, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable, ScrollHandle,
 };
@@ -86,6 +86,7 @@ struct AppState {
     sandbox_backend: Backend,
     hovered_workspace_id: Option<usize>,
     delete_confirm_workspace_id: Option<usize>,
+    popup_position: Point<Pixels>,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
     terminal_input: String,
@@ -174,6 +175,7 @@ impl AppState {
             terminal_history_index: -1,
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
+            popup_position: Point::default(),
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -301,6 +303,9 @@ impl Render for AppState {
             })
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(_window, cx))
+            })
+            .when(self.delete_confirm_workspace_id.is_some(), |this| {
+                this.child(self.render_workspace_popup(cx))
             })
     }
 }
@@ -434,7 +439,11 @@ impl AppState {
             .flex_1()
             .p_3()
             .id("task-list")
-            .overflow_scroll();
+            .overflow_scroll()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                // Close dropdown when clicking elsewhere
+                this.delete_confirm_workspace_id = None;
+            }));
 
         result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child("WORKSPACES"));
 
@@ -487,48 +496,18 @@ impl AppState {
 
             let ws_label = workspace.name.clone();
 
-            let show_more = self.hovered_workspace_id == Some(ws_id) && self.delete_confirm_workspace_id != Some(ws_id);
-            let show_delete = self.delete_confirm_workspace_id == Some(ws_id);
+            let more_btn = div()
+                .id(format!("more-btn-{}", ws_id))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
+                    cx.stop_propagation();
+                    this.delete_confirm_workspace_id = Some(ws_id);
+                    this.popup_position = event.position;
+                }))
+                .child(svg().external_path("assets/more.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT));
 
-            let action_div = div().ml_auto().flex().items_center().gap_3();
-            let action_div = if show_more {
-                action_div.child(
-                    div()
-                        .id(format!("more-btn-{}", ws_id))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
-                            cx.stop_propagation();
-                            this.delete_confirm_workspace_id = Some(ws_id);
-                        }))
-                        .child(svg().external_path("assets/more.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT))
-                ).child(add_btn.child("+"))
-            } else if show_delete {
-                action_div.child(
-                    div()
-                        .text_base()
-                        .text_color(PRIMARY_TEXT)
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(BORDER_LIGHT)
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
-                            cx.stop_propagation();
-                            this.workspaces.retain(|w| w.id != ws_id);
-                            task_db::delete_workspace(&this.db.conn, ws_id).ok();
-                            if this.active_workspace_id == Some(ws_id) {
-                                this.active_workspace_id = None;
-                            }
-                            if this.active_task_id.is_some() && this.hovered_workspace_id == Some(ws_id) {
-                                this.active_task_id = None;
-                            }
-                            this.delete_confirm_workspace_id = None;
-                            this.hovered_workspace_id = None;
-                            cx.notify();
-                        }))
-                        .child("Delete")
-                )
-            } else {
-                action_div.child(add_btn.child("+"))
-            };
+            let action_div = div().ml_auto().flex().items_center().gap_3()
+                .child(more_btn)
+                .child(add_btn.child("+"));
 
             result = result.child(
                 ws_row.child(
@@ -546,7 +525,8 @@ impl AppState {
                 ).child(
                     div().text_sm().ml_1().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
                 ).child(
-                    div().ml_auto().flex().items_center().gap_3().child(action_div)
+                    div().ml_auto().flex().items_center().gap_3()
+                        .child(action_div)
                 )
             );
 
@@ -885,6 +865,73 @@ impl AppState {
                                     }))
                                     .child(div().text_sm().text_color(gpui::white()).child("Save"))
                             )
+                    )
+            )
+    }
+
+    fn render_workspace_popup(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ws_id = self.delete_confirm_workspace_id.unwrap_or(0);
+        let pos = self.popup_position;
+        div()
+            .absolute()
+            .left(pos.x)
+            .top(pos.y)
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
+                this.delete_confirm_workspace_id = None;
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .w(px(180.0))
+                    .p_3()
+                    .bg(CARD_BG)
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .shadow_md()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_sm()
+                            .text_color(PRIMARY_TEXT)
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(ACTIVE_BG))
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                                this.active_workspace_id = Some(ws_id);
+                                this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                                this.delete_confirm_workspace_id = None;
+                            }))
+                            .child("添加新任务")
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_sm()
+                            .text_color(PRIMARY_TEXT)
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(ACTIVE_BG))
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                                this.workspaces.retain(|w| w.id != ws_id);
+                                task_db::delete_workspace(&this.db.conn, ws_id).ok();
+                                if this.active_workspace_id == Some(ws_id) {
+                                    this.active_workspace_id = None;
+                                }
+                                if this.active_task_id.is_some() {
+                                    this.active_task_id = None;
+                                }
+                                this.delete_confirm_workspace_id = None;
+                                cx.notify();
+                            }))
+                            .child("删除 Workspace")
                     )
             )
     }

@@ -1,6 +1,6 @@
-# ONE - 轻量级 AI 编程助手
+# ONE - 轻量级 AI 智能体
 
-**ONE** 是一个基于 Rust + [GPUI](https://github.com/zed-industries/zed) 构建的轻量级 AI 编程助手。不同于市面上的 Electron/VSCode 二开方案，它从零开始拥抱 Rust，给你一个真正轻快、无负担的编程体验。
+**ONE** 是一个基于 Rust + [GPUI](https://github.com/zed-industries/zed) 构建的轻量级 AI 智能体。不同于市面上的 Electron/VSCode 二开方案，它从零开始拥抱 Rust，给你一个真正轻快、无负担的编程体验。
 
 ---
 

@@ -105,6 +105,53 @@ struct TerminalLine {
 }
 
 #[derive(Debug, Clone)]
+struct ContentPart {
+    text: String,
+    is_think: bool,
+}
+
+fn parse_think_content(content: &str) -> Vec<ContentPart> {
+    let mut parts = Vec::new();
+    let mut current_pos = 0;
+
+    for cap in content.match_indices("<think>") {
+        let start = cap.0;
+        if current_pos < start {
+            parts.push(ContentPart {
+                text: content[current_pos..start].to_string(),
+                is_think: false,
+            });
+        }
+
+        if let Some(end) = content[start..].find("</think>") {
+            let end = start + end + "</think>".len();
+            let think_content = &content[start..end];
+            parts.push(ContentPart {
+                text: think_content.to_string(),
+                is_think: true,
+            });
+            current_pos = end;
+        }
+    }
+
+    if current_pos < content.len() {
+        parts.push(ContentPart {
+            text: content[current_pos..].to_string(),
+            is_think: false,
+        });
+    }
+
+    if parts.is_empty() {
+        parts.push(ContentPart {
+            text: content.to_string(),
+            is_think: false,
+        });
+    }
+
+    parts
+}
+
+#[derive(Debug, Clone)]
 struct Workspace {
     id: usize,
     name: String,
@@ -645,7 +692,7 @@ impl AppState {
                     .overflow_y_scroll()
                     .track_scroll(&scroll_handle)
                     .p_4()
-                    .child(self.render_chat_messages(&scroll_handle, cx))
+                    .child(self.render_chat_messages(&scroll_handle, window, cx))
             )
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_composer(window, cx))
@@ -965,9 +1012,10 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
         let is_user = |role: &str| role == "user";
+        let lang = self.current_lang;
 
         // Auto-scroll to bottom only when needs_auto_scroll is set
         if self.needs_auto_scroll && !messages.is_empty() {
@@ -988,7 +1036,10 @@ impl AppState {
                 };
                 let text_color = if is_user_msg { gpui::white() } else { Hsla { h: 0.0, s: 0.0, l: 0.15, a: 1.0 } };
                 let avatar_icon = if is_user_msg { "👤" } else { "🤖" };
-                let role_label = if is_user_msg { "You" } else { "Assistant" };
+                let role_label = if is_user_msg { t(lang, Translations::YOU) } else { t(lang, Translations::ASSISTANT) };
+
+                // Parse content for think tags
+                let parts = parse_think_content(&msg.content);
 
                 // User messages: right aligned, Assistant messages: left aligned
                 let message_container = if is_user_msg {
@@ -1051,13 +1102,24 @@ impl AppState {
                                 .max_w(px(520.0))
                                 .min_w(px(35.0))
                                 .w_full()
-                                .child(
-                                    div()
-                                        .text_base()
-                                        .text_color(text_color)
-                                        .whitespace_normal()
-                                        .child(msg.content.clone())
-                                )
+                                .children(parts.iter().map(|part| {
+                                    if part.is_think {
+                                        // Think content: small, muted, indented
+                                        div()
+                                            .pl_4()
+                                            .py_1()
+                                            .text_sm()
+                                            .text_color(TERTIARY_TEXT)
+                                            .whitespace_normal()
+                                            .child(part.text.clone())
+                                    } else {
+                                        div()
+                                            .text_base()
+                                            .text_color(text_color)
+                                            .whitespace_normal()
+                                            .child(part.text.clone())
+                                    }
+                                }))
                         )
                 };
 

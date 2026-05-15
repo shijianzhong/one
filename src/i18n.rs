@@ -49,6 +49,7 @@ impl Translations {
     pub const SEND: (&'static str, &'static str) = ("发送", "Send");
     pub const YOU: (&'static str, &'static str) = ("你", "You");
     pub const ASSISTANT: (&'static str, &'static str) = ("助手", "Assistant");
+    pub const THINK: (&'static str, &'static str) = ("思考", "Think");
 
     // Model config dialog
     pub const MODEL_SERVICE_CONFIG: (&'static str, &'static str) = ("模型服务配置", "Model Service Config");

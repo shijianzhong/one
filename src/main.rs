@@ -19,11 +19,13 @@ use theme_settings;
 
 use gpui::FontWeight;
 
+mod i18n;
 mod memory;
 mod sandbox;
 mod services;
 mod task_db;
 
+use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
@@ -44,6 +46,7 @@ gpui::actions!(
         SaveModelConfig,
         CancelModelConfig,
         SendMessage,
+        ToggleLang,
     ]
 );
 
@@ -77,6 +80,7 @@ struct AppState {
     model_base_url: String,
     model_api_key: String,
     model_name: String,
+    current_lang: Lang,
     editing_model_name: String,
     editing_base_url: String,
     editing_api_key: String,
@@ -162,6 +166,7 @@ impl AppState {
             model_base_url: config.model_base_url,
             model_api_key: config.model_api_key,
             model_name: config.model_name,
+            current_lang: config.lang,
             editing_model_name: "gpt-4".to_string(),
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
@@ -269,6 +274,7 @@ impl AppState {
             model_base_url: self.model_base_url.clone(),
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
+            lang: self.current_lang,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save config: {}", e);
@@ -279,6 +285,20 @@ impl AppState {
 
     fn cancel_model_config(&mut self, _: &CancelModelConfig, _: &mut Window, cx: &mut Context<Self>) {
         self.show_model_config_dialog = false;
+        cx.notify();
+    }
+
+    fn toggle_lang(&mut self, _: &ToggleLang, _: &mut Window, cx: &mut Context<Self>) {
+        self.current_lang = self.current_lang.toggle();
+        let config = Config {
+            model_base_url: self.model_base_url.clone(),
+            model_api_key: self.model_api_key.clone(),
+            model_name: self.model_name.clone(),
+            lang: self.current_lang,
+        };
+        if let Err(e) = save_config(&config) {
+            eprintln!("Failed to save lang config: {}", e);
+        }
         cx.notify();
     }
 
@@ -326,32 +346,46 @@ impl AppState {
     }
 
     fn render_nav_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         div()
             .flex()
             .items_center()
             .h(px(40.0))
             .px_4()
-            .child(div().text_base().text_color(PRIMARY_TEXT).font_weight(FontWeight::BOLD).child("ONE"))
+            .child(div().text_base().text_color(PRIMARY_TEXT).font_weight(FontWeight::BOLD).child(t(lang, Translations::NAV_ONE)))
+            .child(
+                div()
+                    .ml_3()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(MUTED_TEXT)
+                    .cursor_pointer()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.toggle_lang(&ToggleLang, _window, cx);
+                    }))
+                    .child(lang.label())
+            )
     }
 
     fn render_nav_buttons(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let mut nav = div()
             .flex()
             .flex_col()
             .gap_1()
             .p_2();
 
-        nav = nav.child(self.make_nav_item("New Task", "⌘N", cx));
-        nav = nav.child(self.make_nav_item("Skills", "⌘S", cx));
-        nav = nav.child(self.make_nav_item("Automation", "⌘A", cx));
-        nav = nav.child(self.make_nav_item("Model Config", "⌘M", cx));
+        nav = nav.child(self.make_nav_item(t(lang, Translations::NEW_WORKSPACE).to_string(), "⌘N".to_string(), cx));
+        nav = nav.child(self.make_nav_item(t(lang, Translations::MODEL_CONFIG).to_string(), "⌘M".to_string(), cx));
 
         nav
     }
 
-    fn make_nav_item(&mut self, label: &'static str, shortcut: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_new_task = label == "New Task";
-        let is_model_config = label == "Model Config";
+    fn make_nav_item(&mut self, label: String, shortcut: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_new_workspace = label == t(self.current_lang, Translations::NEW_WORKSPACE);
+        let is_model_config = label == t(self.current_lang, Translations::MODEL_CONFIG);
 
         div()
             .flex()
@@ -361,9 +395,9 @@ impl AppState {
             .py_2()
             .rounded_md()
             .cursor_pointer()
-            .when(is_new_task, |this| {
+            .when(is_new_workspace, |this| {
                 this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                    this.handle_new_task_click(cx);
+                    this.handle_new_workspace_click(cx);
                 }))
             })
             .when(is_model_config, |this| {
@@ -390,21 +424,16 @@ impl AppState {
         Some((path, name))
     }
 
-    fn handle_new_task_click(&mut self, cx: &mut Context<Self>) {
-        // First ensure default workspace exists
-        self.ensure_default_workspace();
-
+    fn handle_new_workspace_click(&mut self, cx: &mut Context<Self>) {
         if let Some((path, name)) = Self::pick_folder_dialog() {
-            self.add_workspace(path, name);
-            if let Some(ws_id) = self.active_workspace_id {
-                self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
-            }
-        } else {
-            // No folder selected - add task to first workspace (default)
-            if let Some(ws) = self.workspaces.first() {
-                if self.active_workspace_id.is_none() {
-                    self.active_workspace_id = Some(ws.id);
-                }
+            // 检查是否已存在相同路径的 workspace
+            if let Some(existing_ws) = self.workspaces.iter().find(|w| w.path == path) {
+                // 已存在 → 直接激活
+                self.active_workspace_id = Some(existing_ws.id);
+                self.active_task_id = None;
+            } else {
+                // 不存在 → 创建新 workspace + New Task
+                self.add_workspace(path, name);
                 if let Some(ws_id) = self.active_workspace_id {
                     self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                 }

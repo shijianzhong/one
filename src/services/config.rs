@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::i18n::Lang;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub model_base_url: String,
     pub model_api_key: String,
     pub model_name: String,
+    pub lang: Lang,
 }
 
 impl Default for Config {
@@ -14,6 +17,7 @@ impl Default for Config {
             model_base_url: "https://api.openai.com/v1".to_string(),
             model_api_key: "".to_string(),
             model_name: "gpt-4".to_string(),
+            lang: Lang::Zh,
         }
     }
 }

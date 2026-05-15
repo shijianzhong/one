@@ -47,6 +47,7 @@ gpui::actions!(
         CancelModelConfig,
         SendMessage,
         ToggleLang,
+        ExportChat,
     ]
 );
 
@@ -77,6 +78,9 @@ struct AppState {
     terminal_resize_initial_mouse_x: Option<f32>,
     terminal_resize_initial_width: Option<f32>,
     show_model_config_dialog: bool,
+    show_export_dialog: bool,
+    exported_json: Option<String>,
+    exported_md: Option<String>,
     model_base_url: String,
     model_api_key: String,
     model_name: String,
@@ -210,6 +214,9 @@ impl AppState {
             terminal_resize_initial_mouse_x: None,
             terminal_resize_initial_width: None,
             show_model_config_dialog: false,
+            show_export_dialog: false,
+            exported_json: None,
+            exported_md: None,
             model_base_url: config.model_base_url,
             model_api_key: config.model_api_key,
             model_name: config.model_name,
@@ -349,6 +356,19 @@ impl AppState {
         cx.notify();
     }
 
+    fn export_chat(&mut self, _: &ExportChat, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(task_id) = self.active_task_id {
+            if let Some(task) = self.get_active_task() {
+                let json = task_db::export_messages_json(&self.db.conn, task_id).unwrap_or_default();
+                let md = task_db::export_messages_markdown(&self.db.conn, task_id, &task.title).unwrap_or_default();
+                self.exported_json = Some(json);
+                self.exported_md = Some(md);
+                self.show_export_dialog = true;
+                cx.notify();
+            }
+        }
+    }
+
 }
 
 impl Render for AppState {
@@ -370,6 +390,9 @@ impl Render for AppState {
             })
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(_window, cx))
+            })
+            .when(self.show_export_dialog, |this| {
+                this.child(self.render_export_dialog(cx))
             })
             .when(self.delete_confirm_workspace_id.is_some(), |this| {
                 this.child(self.render_workspace_popup(cx))
@@ -629,10 +652,20 @@ impl AppState {
                     let ws_id = workspace.id;
 
                     task_div = task_div
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                             this.active_workspace_id = Some(ws_id);
                             this.active_task_id = Some(task_id);
-                            _cx.notify();
+                            // Load messages for the selected task
+                            if let Some(tid) = this.active_task_id {
+                                let msgs = task_db::load_messages(&this.db.conn, tid).unwrap_or_default();
+                                this.messages = msgs.into_iter().map(|m| ChatMessage {
+                                    role: m.role,
+                                    content: m.content,
+                                }).collect();
+                            } else {
+                                this.messages.clear();
+                            }
+                            cx.notify();
                         }));
 
                     tasks_container = tasks_container.child(
@@ -689,7 +722,7 @@ impl AppState {
                     .id("chat_container")
                     .flex_1()
                     .w_full()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
                     .track_scroll(&scroll_handle)
                     .p_4()
                     .child(self.render_chat_messages(&scroll_handle, window, cx))
@@ -699,6 +732,7 @@ impl AppState {
     }
 
     fn render_chat_header(&mut self, title: String, work_dir: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         div()
             .flex()
             .items_center()
@@ -717,6 +751,20 @@ impl AppState {
                             .text_xs()
                             .text_color(TERTIARY_TEXT)
                             .child(format!("📁 {}", work_dir))
+                    )
+                    .child(
+                        div()
+                            .id("export-btn")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(MUTED_TEXT)
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                this.export_chat(&ExportChat, _window, cx);
+                            }))
+                            .child(t(lang, Translations::EXPORT))
                     )
                     .child(
                         div()
@@ -1012,6 +1060,157 @@ impl AppState {
             )
     }
 
+    fn render_export_dialog(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
+        let json_content = self.exported_json.clone().unwrap_or_default();
+        let md_content = self.exported_md.clone().unwrap_or_default();
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                this.show_export_dialog = false;
+                this.exported_json = None;
+                this.exported_md = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(500.0))
+                    .h(px(400.0))
+                    .p_5()
+                    .bg(CARD_BG)
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .shadow_md()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child(t(lang, Translations::EXPORT))
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(200.0))
+                                    .p_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .overflow_hidden()
+                                    .text_xs()
+                                    .text_color(PRIMARY_TEXT)
+                                    .child(format!("JSON:\n{}", json_content))
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(200.0))
+                                    .p_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .overflow_hidden()
+                                    .text_xs()
+                                    .text_color(PRIMARY_TEXT)
+                                    .child(format!("Markdown:\n{}", md_content))
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        if let Some(json) = this.exported_json.clone() {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_title("Export JSON")
+                                                .add_filter("JSON", &["json"])
+                                                .save_file() {
+                                                std::fs::write(&path, json).ok();
+                                            }
+                                        }
+                                        this.show_export_dialog = false;
+                                        this.exported_json = None;
+                                        this.exported_md = None;
+                                        cx.notify();
+                                    }))
+                                    .child("Save JSON")
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        if let Some(md) = this.exported_md.clone() {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_title("Export Markdown")
+                                                .add_filter("Markdown", &["md"])
+                                                .save_file() {
+                                                std::fs::write(&path, md).ok();
+                                            }
+                                        }
+                                        this.show_export_dialog = false;
+                                        this.exported_json = None;
+                                        this.exported_md = None;
+                                        cx.notify();
+                                    }))
+                                    .child("Save Markdown")
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(BRAND_BLUE)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        this.show_export_dialog = false;
+                                        this.exported_json = None;
+                                        this.exported_md = None;
+                                        cx.notify();
+                                    }))
+                                    .child(t(lang, Translations::CANCEL))
+                            )
+                    )
+            )
+    }
+
     fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
         let is_user = |role: &str| role == "user";
@@ -1160,8 +1359,12 @@ impl AppState {
                                 let user_message = text.clone();
                                 this.messages.push(ChatMessage {
                                     role: "user".to_string(),
-                                    content: user_message,
+                                    content: user_message.clone(),
                                 });
+                                // Save user message to database
+                                if let Some(task_id) = this.active_task_id {
+                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                }
                                 this.needs_auto_scroll = true;
                                 editor.update(cx, |editor, cx| {
                                     editor.set_text("", _window, cx);
@@ -1197,8 +1400,12 @@ impl AppState {
                                             let _ = this.update(cx, |this, cx| {
                                                 this.messages.push(ChatMessage {
                                                     role: "assistant".to_string(),
-                                                    content: resp,
+                                                    content: resp.clone(),
                                                 });
+                                                // Save assistant message to database
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                                }
                                                 this.needs_auto_scroll = true;
                                                 cx.notify();
                                             });
@@ -1273,8 +1480,12 @@ impl AppState {
                                             let _ = this.update(cx, |this, cx| {
                                                 this.messages.push(ChatMessage {
                                                     role: "assistant".to_string(),
-                                                    content: resp,
+                                                    content: resp.clone(),
                                                 });
+                                                // Save assistant message to database
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                                }
                                                 this.needs_auto_scroll = true;
                                                 cx.notify();
                                             });

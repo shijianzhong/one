@@ -50,6 +50,7 @@ impl Translations {
     pub const YOU: (&'static str, &'static str) = ("你", "You");
     pub const ASSISTANT: (&'static str, &'static str) = ("助手", "Assistant");
     pub const THINK: (&'static str, &'static str) = ("思考", "Think");
+    pub const EXPORT: (&'static str, &'static str) = ("导出", "Export");
 
     // Model config dialog
     pub const MODEL_SERVICE_CONFIG: (&'static str, &'static str) = ("模型服务配置", "Model Service Config");

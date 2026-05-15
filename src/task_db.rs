@@ -124,6 +124,13 @@ pub fn update_task_status(conn: &Connection, task_id: usize, status: &str) -> Re
     Ok(())
 }
 
+pub fn update_task_title(conn: &Connection, task_id: usize, title: &str) -> Result<()> {
+    let mut stmt = Statement::prepare(conn, "UPDATE tasks SET title = ? WHERE id = ?")?;
+    stmt.with_bindings(&(title, task_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
 pub fn delete_task(conn: &Connection, task_id: usize) -> Result<()> {
     // Delete all messages for this task first
     let mut stmt = Statement::prepare(conn, "DELETE FROM messages WHERE task_id = ?")?;
@@ -188,6 +195,13 @@ pub fn insert_message(conn: &Connection, task_id: usize, role: &str, content: &s
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
     let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
     Ok(id as usize)
+}
+
+pub fn count_messages(conn: &Connection, task_id: usize) -> Result<usize> {
+    let mut stmt = Statement::prepare(conn, "SELECT COUNT(*) FROM messages WHERE task_id = ?")?;
+    stmt.with_bindings(&task_id)?;
+    let count: Vec<usize> = stmt.map(|s| s.column_int64(0).map(|v| v as usize))?.into_iter().collect();
+    Ok(count.into_iter().next().unwrap_or(0))
 }
 
 // Export messages to JSON format

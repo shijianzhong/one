@@ -13,6 +13,7 @@ use dirs;
 use gpui_platform::application;
 use editor::Editor;
 use menu::Confirm;
+use crate::services::summarize_conversation_sync;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 use theme;
 use theme_settings;
@@ -91,6 +92,7 @@ struct AppState {
     messages: Vec<ChatMessage>,
     chat_scroll_handle: ScrollHandle,
     needs_auto_scroll: bool,
+    pending_summarize: bool,
     sandbox_backend: Backend,
     hovered_workspace_id: Option<usize>,
     delete_confirm_workspace_id: Option<usize>,
@@ -112,6 +114,18 @@ struct TerminalLine {
 struct ContentPart {
     text: String,
     is_think: bool,
+}
+
+fn strip_think_tags(content: &str) -> String {
+    let mut result = content.to_string();
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result[start..].find("</think>") {
+            result = format!("{}{}", &result[..start], &result[start+end+"</think>".len()..]);
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 fn parse_think_content(content: &str) -> Vec<ContentPart> {
@@ -226,6 +240,7 @@ impl AppState {
             editing_api_key: "".to_string(),
             messages: vec![],
             needs_auto_scroll: false,
+            pending_summarize: false,
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
@@ -505,7 +520,19 @@ impl AppState {
                 // 不存在 → 创建新 workspace + New Task
                 self.add_workspace(path, name);
                 if let Some(ws_id) = self.active_workspace_id {
-                    self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                    // 查找是否有空的 New Task（没有聊天记录）
+                    let empty_task_id = self.workspaces.iter()
+                        .find(|w| w.id == ws_id)
+                        .and_then(|ws| ws.tasks.iter().find(|t| t.title == "New Task"))
+                        .and_then(|t| {
+                            let count = task_db::count_messages(&self.db.conn, t.id).unwrap_or(0);
+                            if count == 0 { Some(t.id) } else { None }
+                        });
+                    if let Some(task_id) = empty_task_id {
+                        self.active_task_id = Some(task_id);
+                    } else {
+                        self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                    }
                 }
             }
         }
@@ -1357,6 +1384,11 @@ impl AppState {
                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                             if !text.is_empty() {
                                 let user_message = text.clone();
+                                // Check if this is the first message
+                                let is_first_message = this.messages.is_empty();
+                                if is_first_message {
+                                    this.pending_summarize = true;
+                                }
                                 this.messages.push(ChatMessage {
                                     role: "user".to_string(),
                                     content: user_message.clone(),
@@ -1407,6 +1439,33 @@ impl AppState {
                                                     task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
                                                 }
                                                 this.needs_auto_scroll = true;
+
+                                                // AI summarization: summarize and update task title
+                                                if this.pending_summarize {
+                                                    this.pending_summarize = false;
+                                                    let task_id = this.active_task_id;
+                                                    let all_messages = this.messages.clone();
+                                                    let db_conn = &this.db.conn;
+                                                    let base_url = this.model_base_url.clone();
+                                                    let api_key = this.model_api_key.clone();
+                                                    let model = this.model_name.clone();
+                                                    if let Some(tid) = task_id {
+                                                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
+                                                            let clean_sum = strip_think_tags(&sum);
+                                                            let short_title: String = clean_sum.chars().take(10).collect();
+                                                            task_db::update_task_title(db_conn, tid, &short_title).ok();
+                                                            for ws in &mut this.workspaces {
+                                                                for t in &mut ws.tasks {
+                                                                    if t.id == tid {
+                                                                        t.title = short_title.clone();
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 cx.notify();
                                             });
                                             eprintln!("[DEBUG] UI updated");
@@ -1441,10 +1500,19 @@ impl AppState {
                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                             if !text.is_empty() {
                                 let user_message = text.clone();
+                                // Check if this is the first message
+                                let is_first_message = this.messages.is_empty();
+                                if is_first_message {
+                                    this.pending_summarize = true;
+                                }
                                 this.messages.push(ChatMessage {
                                     role: "user".to_string(),
-                                    content: user_message,
+                                    content: user_message.clone(),
                                 });
+                                // Save user message to database
+                                if let Some(task_id) = this.active_task_id {
+                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                }
                                 this.needs_auto_scroll = true;
                                 editor.update(cx, |editor, cx| {
                                     editor.set_text("", _window, cx);
@@ -1487,6 +1555,33 @@ impl AppState {
                                                     task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
                                                 }
                                                 this.needs_auto_scroll = true;
+
+                                                // AI summarization: summarize and update task title
+                                                if this.pending_summarize {
+                                                    this.pending_summarize = false;
+                                                    let task_id = this.active_task_id;
+                                                    let all_messages = this.messages.clone();
+                                                    let db_conn = &this.db.conn;
+                                                    let base_url = this.model_base_url.clone();
+                                                    let api_key = this.model_api_key.clone();
+                                                    let model = this.model_name.clone();
+                                                    if let Some(tid) = task_id {
+                                                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
+                                                            let clean_sum = strip_think_tags(&sum);
+                                                            let short_title: String = clean_sum.chars().take(10).collect();
+                                                            task_db::update_task_title(db_conn, tid, &short_title).ok();
+                                                            for ws in &mut this.workspaces {
+                                                                for t in &mut ws.tasks {
+                                                                    if t.id == tid {
+                                                                        t.title = short_title.clone();
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 cx.notify();
                                             });
                                             eprintln!("[DEBUG] UI updated");

@@ -513,26 +513,19 @@ impl AppState {
         if let Some((path, name)) = Self::pick_folder_dialog() {
             // 检查是否已存在相同路径的 workspace
             if let Some(existing_ws) = self.workspaces.iter().find(|w| w.path == path) {
-                // 已存在 → 直接激活
+                // 已存在 → 查找是否有 "New Task"，有则定位，无则新建
                 self.active_workspace_id = Some(existing_ws.id);
-                self.active_task_id = None;
+                if let Some(new_task) = existing_ws.tasks.iter().find(|t| t.title == "New Task") {
+                    self.active_task_id = Some(new_task.id);
+                } else {
+                    self.active_task_id = None;
+                    self.add_task_to_workspace(existing_ws.id, "New Task".to_string(), cx);
+                }
             } else {
                 // 不存在 → 创建新 workspace + New Task
                 self.add_workspace(path, name);
                 if let Some(ws_id) = self.active_workspace_id {
-                    // 查找是否有空的 New Task（没有聊天记录）
-                    let empty_task_id = self.workspaces.iter()
-                        .find(|w| w.id == ws_id)
-                        .and_then(|ws| ws.tasks.iter().find(|t| t.title == "New Task"))
-                        .and_then(|t| {
-                            let count = task_db::count_messages(&self.db.conn, t.id).unwrap_or(0);
-                            if count == 0 { Some(t.id) } else { None }
-                        });
-                    if let Some(task_id) = empty_task_id {
-                        self.active_task_id = Some(task_id);
-                    } else {
-                        self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
-                    }
+                    self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                 }
             }
         }
@@ -617,6 +610,14 @@ impl AppState {
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                     cx.stop_propagation();
                     this.active_workspace_id = Some(ws_id);
+                    // Check if there's already a "New Task" in this workspace
+                    if let Some(ws) = this.workspaces.iter().find(|w| w.id == ws_id) {
+                        if let Some(new_task) = ws.tasks.iter().find(|t| t.title == "New Task") {
+                            this.active_task_id = Some(new_task.id);
+                            return;
+                        }
+                    }
+                    // No New Task found, create one
                     this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                 }));
 
@@ -1055,6 +1056,15 @@ impl AppState {
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                 cx.stop_propagation();
                                 this.active_workspace_id = Some(ws_id);
+                                // Check if there's already a "New Task" in this workspace
+                                if let Some(ws) = this.workspaces.iter().find(|w| w.id == ws_id) {
+                                    if let Some(new_task) = ws.tasks.iter().find(|t| t.title == "New Task") {
+                                        this.active_task_id = Some(new_task.id);
+                                        this.delete_confirm_workspace_id = None;
+                                        return;
+                                    }
+                                }
+                                // No New Task found, create one
                                 this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
                                 this.delete_confirm_workspace_id = None;
                             }))

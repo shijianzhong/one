@@ -661,7 +661,7 @@ impl AppState {
             if workspace.expanded {
                 let mut tasks_container = div()
                     .flex_col()
-                    .ml_4();
+                    .ml_2();
 
                 for task in &workspace.tasks {
                     let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);
@@ -670,14 +670,16 @@ impl AppState {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .w_full()
                         .px_3()
                         .py_2()
-                        .ml_4()
+                        .ml_2()
                         .rounded_md()
                         .cursor_pointer();
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
+                    let title_display = task.title.trim().to_string();
 
                     task_div = task_div
                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -698,10 +700,7 @@ impl AppState {
 
                     tasks_container = tasks_container.child(
                         task_div.child(
-                            div().w(px(6.0)).h(px(6.0)).rounded_full()
-                                .bg(if is_active_task { BRAND_BLUE } else { MUTED_TEXT })
-                        ).child(
-                            div().text_sm().text_color(if is_active_task { BRAND_BLUE } else { PRIMARY_TEXT }).child(task.title.clone())
+                            div().flex_1().overflow_hidden().text_size(px(10.0)).text_color(if is_active_task { BRAND_BLUE } else { PRIMARY_TEXT }).text_ellipsis().child(title_display.clone())
                         ).child(
                             div()
                                 .ml_auto()

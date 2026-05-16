@@ -126,22 +126,26 @@ impl SandboxBackend for PtyBackend {
 #[cfg(feature = "sandbox")]
 pub mod docker {
     use super::*;
-    use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions};
+    use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, HostConfig, Binds};
     use bollard::Docker;
     use bollard::exec::{CreateExecOptions, StartExecResults};
+    use bollard::volume::CreateVolumeOptions;
 
     const SANDBOX_IMAGE: &str = "ubuntu:22.04";
     const SANDBOX_WORKSPACE_DIR: &str = "/sessions";
+    const MAX_CONTAINERS: usize = 5;
 
     pub struct DockerBackend {
         docker: Docker,
+        // task_id → container_id
         instances: Arc<Mutex<HashMap<usize, DockerInstance>>>,
+        // LRU queue (oldest first)
+        lru_queue: Arc<Mutex<Vec<usize>>>,
     }
 
     struct DockerInstance {
         container_id: String,
         task_id: usize,
-        workspace_path: String,
     }
 
     impl Clone for DockerInstance {
@@ -149,7 +153,6 @@ pub mod docker {
             Self {
                 container_id: self.container_id.clone(),
                 task_id: self.task_id,
-                workspace_path: self.workspace_path.clone(),
             }
         }
     }
@@ -162,7 +165,34 @@ pub mod docker {
             Ok(Self {
                 docker,
                 instances: Arc::new(Mutex::new(HashMap::new())),
+                lru_queue: Arc::new(Mutex::new(Vec::new())),
             })
+        }
+
+        fn get_host_work_dir(&self, task_id: usize) -> String {
+            format!("/tmp/one_task_{}", task_id)
+        }
+
+        async fn evict_oldest_container(&self) -> anyhow::Result<()> {
+            let mut queue = self.lru_queue.lock().await;
+            if queue.is_empty() {
+                return Ok(());
+            }
+
+            let oldest_task_id = queue.remove(0);
+            let mut instances = self.instances.lock().await;
+
+            if let Some(instance) = instances.remove(&oldest_task_id) {
+                eprintln!("[DockerBackend] Evicting container {} for task {}", instance.container_id, oldest_task_id);
+                let _ = self.docker.remove_container(
+                    &instance.container_id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                ).await;
+            }
+            Ok(())
         }
 
         async fn ensure_container(&self, task_id: usize) -> anyhow::Result<DockerInstance> {
@@ -170,28 +200,61 @@ pub mod docker {
             {
                 let instances = self.instances.lock().await;
                 if let Some(inst) = instances.get(&task_id) {
+                    // Move to end of LRU queue (most recently used)
+                    let mut queue = self.lru_queue.lock().await;
+                    if let Some(pos) = queue.iter().position(|&id| id == task_id) {
+                        queue.remove(pos);
+                        queue.push(task_id);
+                    }
                     return Ok(inst.clone());
                 }
             }
 
-            // Create new
-            let workspace_path = format!("{}/{}/workspace", SANDBOX_WORKSPACE_DIR, task_id);
+            // Ensure host directory exists
+            let host_work_dir = self.get_host_work_dir(task_id);
+            std::fs::create_dir_all(&host_work_dir)?;
+
+            // Check LRU and evict if needed
+            {
+                let queue = self.lru_queue.lock().await;
+                if queue.len() >= MAX_CONTAINERS {
+                    drop(queue);
+                    self.evict_oldest_container().await?;
+                }
+            }
+
+            // Create volume for bind mount
+            let volume_name = format!("one_task_{}", task_id);
+
+            // Create container with bind mount
             let config = Config {
                 image: Some(SANDBOX_IMAGE.to_string()),
                 cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
-                working_dir: Some("/".to_string()),
-                env: Some(vec![format!("TASK_ID={}", task_id)]),
-                host_config: Some(bollard::service::HostConfig {
-                    auto_remove: Some(true),
+                working_dir: Some(SANDBOX_WORKSPACE_DIR.to_string()),
+                host_config: Some(HostConfig {
+                    binds: Some(vec![
+                        format!("{}:{}", host_work_dir, SANDBOX_WORKSPACE_DIR),
+                    ]),
+                    auto_remove: Some(false), // We manage lifecycle manually
                     ..Default::default()
                 }),
                 ..Default::default()
             };
 
+            // Remove existing container with same name if exists
+            let container_name = format!("one-sandbox-{}", task_id);
+            let _ = self.docker.remove_container(
+                &container_name,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            ).await;
+
             let container = self.docker
                 .create_container(
                     Some(CreateContainerOptions {
-                        name: format!("one-task-{}", task_id),
+                        name: Some(container_name),
                         platform: None,
                     }),
                     config,
@@ -199,13 +262,26 @@ pub mod docker {
                 .await?;
 
             let instance = DockerInstance {
-                container_id: container.id,
+                container_id: container.id.clone(),
                 task_id,
-                workspace_path,
             };
 
-            let mut instances = self.instances.lock().await;
-            instances.insert(task_id, instance.clone());
+            // Start the container
+            self.docker.start_container(&container.id, None).await?;
+
+            // Store and update LRU
+            {
+                let mut instances = self.instances.lock().await;
+                instances.insert(task_id, instance.clone());
+            }
+            {
+                let mut queue = self.lru_queue.lock().await;
+                queue.push(task_id);
+            }
+
+            eprintln!("[DockerBackend] Created container {} for task {} (LRU size: {})",
+                container.id, task_id, self.lru_queue.lock().await.len());
+
             Ok(instance)
         }
     }
@@ -220,12 +296,14 @@ pub mod docker {
             let instance = self.ensure_container(task_id).await?;
             Ok(SandboxSession {
                 task_id,
-                working_dir: instance.workspace_path,
+                working_dir: SANDBOX_WORKSPACE_DIR.to_string(),
             })
         }
 
         async fn destroy_sandbox(&self, task_id: usize) -> anyhow::Result<()> {
             let mut instances = self.instances.lock().await;
+            let mut queue = self.lru_queue.lock().await;
+
             if let Some(instance) = instances.remove(&task_id) {
                 self.docker
                     .remove_container(
@@ -236,6 +314,7 @@ pub mod docker {
                         }),
                     )
                     .await?;
+                queue.retain(|&id| id != task_id);
             }
             Ok(())
         }
@@ -243,12 +322,16 @@ pub mod docker {
         async fn exec_command(&self, task_id: usize, cmd: Vec<&str>) -> anyhow::Result<String> {
             let instance = self.ensure_container(task_id).await?;
 
+            // Build the command string
+            let cmd_str = cmd.join(" ");
+            let full_cmd = vec!["sh", "-c", &cmd_str];
+
             let exec = self.docker.create_exec(
                 &instance.container_id,
                 CreateExecOptions {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
-                    cmd: Some(cmd),
+                    cmd: Some(full_cmd),
                     ..Default::default()
                 },
             )

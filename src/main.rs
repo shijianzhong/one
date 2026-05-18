@@ -25,12 +25,15 @@ mod memory;
 mod sandbox;
 mod services;
 mod task_db;
+mod agents;
 
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
 use services::api::call_chat_api_sync;
+use agents::router::AgentRouter;
+use agents::types::RoutingDecision;
 
 struct DraggedResizer;
 
@@ -102,6 +105,8 @@ struct AppState {
     terminal_input: String,
     terminal_history: Vec<String>,
     terminal_history_index: isize,
+    // Agent system
+    agent_router: AgentRouter,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +255,7 @@ impl AppState {
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
+            agent_router: AgentRouter::new(),
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -1398,98 +1404,181 @@ impl AppState {
                                 if is_first_message {
                                     this.pending_summarize = true;
                                 }
-                                this.messages.push(ChatMessage {
-                                    role: "user".to_string(),
-                                    content: user_message.clone(),
-                                });
-                                // Save user message to database
-                                if let Some(task_id) = this.active_task_id {
-                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                }
-                                this.needs_auto_scroll = true;
-                                editor.update(cx, |editor, cx| {
-                                    editor.set_text("", _window, cx);
-                                });
-                                cx.notify();
 
-                                // Use tokio runtime to spawn blocking task
-                                let base_url = this.model_base_url.clone();
-                                let api_key = this.model_api_key.clone();
-                                let model = this.model_name.clone();
-                                let messages = this.messages.clone();
+                                // Route message to appropriate agent
+                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                eprintln!("[ROUTER] Decision: {:?}", decision);
 
-                                eprintln!("[DEBUG] Spawning tokio async task");
+                                match decision {
+                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                        // Execute via Claude Code
+                                        eprintln!("[ROUTER] Routing to Claude Code");
+                                        this.messages.push(ChatMessage {
+                                            role: "user".to_string(),
+                                            content: user_message.clone(),
+                                        });
+                                        if let Some(task_id) = this.active_task_id {
+                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                        }
+                                        this.needs_auto_scroll = true;
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_text("", _window, cx);
+                                        });
+                                        cx.notify();
 
-                                cx.spawn(async move |this, cx| {
-                                    eprintln!("[DEBUG] Inside cx.spawn");
+                                        let base_url = this.model_base_url.clone();
+                                        let api_key = this.model_api_key.clone();
+                                        let model = this.model_name.clone();
+                                        let task_id = this.active_task_id;
+                                        let router = this.agent_router.clone();
 
-                                    // Spawn async work on tokio runtime
-                                    let result = gpui_tokio::Tokio::spawn(cx, async move {
-                                        eprintln!("[DEBUG] Tokio task started");
-                                        // Use spawn_blocking for the synchronous HTTP call
-                                        tokio::task::spawn_blocking(move || {
-                                            eprintln!("[DEBUG] Thread started");
-                                            call_chat_api_sync(&base_url, &api_key, &model, &messages)
-                                        }).await
-                                    }).await;
+                                        cx.spawn(async move |this, cx| {
+                                            // Execute Claude Code
+                                            let project_dir = if let Some(tid) = task_id {
+                                                std::path::PathBuf::from(format!("/tmp/one_task_{}", tid))
+                                            } else {
+                                                std::path::PathBuf::from("/tmp")
+                                            };
 
-                                    eprintln!("[DEBUG] Received result");
+                                            let instruction_clone = instruction.clone();
+                                            let session_id_clone = session_id.clone();
+                                            let project_dir_clone = project_dir.clone();
 
-                                    match result {
-                                        Ok(Ok(Ok(resp))) => {
-                                            eprintln!("[DEBUG] HTTP OK, updating UI");
-                                            let _ = this.update(cx, |this, cx| {
-                                                this.messages.push(ChatMessage {
-                                                    role: "assistant".to_string(),
-                                                    content: resp.clone(),
-                                                });
-                                                // Save assistant message to database
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                            let join_handle = tokio::task::spawn_blocking(move || {
+                                                agents::claude_code::ClaudeCodeAgent::execute_instruction(
+                                                    &project_dir_clone,
+                                                    &instruction_clone,
+                                                    session_id_clone.as_deref(),
+                                                )
+                                            });
+                                            let join_result = join_handle.await;
+
+                                            match join_result {
+                                                Ok(Ok(resp)) => {
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: format!("[Claude Code]\n{}", resp),
+                                                        });
+                                                        if let Some(tid) = task_id {
+                                                            task_db::insert_message(&this.db.conn, tid, "assistant", &resp).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        cx.notify();
+                                                    });
                                                 }
-                                                this.needs_auto_scroll = true;
+                                                Ok(Err(e)) => {
+                                                    eprintln!("[Claude Code] Error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: format!("Claude Code 执行错误: {}", e),
+                                                        });
+                                                        cx.notify();
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[Claude Code] Join error: {:?}", e);
+                                                }
+                                            }
+                                        }).detach();
+                                    }
+                                    _ => {
+                                        // Default: send to general AI
+                                        this.messages.push(ChatMessage {
+                                            role: "user".to_string(),
+                                            content: user_message.clone(),
+                                        });
+                                        // Save user message to database
+                                        if let Some(task_id) = this.active_task_id {
+                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                        }
+                                        this.needs_auto_scroll = true;
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_text("", _window, cx);
+                                        });
+                                        cx.notify();
 
-                                                // AI summarization: summarize and update task title
-                                                if this.pending_summarize {
-                                                    this.pending_summarize = false;
-                                                    let task_id = this.active_task_id;
-                                                    let all_messages = this.messages.clone();
-                                                    let db_conn = &this.db.conn;
-                                                    let base_url = this.model_base_url.clone();
-                                                    let api_key = this.model_api_key.clone();
-                                                    let model = this.model_name.clone();
-                                                    if let Some(tid) = task_id {
-                                                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
-                                                            let clean_sum = strip_think_tags(&sum);
-                                                            let short_title: String = clean_sum.chars().take(10).collect();
-                                                            task_db::update_task_title(db_conn, tid, &short_title).ok();
-                                                            for ws in &mut this.workspaces {
-                                                                for t in &mut ws.tasks {
-                                                                    if t.id == tid {
-                                                                        t.title = short_title.clone();
-                                                                        break;
+                                        // Use tokio runtime to spawn blocking task
+                                        let base_url = this.model_base_url.clone();
+                                        let api_key = this.model_api_key.clone();
+                                        let model = this.model_name.clone();
+                                        let messages = this.messages.clone();
+
+                                        eprintln!("[DEBUG] Spawning tokio async task");
+
+                                        cx.spawn(async move |this, cx| {
+                                            eprintln!("[DEBUG] Inside cx.spawn");
+
+                                            // Spawn async work on tokio runtime
+                                            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                                                eprintln!("[DEBUG] Tokio task started");
+                                                // Use spawn_blocking for the synchronous HTTP call
+                                                tokio::task::spawn_blocking(move || {
+                                                    eprintln!("[DEBUG] Thread started");
+                                                    call_chat_api_sync(&base_url, &api_key, &model, &messages)
+                                                }).await
+                                            }).await;
+
+                                            eprintln!("[DEBUG] Received result");
+
+                                            match result {
+                                                Ok(Ok(Ok(resp))) => {
+                                                    eprintln!("[DEBUG] HTTP OK, updating UI");
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: resp.clone(),
+                                                        });
+                                                        // Save assistant message to database
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+
+                                                        // AI summarization: summarize and update task title
+                                                        if this.pending_summarize {
+                                                            this.pending_summarize = false;
+                                                            let task_id = this.active_task_id;
+                                                            let all_messages = this.messages.clone();
+                                                            let db_conn = &this.db.conn;
+                                                            let base_url = this.model_base_url.clone();
+                                                            let api_key = this.model_api_key.clone();
+                                                            let model = this.model_name.clone();
+                                                            if let Some(tid) = task_id {
+                                                                if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
+                                                                    let clean_sum = strip_think_tags(&sum);
+                                                                    let short_title: String = clean_sum.chars().take(10).collect();
+                                                                    task_db::update_task_title(db_conn, tid, &short_title).ok();
+                                                                    for ws in &mut this.workspaces {
+                                                                        for t in &mut ws.tasks {
+                                                                            if t.id == tid {
+                                                                                t.title = short_title.clone();
+                                                                                break;
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                                }
 
-                                                cx.notify();
-                                            });
-                                            eprintln!("[DEBUG] UI updated");
-                                        }
-                                        Ok(Ok(Err(e))) => {
-                                            eprintln!("API error: {}", e);
-                                        }
-                                        Ok(Err(e)) => {
-                                            eprintln!("Spawn error: {:?}", e);
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Tokio error: {:?}", e);
-                                        }
+                                                        cx.notify();
+                                                    });
+                                                    eprintln!("[DEBUG] UI updated");
+                                                }
+                                                Ok(Ok(Err(e))) => {
+                                                    eprintln!("API error: {}", e);
+                                                }
+                                                Ok(Err(e)) => {
+                                                    eprintln!("Spawn error: {:?}", e);
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Tokio error: {:?}", e);
+                                                }
+                                            }
+                                        }).detach();
                                     }
-                                }).detach();
+                                }
                             }
                         }
                     }))
@@ -1514,98 +1603,177 @@ impl AppState {
                                 if is_first_message {
                                     this.pending_summarize = true;
                                 }
-                                this.messages.push(ChatMessage {
-                                    role: "user".to_string(),
-                                    content: user_message.clone(),
-                                });
-                                // Save user message to database
-                                if let Some(task_id) = this.active_task_id {
-                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                }
-                                this.needs_auto_scroll = true;
-                                editor.update(cx, |editor, cx| {
-                                    editor.set_text("", _window, cx);
-                                });
-                                cx.notify();
 
-                                // Use tokio runtime to spawn blocking task
-                                let base_url = this.model_base_url.clone();
-                                let api_key = this.model_api_key.clone();
-                                let model = this.model_name.clone();
-                                let messages = this.messages.clone();
+                                // Route message to appropriate agent
+                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                eprintln!("[ROUTER] Decision: {:?}", decision);
 
-                                eprintln!("[DEBUG] Spawning tokio async task");
+                                match decision {
+                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                        // Execute via Claude Code
+                                        eprintln!("[ROUTER] Routing to Claude Code");
+                                        this.messages.push(ChatMessage {
+                                            role: "user".to_string(),
+                                            content: user_message.clone(),
+                                        });
+                                        if let Some(task_id) = this.active_task_id {
+                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                        }
+                                        this.needs_auto_scroll = true;
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_text("", _window, cx);
+                                        });
+                                        cx.notify();
 
-                                cx.spawn(async move |this, cx| {
-                                    eprintln!("[DEBUG] Inside cx.spawn");
+                                        let task_id = this.active_task_id;
 
-                                    // Spawn async work on tokio runtime
-                                    let result = gpui_tokio::Tokio::spawn(cx, async move {
-                                        eprintln!("[DEBUG] Tokio task started");
-                                        // Use spawn_blocking for the synchronous HTTP call
-                                        tokio::task::spawn_blocking(move || {
-                                            eprintln!("[DEBUG] Thread started");
-                                            call_chat_api_sync(&base_url, &api_key, &model, &messages)
-                                        }).await
-                                    }).await;
+                                        cx.spawn(async move |this, cx| {
+                                            // Execute Claude Code
+                                            let project_dir = if let Some(tid) = task_id {
+                                                std::path::PathBuf::from(format!("/tmp/one_task_{}", tid))
+                                            } else {
+                                                std::path::PathBuf::from("/tmp")
+                                            };
 
-                                    eprintln!("[DEBUG] Received result");
+                                            let instruction_clone = instruction.clone();
+                                            let session_id_clone = session_id.clone();
+                                            let project_dir_clone = project_dir.clone();
 
-                                    match result {
-                                        Ok(Ok(Ok(resp))) => {
-                                            eprintln!("[DEBUG] HTTP OK, updating UI");
-                                            let _ = this.update(cx, |this, cx| {
-                                                this.messages.push(ChatMessage {
-                                                    role: "assistant".to_string(),
-                                                    content: resp.clone(),
-                                                });
-                                                // Save assistant message to database
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                            let join_handle = tokio::task::spawn_blocking(move || {
+                                                agents::claude_code::ClaudeCodeAgent::execute_instruction(
+                                                    &project_dir_clone,
+                                                    &instruction_clone,
+                                                    session_id_clone.as_deref(),
+                                                )
+                                            });
+                                            let join_result = join_handle.await;
+
+                                            match join_result {
+                                                Ok(Ok(resp)) => {
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: format!("[Claude Code]\n{}", resp),
+                                                        });
+                                                        if let Some(tid) = task_id {
+                                                            task_db::insert_message(&this.db.conn, tid, "assistant", &resp).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        cx.notify();
+                                                    });
                                                 }
-                                                this.needs_auto_scroll = true;
+                                                Ok(Err(e)) => {
+                                                    eprintln!("[Claude Code] Error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: format!("Claude Code 执行错误: {}", e),
+                                                        });
+                                                        cx.notify();
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[Claude Code] Join error: {:?}", e);
+                                                }
+                                            }
+                                        }).detach();
+                                    }
+                                    _ => {
+                                        // Default: send to general AI
+                                        this.messages.push(ChatMessage {
+                                            role: "user".to_string(),
+                                            content: user_message.clone(),
+                                        });
+                                        // Save user message to database
+                                        if let Some(task_id) = this.active_task_id {
+                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                        }
+                                        this.needs_auto_scroll = true;
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_text("", _window, cx);
+                                        });
+                                        cx.notify();
 
-                                                // AI summarization: summarize and update task title
-                                                if this.pending_summarize {
-                                                    this.pending_summarize = false;
-                                                    let task_id = this.active_task_id;
-                                                    let all_messages = this.messages.clone();
-                                                    let db_conn = &this.db.conn;
-                                                    let base_url = this.model_base_url.clone();
-                                                    let api_key = this.model_api_key.clone();
-                                                    let model = this.model_name.clone();
-                                                    if let Some(tid) = task_id {
-                                                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
-                                                            let clean_sum = strip_think_tags(&sum);
-                                                            let short_title: String = clean_sum.chars().take(10).collect();
-                                                            task_db::update_task_title(db_conn, tid, &short_title).ok();
-                                                            for ws in &mut this.workspaces {
-                                                                for t in &mut ws.tasks {
-                                                                    if t.id == tid {
-                                                                        t.title = short_title.clone();
-                                                                        break;
+                                        // Use tokio runtime to spawn blocking task
+                                        let base_url = this.model_base_url.clone();
+                                        let api_key = this.model_api_key.clone();
+                                        let model = this.model_name.clone();
+                                        let messages = this.messages.clone();
+
+                                        eprintln!("[DEBUG] Spawning tokio async task");
+
+                                        cx.spawn(async move |this, cx| {
+                                            eprintln!("[DEBUG] Inside cx.spawn");
+
+                                            // Spawn async work on tokio runtime
+                                            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                                                eprintln!("[DEBUG] Tokio task started");
+                                                // Use spawn_blocking for the synchronous HTTP call
+                                                tokio::task::spawn_blocking(move || {
+                                                    eprintln!("[DEBUG] Thread started");
+                                                    call_chat_api_sync(&base_url, &api_key, &model, &messages)
+                                                }).await
+                                            }).await;
+
+                                            eprintln!("[DEBUG] Received result");
+
+                                            match result {
+                                                Ok(Ok(Ok(resp))) => {
+                                                    eprintln!("[DEBUG] HTTP OK, updating UI");
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: resp.clone(),
+                                                        });
+                                                        // Save assistant message to database
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+
+                                                        // AI summarization: summarize and update task title
+                                                        if this.pending_summarize {
+                                                            this.pending_summarize = false;
+                                                            let task_id = this.active_task_id;
+                                                            let all_messages = this.messages.clone();
+                                                            let db_conn = &this.db.conn;
+                                                            let base_url = this.model_base_url.clone();
+                                                            let api_key = this.model_api_key.clone();
+                                                            let model = this.model_name.clone();
+                                                            if let Some(tid) = task_id {
+                                                                if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
+                                                                    let clean_sum = strip_think_tags(&sum);
+                                                                    let short_title: String = clean_sum.chars().take(10).collect();
+                                                                    task_db::update_task_title(db_conn, tid, &short_title).ok();
+                                                                    for ws in &mut this.workspaces {
+                                                                        for t in &mut ws.tasks {
+                                                                            if t.id == tid {
+                                                                                t.title = short_title.clone();
+                                                                                break;
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                                }
 
-                                                cx.notify();
-                                            });
-                                            eprintln!("[DEBUG] UI updated");
-                                        }
-                                        Ok(Ok(Err(e))) => {
-                                            eprintln!("API error: {}", e);
-                                        }
-                                        Ok(Err(e)) => {
-                                            eprintln!("Spawn error: {:?}", e);
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Tokio error: {:?}", e);
-                                        }
+                                                        cx.notify();
+                                                    });
+                                                    eprintln!("[DEBUG] UI updated");
+                                                }
+                                                Ok(Ok(Err(e))) => {
+                                                    eprintln!("API error: {}", e);
+                                                }
+                                                Ok(Err(e)) => {
+                                                    eprintln!("Spawn error: {:?}", e);
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Tokio error: {:?}", e);
+                                                }
+                                            }
+                                        }).detach();
                                     }
-                                }).detach();
+                                }
                             }
                         }
                     }))

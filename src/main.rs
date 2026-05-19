@@ -178,33 +178,43 @@ impl ClaudeRunTone {
 }
 
 #[derive(Debug, Clone)]
+enum FormattedContent {
+    Plain(String),
+    Json(String),
+    Code(String),
+}
+
+#[derive(Debug, Clone)]
 struct ClaudeRunEvent {
     title: String,
-    detail: String,
     tone: ClaudeRunTone,
+    formatted_detail: FormattedContent,
 }
 
 impl ClaudeRunEvent {
     fn info(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
         Self {
             title: title.into(),
-            detail: detail.into(),
+            formatted_detail: format_event_detail(&detail),
             tone: ClaudeRunTone::Info,
         }
     }
 
     fn success(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
         Self {
             title: title.into(),
-            detail: detail.into(),
+            formatted_detail: format_event_detail(&detail),
             tone: ClaudeRunTone::Success,
         }
     }
 
     fn error(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
         Self {
             title: title.into(),
-            detail: detail.into(),
+            formatted_detail: format_event_detail(&detail),
             tone: ClaudeRunTone::Error,
         }
     }
@@ -278,6 +288,82 @@ enum PreviewLaunchResult {
     Failed {
         note: String,
     },
+}
+
+fn format_event_detail(detail: &str) -> FormattedContent {
+    let trimmed = detail.trim();
+
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                return FormattedContent::Json(pretty);
+            }
+        }
+    }
+
+    let lower = trimmed.to_lowercase();
+    let code_markers = [
+        "<html",
+        "<!doctype",
+        "function ",
+        "const ",
+        "let ",
+        "import ",
+        "export ",
+        "body {",
+        "div {",
+        "return (",
+    ];
+    if trimmed.contains('\n') && code_markers.iter().any(|marker| lower.contains(marker)) {
+        return FormattedContent::Code(trimmed.to_string());
+    }
+
+    FormattedContent::Plain(detail.to_string())
+}
+
+fn render_formatted_content(
+    content: &FormattedContent,
+    plain_color: Hsla,
+    block_color: Hsla,
+) -> gpui::AnyElement {
+    match content {
+        FormattedContent::Plain(text) => div()
+            .text_xs()
+            .text_color(plain_color)
+            .whitespace_normal()
+            .child(text.clone())
+            .into_any_element(),
+        FormattedContent::Json(text) => div()
+            .p_2()
+            .rounded_md()
+            .bg(Hsla { h: 0.0, s: 0.0, l: 0.98, a: 1.0 })
+            .border_1()
+            .border_color(BORDER_LIGHT)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(block_color)
+                    .font_family("Menlo")
+                    .whitespace_normal()
+                    .child(text.clone())
+            )
+            .into_any_element(),
+        FormattedContent::Code(text) => div()
+            .p_2()
+            .rounded_md()
+            .bg(Hsla { h: 0.62, s: 0.15, l: 0.97, a: 1.0 })
+            .border_1()
+            .border_color(BORDER_LIGHT)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(block_color)
+                    .font_family("Menlo")
+                    .whitespace_normal()
+                    .child(text.clone())
+            )
+            .into_any_element(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -543,7 +629,61 @@ impl AppState {
             .spawn();
     }
 
-    fn try_prepare_preview(&mut self, work_dir: &str) -> PreviewLaunchResult {
+    fn collect_html_files(root: &std::path::Path) -> Vec<PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>, depth: usize) {
+            if depth > 4 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if [".git", "node_modules", "target"].contains(&name) {
+                            continue;
+                        }
+                    }
+                    walk(&path, out, depth + 1);
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("html"))
+                    .unwrap_or(false)
+                {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(root, &mut out, 0);
+        out
+    }
+
+    fn extract_html_hints(text: &str) -> Vec<String> {
+        let mut hints = Vec::new();
+        let mut token = String::new();
+
+        for ch in text.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' || ch == '/' {
+                token.push(ch);
+            } else if !token.is_empty() {
+                if token.to_ascii_lowercase().ends_with(".html") {
+                    hints.push(token.clone());
+                }
+                token.clear();
+            }
+        }
+        if !token.is_empty() && token.to_ascii_lowercase().ends_with(".html") {
+            hints.push(token);
+        }
+
+        hints
+    }
+
+    fn try_prepare_preview(&mut self, work_dir: &str, hint_text: &str) -> PreviewLaunchResult {
         self.stop_preview_process();
 
         let root = PathBuf::from(work_dir);
@@ -553,28 +693,47 @@ impl AppState {
             };
         }
 
-        let direct_index = root.join("index.html");
-        let dist_index = root.join("dist").join("index.html");
-        let public_index = root.join("public").join("index.html");
-
-        let entry = if direct_index.exists() {
-            direct_index
-        } else if dist_index.exists() {
-            dist_index
-        } else if public_index.exists() {
-            public_index
-        } else {
+        let html_files = Self::collect_html_files(&root);
+        if html_files.is_empty() {
             return PreviewLaunchResult::NotFound {
-                note: "No previewable `index.html` found in the workspace root, `dist/`, or `public/`.".to_string(),
+                note: "No previewable HTML file found in this workspace.".to_string(),
             };
+        }
+
+        let hints = Self::extract_html_hints(hint_text);
+        let entry = if let Some(found) = hints.iter().find_map(|hint| {
+            let hint_lower = hint.to_ascii_lowercase();
+            html_files.iter().find(|file| {
+                file.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| name.to_ascii_lowercase() == hint_lower)
+                    .unwrap_or(false)
+                    || file
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(&hint_lower)
+            })
+        }) {
+            found.clone()
+        } else if let Some(index_file) = html_files.iter().find(|file| {
+            file.file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| name.eq_ignore_ascii_case("index.html"))
+                .unwrap_or(false)
+        }) {
+            index_file.clone()
+        } else {
+            html_files[0].clone()
         };
 
-        let serve_dir = entry
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.clone());
+        let relative_entry = entry
+            .strip_prefix(&root)
+            .unwrap_or(&entry)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let serve_dir = root.clone();
         let port = 4317 + (self.active_task_id.unwrap_or(0) as u16 % 200);
-        let url = format!("http://127.0.0.1:{}/", port);
+        let url = format!("http://127.0.0.1:{}/{}", port, relative_entry);
 
         let child = Command::new("python3")
             .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
@@ -589,7 +748,7 @@ impl AppState {
                 PreviewLaunchResult::Ready {
                     url,
                     entry_file: entry.to_string_lossy().to_string(),
-                    note: format!("Serving {}", serve_dir.display()),
+                    note: format!("Serving workspace root: {}", serve_dir.display()),
                 }
             }
             Err(error) => PreviewLaunchResult::Failed {
@@ -695,7 +854,17 @@ impl AppState {
 
         let mut auto_open_url: Option<String> = None;
         if let Some(work_dir) = finished_work_dir {
-            let preview_result = self.try_prepare_preview(&work_dir);
+            let hint_text = if let Some(run) = self.current_claude_run.as_ref() {
+                format!(
+                    "{}\n{}\n{}",
+                    run.instruction,
+                    run.live_text,
+                    run.final_text.clone().unwrap_or_default()
+                )
+            } else {
+                String::new()
+            };
+            let preview_result = self.try_prepare_preview(&work_dir, &hint_text);
             if let Some(run) = self.current_claude_run.as_mut() {
                 match preview_result {
                     PreviewLaunchResult::Ready {
@@ -2727,6 +2896,8 @@ impl AppState {
 
             let mut timeline = div().flex().flex_col().gap_2();
             for event in run.events.iter().rev() {
+                let detail_block =
+                    render_formatted_content(&event.formatted_detail, SECONDARY_TEXT, PRIMARY_TEXT);
                 timeline = timeline.child(
                     div()
                         .flex_col()
@@ -2743,13 +2914,7 @@ impl AppState {
                                 .font_weight(FontWeight::BOLD)
                                 .child(event.title.clone())
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(SECONDARY_TEXT)
-                                .whitespace_normal()
-                                .child(event.detail.clone())
-                        )
+                        .child(detail_block)
                 );
             }
 

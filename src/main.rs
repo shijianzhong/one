@@ -6,6 +6,7 @@ use gpui::{
     Focusable, ScrollHandle,
 };
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
@@ -113,6 +114,7 @@ struct AppState {
     // Terminal state
     terminal_output: Vec<TerminalLine>,
     current_claude_run: Option<ClaudeRunPanelState>,
+    preview_process: Option<PreviewProcessHandle>,
     next_claude_run_id: u64,
     request_in_flight: bool,
     request_status_text: Option<String>,
@@ -222,6 +224,60 @@ struct ClaudeRunPanelState {
     stderr_lines: Vec<String>,
     events: Vec<ClaudeRunEvent>,
     show_live_bubble: bool,
+    preview: Option<PreviewState>,
+}
+
+#[derive(Debug)]
+struct PreviewProcessHandle {
+    child: Child,
+}
+
+#[derive(Debug, Clone)]
+enum PreviewStatus {
+    Idle,
+    Ready,
+    Failed,
+}
+
+impl PreviewStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Ready => "Ready",
+            Self::Failed => "Failed",
+        }
+    }
+
+    fn color(&self) -> Hsla {
+        match self {
+            Self::Idle => MUTED_TEXT,
+            Self::Ready => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
+            Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreviewState {
+    status: PreviewStatus,
+    entry_file: Option<String>,
+    url: Option<String>,
+    note: String,
+}
+
+#[derive(Debug, Clone)]
+enum PreviewLaunchResult {
+    Ready {
+        url: String,
+        entry_file: String,
+        note: String,
+    },
+    NotFound {
+        note: String,
+    },
+    Failed {
+        note: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +418,7 @@ impl AppState {
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
             current_claude_run: None,
+            preview_process: None,
             next_claude_run_id: 0,
             request_in_flight: false,
             request_status_text: None,
@@ -461,13 +518,94 @@ impl AppState {
                 format!("Instruction submitted: {}", instruction),
             )],
             show_live_bubble: true,
+            preview: Some(PreviewState {
+                status: PreviewStatus::Idle,
+                entry_file: None,
+                url: None,
+                note: "Preview will be prepared after the run completes".to_string(),
+            }),
         });
         run_id
+    }
+
+    fn stop_preview_process(&mut self) {
+        if let Some(mut handle) = self.preview_process.take() {
+            let _ = handle.child.kill();
+            let _ = handle.child.wait();
+        }
+    }
+
+    fn open_url_in_browser(&self, url: &str) {
+        let _ = Command::new("open")
+            .arg(url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    fn try_prepare_preview(&mut self, work_dir: &str) -> PreviewLaunchResult {
+        self.stop_preview_process();
+
+        let root = PathBuf::from(work_dir);
+        if !root.exists() {
+            return PreviewLaunchResult::Failed {
+                note: format!("Preview directory does not exist: {}", root.display()),
+            };
+        }
+
+        let direct_index = root.join("index.html");
+        let dist_index = root.join("dist").join("index.html");
+        let public_index = root.join("public").join("index.html");
+
+        let entry = if direct_index.exists() {
+            direct_index
+        } else if dist_index.exists() {
+            dist_index
+        } else if public_index.exists() {
+            public_index
+        } else {
+            return PreviewLaunchResult::NotFound {
+                note: "No previewable `index.html` found in the workspace root, `dist/`, or `public/`.".to_string(),
+            };
+        };
+
+        let serve_dir = entry
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.clone());
+        let port = 4317 + (self.active_task_id.unwrap_or(0) as u16 % 200);
+        let url = format!("http://127.0.0.1:{}/", port);
+
+        let child = Command::new("python3")
+            .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
+            .current_dir(&serve_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        match child {
+            Ok(child) => {
+                self.preview_process = Some(PreviewProcessHandle { child });
+                PreviewLaunchResult::Ready {
+                    url,
+                    entry_file: entry.to_string_lossy().to_string(),
+                    note: format!("Serving {}", serve_dir.display()),
+                }
+            }
+            Err(error) => PreviewLaunchResult::Failed {
+                note: format!(
+                    "Failed to start preview server in {}: {}",
+                    serve_dir.display(),
+                    error
+                ),
+            },
+        }
     }
 
     fn apply_claude_run_event(&mut self, run_id: u64, event: ClaudeStreamEvent) {
         let mut final_message: Option<String> = None;
         let mut persist_task_id: Option<usize> = None;
+        let mut finished_work_dir: Option<String> = None;
 
         {
             let Some(run) = self.current_claude_run.as_mut() else {
@@ -531,6 +669,7 @@ impl AppState {
                     ));
                     final_message = Some(format!("[Claude Code]\n{}", run.live_text));
                     persist_task_id = run.task_id;
+                    finished_work_dir = Some(run.work_dir.clone());
                 }
                 ClaudeStreamEvent::Failed { error } => {
                     run.status = ClaudeRunStatus::Failed;
@@ -552,6 +691,57 @@ impl AppState {
                     persist_task_id = run.task_id;
                 }
             }
+        }
+
+        let mut auto_open_url: Option<String> = None;
+        if let Some(work_dir) = finished_work_dir {
+            let preview_result = self.try_prepare_preview(&work_dir);
+            if let Some(run) = self.current_claude_run.as_mut() {
+                match preview_result {
+                    PreviewLaunchResult::Ready {
+                        url,
+                        entry_file,
+                        note,
+                    } => {
+                        run.preview = Some(PreviewState {
+                            status: PreviewStatus::Ready,
+                            entry_file: Some(entry_file.clone()),
+                            url: Some(url.clone()),
+                            note: note.clone(),
+                        });
+                        run.events.push(ClaudeRunEvent::success(
+                            "Preview ready",
+                            format!("{}\n{}", url, note),
+                        ));
+                        auto_open_url = Some(url);
+                        run.events.push(ClaudeRunEvent::info(
+                            "Browser opened",
+                            "Opened preview URL in external browser",
+                        ));
+                    }
+                    PreviewLaunchResult::NotFound { note } => {
+                        run.preview = Some(PreviewState {
+                            status: PreviewStatus::Idle,
+                            entry_file: None,
+                            url: None,
+                            note: note.clone(),
+                        });
+                        run.events.push(ClaudeRunEvent::info("Preview skipped", note));
+                    }
+                    PreviewLaunchResult::Failed { note } => {
+                        run.preview = Some(PreviewState {
+                            status: PreviewStatus::Failed,
+                            entry_file: None,
+                            url: None,
+                            note: note.clone(),
+                        });
+                        run.events.push(ClaudeRunEvent::error("Preview failed", note));
+                    }
+                }
+            }
+        }
+        if let Some(url) = auto_open_url {
+            self.open_url_in_browser(&url);
         }
 
         if let Some(message) = final_message {
@@ -730,6 +920,11 @@ impl AppState {
 
 impl Render for AppState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = if self.sidebar_visible {
+            Some(self.render_sidebar(cx).into_any_element())
+        } else {
+            None
+        };
         div()
             .flex()
             .size_full()
@@ -737,9 +932,9 @@ impl Render for AppState {
             .child(self.render_nav(cx))
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
             .child(self.render_chat(_window, cx))
-            .when(self.sidebar_visible, |this| {
+            .when_some(sidebar, |this, sidebar| {
                 this.child(div().w(px(1.0)).bg(BORDER_LIGHT))
-                    .child(self.render_sidebar())
+                    .child(sidebar)
             })
             .when(self.terminal_visible, |this| {
                 this.child(self.render_terminal_resizer(cx))
@@ -2479,7 +2674,7 @@ impl AppState {
             })
     }
 
-    fn render_sidebar(&self) -> impl IntoElement {
+    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar_bg = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
         let run = self
             .current_claude_run
@@ -2493,11 +2688,13 @@ impl AppState {
             .w(px(320.0))
             .h_full()
             .bg(sidebar_bg)
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .h(px(40.0))
+                    .justify_between()
+                    .h(px(44.0))
                     .px_4()
                     .bg(WORKSPACE_BG)
                     .child(
@@ -2518,6 +2715,15 @@ impl AppState {
             } else {
                 run.live_text.clone()
             };
+            let preview = run.preview.clone();
+            let preview_label = preview
+                .as_ref()
+                .map(|preview| preview.status.label().to_string())
+                .unwrap_or_else(|| "Idle".to_string());
+            let preview_color = preview
+                .as_ref()
+                .map(|preview| preview.status.color())
+                .unwrap_or(MUTED_TEXT);
 
             let mut timeline = div().flex().flex_col().gap_2();
             for event in run.events.iter().rev() {
@@ -2572,6 +2778,11 @@ impl AppState {
                         div()
                             .flex_col()
                             .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .child(
                                 div()
                                     .flex()
@@ -2614,73 +2825,164 @@ impl AppState {
                         div()
                             .flex_col()
                             .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("Progress"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(PRIMARY_TEXT)
+                                    .whitespace_normal()
+                                    .child(run.status_message.clone())
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(div().text_xs().text_color(MUTED_TEXT).child("Preview"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(preview_color)
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(preview_label)
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(SECONDARY_TEXT)
+                                    .whitespace_normal()
+                                    .child(
+                                        preview
+                                            .as_ref()
+                                            .map(|preview| preview.note.clone())
+                                            .unwrap_or_else(|| "No preview information".to_string())
+                                    )
+                            )
+                            .when_some(preview.clone().and_then(|preview| preview.entry_file), |this, entry_file| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(MUTED_TEXT)
+                                        .whitespace_normal()
+                                        .child(format!("Entry: {}", entry_file))
+                                )
+                            })
+                            .when_some(preview.clone().and_then(|preview| preview.url), |this, url| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(BRAND_BLUE)
+                                                .whitespace_normal()
+                                                .child(url.clone())
+                                        )
+                                        .child(
+                                            div()
+                                                .px_3()
+                                                .py_2()
+                                                .rounded_md()
+                                                .bg(BRAND_BLUE)
+                                                .text_xs()
+                                                .text_color(gpui::white())
+                                                .cursor_pointer()
+                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener({
+                                                    let url = url.clone();
+                                                    move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                                                        this.open_url_in_browser(&url);
+                                                    }
+                                                }))
+                                                .child("Open In Browser")
+                                        )
+                                )
+                            })
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child("Live Output"))
                             .child(
                                 div()
-                                    .p_3()
-                                    .rounded_lg()
-                                    .bg(CARD_BG)
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(PRIMARY_TEXT)
-                                            .whitespace_normal()
-                                            .child(live_output)
-                                    )
+                                    .text_sm()
+                                    .text_color(PRIMARY_TEXT)
+                                    .whitespace_normal()
+                                    .child(live_output)
                             )
                     )
                     .child(
                         div()
                             .flex_col()
                             .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child("Command"))
                             .child(
                                 div()
-                                    .p_3()
-                                    .rounded_lg()
-                                    .bg(CARD_BG)
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(SECONDARY_TEXT)
-                                            .whitespace_normal()
-                                            .child(if run.command_preview.is_empty() {
-                                                "Claude command has not started yet".to_string()
-                                            } else {
-                                                run.command_preview.clone()
-                                            })
-                                    )
+                                    .text_xs()
+                                    .text_color(SECONDARY_TEXT)
+                                    .whitespace_normal()
+                                    .child(if run.command_preview.is_empty() {
+                                        "Claude command has not started yet".to_string()
+                                    } else {
+                                        run.command_preview.clone()
+                                    })
                             )
                     )
                     .child(
                         div()
                             .flex_col()
                             .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child("stderr"))
                             .child(
                                 div()
-                                    .p_3()
-                                    .rounded_lg()
-                                    .bg(CARD_BG)
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(if run.stderr_lines.is_empty() { SECONDARY_TEXT } else { Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 } })
-                                            .whitespace_normal()
-                                            .child(stderr_preview)
-                                    )
+                                    .text_xs()
+                                    .text_color(if run.stderr_lines.is_empty() { SECONDARY_TEXT } else { Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 } })
+                                    .whitespace_normal()
+                                    .child(stderr_preview)
                             )
                     )
                     .child(
                         div()
                             .flex_col()
                             .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child("Timeline"))
                             .child(timeline)
                     )

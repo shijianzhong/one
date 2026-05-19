@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::memory::types::{ChatMessage, MemoryChunk};
 use crate::memory::storage::get_workspace_memory_dir;
 use std::collections::HashMap;

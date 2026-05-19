@@ -1,14 +1,13 @@
+#![allow(dead_code)]
+
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use super::{Agent, AgentConfig, AgentInstance, AgentStatus};
-use crate::task_db;
 
 pub struct ClaudeCodeAgent {
     binary_path: PathBuf,

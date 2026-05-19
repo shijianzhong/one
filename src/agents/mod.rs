@@ -1,12 +1,12 @@
+#![allow(dead_code)]
+
 pub mod types;
 pub mod claude_code;
 pub mod business;
 pub mod router;
+pub mod acp_adapter;
 
 pub use types::*;
-pub use claude_code::ClaudeCodeAgent;
-pub use business::BusinessAgentGenerator;
-pub use router::AgentRouter;
 
 use std::collections::HashMap;
 use std::sync::Arc;

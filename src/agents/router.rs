@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-use anyhow::Result;
+#![allow(dead_code)]
 
-use super::{AgentInstance, AgentRow, RoutingDecision};
+use std::collections::HashMap;
+
+use super::{AgentRow, RoutingDecision};
 use crate::memory::types::ChatMessage;
 
 pub struct AgentRouter {

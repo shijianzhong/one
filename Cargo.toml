@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[workspace]
+members = ["acpx", "."]
+
 [dependencies]
 gpui = { path = "/Users/shijianzhong/sking/zed/crates/gpui", default-features = false, features = ["font-kit"] }
 gpui_platform = { path = "/Users/shijianzhong/sking/zed/crates/gpui_platform", features = ["font-kit"] }
@@ -33,10 +36,12 @@ dirs = "5"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+acpx = { path = "./acpx" }
 bollard = { version = "0.18", optional = true }
 async-trait = "0.1"
 image = "0.25"
 which = "6"
+rust-embed = "8"
 
 [features]
 default = []

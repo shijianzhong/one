@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+#![allow(dead_code)]
+
 use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -70,7 +71,7 @@ impl Agent for BusinessAgent {
         &self.name
     }
 
-    async fn spawn(&self, config: AgentConfig) -> Result<AgentInstance> {
+    async fn spawn(&self, _config: AgentConfig) -> Result<AgentInstance> {
         let instance = AgentInstance {
             id: 0,
             agent_id: self.id,

@@ -30,6 +30,7 @@ impl Lang {
 
 pub struct Translations;
 
+#[allow(dead_code)]
 impl Translations {
     // Navigation
     pub const NAV_ONE: (&'static str, &'static str) = ("ONE", "ONE");

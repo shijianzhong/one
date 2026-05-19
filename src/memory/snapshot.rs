@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::memory::types::{ChatMessage, MemoryChunk, MemorySnapshot};
 use crate::memory::storage::{load_task_snapshot, save_task_snapshot};
 use crate::memory::search::load_l3_chunks_internal;

@@ -7,7 +7,6 @@ use gpui::{
 };
 use std::sync::Arc;
 use std::path::PathBuf;
-use image::RgbaImage;
 use dirs;
 
 use gpui_platform::application;
@@ -22,6 +21,7 @@ use gpui::FontWeight;
 
 mod i18n;
 mod memory;
+mod assets;
 mod sandbox;
 mod services;
 mod task_db;
@@ -33,7 +33,6 @@ use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
 use services::api::call_chat_api_sync;
 use agents::router::AgentRouter;
-use agents::types::RoutingDecision;
 
 struct DraggedResizer;
 
@@ -102,9 +101,6 @@ struct AppState {
     popup_position: Point<Pixels>,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
-    terminal_input: String,
-    terminal_history: Vec<String>,
-    terminal_history_index: isize,
     // Agent system
     agent_router: AgentRouter,
 }
@@ -187,7 +183,6 @@ struct Workspace {
 struct TaskItem {
     id: usize,
     title: String,
-    status: &'static str,
 }
 
 impl AppState {
@@ -207,7 +202,6 @@ impl AppState {
                         .map(|t| TaskItem {
                             id: t.id,
                             title: t.title,
-                            status: Box::leak(t.status.into_boxed_str()),
                         })
                         .collect();
                     Workspace {
@@ -249,9 +243,6 @@ impl AppState {
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
-            terminal_input: String::new(),
-            terminal_history: vec![],
-            terminal_history_index: -1,
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
@@ -275,10 +266,6 @@ impl AppState {
 
     fn get_active_workspace(&self) -> Option<&Workspace> {
         self.active_workspace_id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
-    }
-
-    fn get_active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.active_workspace_id.and_then(|id| self.workspaces.iter_mut().find(|w| w.id == id))
     }
 
     fn get_active_task(&self) -> Option<&TaskItem> {
@@ -322,7 +309,6 @@ impl AppState {
             workspace.tasks.push(TaskItem {
                 id,
                 title,
-                status: "todo",
             });
             self.active_task_id = Some(id);
             cx.notify();
@@ -603,7 +589,8 @@ impl AppState {
                 .text_base()
                 .text_color(MUTED_TEXT)
                 .px_1()
-                .py_1();
+                .py_1()
+                .size(px(16.0));
             // Add button (+)
             // Add button (+) - stops propagation so only adds task, doesn't toggle expand
             let add_btn = div()
@@ -636,7 +623,13 @@ impl AppState {
                     this.delete_confirm_workspace_id = Some(ws_id);
                     this.popup_position = event.position;
                 }))
-                .child(svg().external_path("assets/more.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT));
+                .child(
+                    svg()
+                        .path("more.svg")
+                        .size(px(16.0))
+                        .flex_none()
+                        .text_color(MUTED_TEXT),
+                );
 
             let action_div = div().ml_auto().flex().items_center().gap_3()
                 .child(more_btn)
@@ -646,15 +639,27 @@ impl AppState {
                 ws_row.child(
                     if workspace.expanded {
                         expand_btn.child(
-                            svg().external_path("assets/expand.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                            svg()
+                                .path("expand.svg")
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(MUTED_TEXT)
                         )
                     } else {
                         expand_btn.child(
-                            svg().external_path("assets/fold.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                            svg()
+                                .path("fold.svg")
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(MUTED_TEXT)
                         )
                     }
                 ).child(
-                    svg().external_path("assets/folder.svg").w(px(16.0)).h(px(16.0)).text_color(MUTED_TEXT)
+                    svg()
+                        .path("folder.svg")
+                        .size(px(16.0))
+                        .flex_none()
+                        .text_color(MUTED_TEXT)
                 ).child(
                     div().text_sm().ml_1().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
                 ).child(
@@ -1241,11 +1246,10 @@ impl AppState {
                                     .rounded_md()
                                     .bg(BRAND_BLUE)
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
                                         this.show_export_dialog = false;
                                         this.exported_json = None;
                                         this.exported_md = None;
-                                        cx.notify();
                                     }))
                                     .child(t(lang, Translations::CANCEL))
                             )
@@ -1253,7 +1257,7 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
@@ -1426,11 +1430,7 @@ impl AppState {
                                         });
                                         cx.notify();
 
-                                        let base_url = this.model_base_url.clone();
-                                        let api_key = this.model_api_key.clone();
-                                        let model = this.model_name.clone();
                                         let task_id = this.active_task_id;
-                                        let router = this.agent_router.clone();
 
                                         cx.spawn(async move |this, cx| {
                                             // Execute Claude Code
@@ -1805,43 +1805,6 @@ impl AppState {
             .child(div().text_xs().text_color(MUTED_TEXT).mb_2().child(title))
     }
 
-    fn execute_terminal_command(&mut self, cx: &mut Context<Self>) {
-        let cmd = self.terminal_input.trim().to_string();
-        if cmd.is_empty() {
-            return;
-        }
-
-        // Add to history
-        if !self.terminal_history.contains(&cmd) {
-            self.terminal_history.push(cmd.clone());
-        }
-        self.terminal_history_index = self.terminal_history.len() as isize;
-        self.terminal_input.clear();
-
-        let task_id = self.active_task_id.unwrap_or(0);
-
-        // Clone backend for use in async task
-        let sandbox_backend = self.sandbox_backend.clone();
-
-        // Execute command in sandbox using tokio::spawn
-        tokio::spawn(async move {
-            let output = match &sandbox_backend {
-                Backend::Docker(b) => b.exec_command(task_id, vec![&cmd]).await,
-                Backend::Pty(b) => b.exec_command(task_id, vec![&cmd]).await,
-            };
-
-            let result = match output {
-                Ok(out) => out,
-                Err(e) => format!("Error: {}", e),
-            };
-
-            // Note: Since we can't easily update state from a raw tokio::spawn,
-            // we log the result for now. In a real implementation, we'd use
-            // a channel or different approach to communicate back to the UI.
-            eprintln!("[Terminal] {}: {}\n{}", cmd, result, result);
-        });
-    }
-
     fn render_terminal_resizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("terminal-resizer")
@@ -1996,7 +1959,7 @@ impl AppState {
                                             };
 
                                             // Update UI with command output
-                                            this.update(cx, |this, cx| {
+                                            let _ = this.update(cx, |this, cx| {
                                                 this.terminal_output.push(TerminalLine {
                                                     command: Some(cmd_for_output),
                                                     output,
@@ -2032,7 +1995,7 @@ fn main() {
         None
     };
 
-    application().run(move |cx: &mut App| {
+    application().with_assets(assets::Assets).run(move |cx: &mut App| {
         settings::init(cx);
         theme_settings::init(theme::LoadThemes::JustBase, cx);
         editor::init(cx);

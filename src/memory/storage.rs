@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::memory::types::{MemorySnapshot, TaskMemory};
 use std::fs;
 use std::path::PathBuf;

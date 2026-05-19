@@ -1,13 +1,25 @@
 #![allow(dead_code)]
 
-use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::Sender;
+use std::thread;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 
 use super::{Agent, AgentConfig, AgentInstance, AgentStatus};
+
+#[derive(Debug, Clone)]
+pub enum ClaudeStreamEvent {
+    Started { command: String, workdir: String },
+    AssistantText(String),
+    Progress { label: String, detail: String },
+    Stderr(String),
+    Finished { result: String },
+    Failed { error: String },
+}
 
 pub struct ClaudeCodeAgent {
     binary_path: PathBuf,
@@ -28,39 +40,122 @@ impl ClaudeCodeAgent {
         PathBuf::from(format!("/tmp/one_task_{}", task_id))
     }
 
-    fn parse_stream_line(line: &str) -> Option<ClaudeResponse> {
-        let json: serde_json::Value = serde_json::from_str(line).ok()?;
-        let type_str = json.get("type")?.as_str()?;
+    fn extract_detail(value: &serde_json::Value) -> String {
+        let preferred_fields = [
+            "message",
+            "status",
+            "summary",
+            "subtype",
+            "result",
+            "session_id",
+            "model",
+        ];
+
+        for field in preferred_fields {
+            if let Some(field_value) = value.get(field) {
+                if let Some(text) = field_value.as_str() {
+                    if !text.trim().is_empty() {
+                        return text.to_string();
+                    }
+                } else {
+                    return serde_json::to_string(field_value)
+                        .unwrap_or_else(|_| "<invalid event>".to_string());
+                }
+            }
+        }
+
+        serde_json::to_string(value).unwrap_or_else(|_| "<invalid event>".to_string())
+    }
+
+    fn parse_stream_line(line: &str) -> Vec<ClaudeStreamEvent> {
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            if line.trim().is_empty() {
+                return vec![];
+            }
+            return vec![ClaudeStreamEvent::Progress {
+                label: "stdout".to_string(),
+                detail: line.to_string(),
+            }];
+        };
+
+        let type_str = json
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
 
         match type_str {
             "assistant" => {
-                let content = json.get("message")?.get("content")?;
-                if let Some(arr) = content.as_array() {
-                    for item in arr {
-                        if item.get("type")?.as_str()? == "text" {
-                            return Some(ClaudeResponse::Text(item.get("text")?.as_str()?.to_string()));
+                let mut events = Vec::new();
+                let mut text_parts = Vec::new();
+
+                if let Some(items) = json
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(|content| content.as_array())
+                {
+                    for item in items {
+                        match item.get("type").and_then(|value| value.as_str()) {
+                            Some("text") => {
+                                if let Some(text) = item.get("text").and_then(|value| value.as_str())
+                                {
+                                    if !text.trim().is_empty() {
+                                        text_parts.push(text.to_string());
+                                    }
+                                }
+                            }
+                            Some(other) => events.push(ClaudeStreamEvent::Progress {
+                                label: format!("assistant:{other}"),
+                                detail: Self::extract_detail(item),
+                            }),
+                            None => {}
                         }
                     }
                 }
-                None
+
+                if !text_parts.is_empty() {
+                    events.insert(0, ClaudeStreamEvent::AssistantText(text_parts.join("\n")));
+                }
+
+                events
             }
             "result" => {
-                let result = json.get("result")?.as_str()?.to_string();
-                Some(ClaudeResponse::Result(result))
+                let detail = json
+                    .get("result")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                if detail.is_empty() {
+                    vec![]
+                } else {
+                    vec![ClaudeStreamEvent::Progress {
+                        label: "result".to_string(),
+                        detail,
+                    }]
+                }
             }
-            "system" => {
-                Some(ClaudeResponse::System)
-            }
-            _ => None,
+            "system" => vec![ClaudeStreamEvent::Progress {
+                label: "system".to_string(),
+                detail: Self::extract_detail(&json),
+            }],
+            other => vec![ClaudeStreamEvent::Progress {
+                label: other.to_string(),
+                detail: Self::extract_detail(&json),
+            }],
         }
     }
 
-    pub fn execute_instruction(
+    pub fn execute_instruction_stream(
         project_dir: &PathBuf,
         instruction: &str,
         session_id: Option<&str>,
+        sender: Sender<ClaudeStreamEvent>,
     ) -> Result<String> {
-        let mut cmd = Command::new("claude");
+        std::fs::create_dir_all(project_dir)
+            .with_context(|| format!("Failed to create Claude workdir: {}", project_dir.display()))?;
+
+        let binary_path = Self::check_installation().unwrap_or_else(|| PathBuf::from("claude"));
+        let mut cmd = Command::new(&binary_path);
         cmd.args(&[
             "-p",
             instruction,
@@ -77,41 +172,89 @@ impl ClaudeCodeAgent {
             cmd.arg(sid);
         }
 
-        let mut child = cmd.spawn().context("Failed to spawn claude process")?;
+        let command_preview = format!(
+            "{} -p {:?} --output-format stream-json --verbose --permission-mode bypassPermissions{}",
+            binary_path.display(),
+            instruction,
+            session_id
+                .map(|sid| format!(" --session-id {}", sid))
+                .unwrap_or_default()
+        );
+        let _ = sender.send(ClaudeStreamEvent::Started {
+            command: command_preview,
+            workdir: project_dir.to_string_lossy().to_string(),
+        });
+
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "Failed to spawn claude process: binary={}, cwd={}",
+                binary_path.display(),
+                project_dir.display()
+            )
+        })?;
 
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
+        let stderr = child.stderr.take().context("Failed to capture stderr")?;
         let reader = BufReader::new(stdout);
+        let stderr_sender = sender.clone();
+        let stderr_thread = thread::spawn(move || {
+            let stderr_reader = BufReader::new(stderr);
+            for line in stderr_reader.lines() {
+                match line {
+                    Ok(line) if !line.trim().is_empty() => {
+                        let _ = stderr_sender.send(ClaudeStreamEvent::Stderr(line));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = stderr_sender.send(ClaudeStreamEvent::Stderr(format!(
+                            "stderr read error: {}",
+                            error
+                        )));
+                        break;
+                    }
+                }
+            }
+        });
 
         let mut result_text = String::new();
+        let mut result_override: Option<String> = None;
 
         for line in reader.lines() {
             let line = line.context("Failed to read line")?;
-            if let Some(response) = Self::parse_stream_line(&line) {
-                match response {
-                    ClaudeResponse::Text(text) => {
-                        result_text.push_str(&text);
-                        result_text.push('\n');
+            for event in Self::parse_stream_line(&line) {
+                match &event {
+                    ClaudeStreamEvent::AssistantText(text) => {
+                        if !result_text.is_empty() {
+                            result_text.push('\n');
+                        }
+                        result_text.push_str(text);
                     }
-                    ClaudeResponse::Result(result) => {
-                        if !result.is_empty() && result_text.is_empty() {
-                            result_text = result;
+                    ClaudeStreamEvent::Progress { label, detail } if label == "result" => {
+                        if !detail.is_empty() {
+                            result_override = Some(detail.clone());
                         }
                     }
-                    ClaudeResponse::System => continue,
+                    _ => {}
                 }
+                let _ = sender.send(event);
             }
         }
 
-        child.wait().context("Failed to wait for process")?;
+        let status = child.wait().context("Failed to wait for process")?;
+        let _ = stderr_thread.join();
 
-        Ok(result_text.trim().to_string())
+        if !status.success() {
+            return Err(anyhow!("claude exited with status {}", status));
+        }
+
+        let final_text = if result_text.trim().is_empty() {
+            result_override.unwrap_or_default()
+        } else {
+            result_text.trim().to_string()
+        };
+
+        Ok(final_text)
     }
-}
-
-enum ClaudeResponse {
-    Text(String),
-    Result(String),
-    System,
 }
 
 #[async_trait]
@@ -159,7 +302,8 @@ impl Agent for ClaudeCodeAgent {
         let session_id = instance.session_state.get("session_id")
             .and_then(|v| v.as_str());
 
-        let result = Self::execute_instruction(&project_dir, msg, session_id)?;
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let result = Self::execute_instruction_stream(&project_dir, msg, session_id, sender)?;
 
         instance.status = AgentStatus::Idle;
 

@@ -5,8 +5,10 @@ use gpui::{
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable, ScrollHandle,
 };
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::{self, TryRecvError};
+use std::time::Duration;
 use dirs;
 
 use gpui_platform::application;
@@ -32,6 +34,7 @@ use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
 use services::api::call_chat_api_sync;
+use agents::claude_code::ClaudeStreamEvent;
 use agents::router::AgentRouter;
 
 struct DraggedResizer;
@@ -51,6 +54,9 @@ gpui::actions!(
         SendMessage,
         ToggleLang,
         ExportChat,
+        OpenRegister,
+        SubmitRegister,
+        CancelRegister,
     ]
 );
 
@@ -84,6 +90,11 @@ struct AppState {
     show_export_dialog: bool,
     exported_json: Option<String>,
     exported_md: Option<String>,
+    // Register dialog
+    show_register_dialog: bool,
+    editing_username: String,
+    editing_email: String,
+    editing_password: String,
     model_base_url: String,
     model_api_key: String,
     model_name: String,
@@ -101,6 +112,11 @@ struct AppState {
     popup_position: Point<Pixels>,
     // Terminal state
     terminal_output: Vec<TerminalLine>,
+    current_claude_run: Option<ClaudeRunPanelState>,
+    next_claude_run_id: u64,
+    request_in_flight: bool,
+    request_status_text: Option<String>,
+    request_kind: Option<RequestKind>,
     // Agent system
     agent_router: AgentRouter,
 }
@@ -109,6 +125,103 @@ struct AppState {
 struct TerminalLine {
     command: Option<String>,
     output: String,
+}
+
+#[derive(Debug, Clone)]
+enum RequestKind {
+    GeneralAi,
+    ClaudeCode,
+}
+
+#[derive(Debug, Clone)]
+enum ClaudeRunStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl ClaudeRunStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+        }
+    }
+
+    fn color(&self) -> Hsla {
+        match self {
+            Self::Running => BRAND_BLUE,
+            Self::Completed => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
+            Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ClaudeRunTone {
+    Info,
+    Success,
+    Error,
+}
+
+impl ClaudeRunTone {
+    fn color(&self) -> Hsla {
+        match self {
+            Self::Info => SECONDARY_TEXT,
+            Self::Success => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
+            Self::Error => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClaudeRunEvent {
+    title: String,
+    detail: String,
+    tone: ClaudeRunTone,
+}
+
+impl ClaudeRunEvent {
+    fn info(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            detail: detail.into(),
+            tone: ClaudeRunTone::Info,
+        }
+    }
+
+    fn success(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            detail: detail.into(),
+            tone: ClaudeRunTone::Success,
+        }
+    }
+
+    fn error(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            detail: detail.into(),
+            tone: ClaudeRunTone::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClaudeRunPanelState {
+    run_id: u64,
+    task_id: Option<usize>,
+    instruction: String,
+    work_dir: String,
+    command_preview: String,
+    status: ClaudeRunStatus,
+    status_message: String,
+    live_text: String,
+    final_text: Option<String>,
+    stderr_lines: Vec<String>,
+    events: Vec<ClaudeRunEvent>,
+    show_live_bubble: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +343,11 @@ impl AppState {
             show_export_dialog: false,
             exported_json: None,
             exported_md: None,
+            // Register dialog
+            show_register_dialog: false,
+            editing_username: "".to_string(),
+            editing_email: "".to_string(),
+            editing_password: "".to_string(),
             model_base_url: config.model_base_url,
             model_api_key: config.model_api_key,
             model_name: config.model_name,
@@ -243,6 +361,11 @@ impl AppState {
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
+            current_claude_run: None,
+            next_claude_run_id: 0,
+            request_in_flight: false,
+            request_status_text: None,
+            request_kind: None,
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
@@ -315,6 +438,213 @@ impl AppState {
         }
     }
 
+    fn begin_claude_run(&mut self, instruction: &str) -> u64 {
+        self.next_claude_run_id += 1;
+        let run_id = self.next_claude_run_id;
+        self.sidebar_visible = true;
+        self.request_in_flight = true;
+        self.request_status_text = Some("Claude Code is running...".to_string());
+        self.request_kind = Some(RequestKind::ClaudeCode);
+        self.current_claude_run = Some(ClaudeRunPanelState {
+            run_id,
+            task_id: self.active_task_id,
+            instruction: instruction.to_string(),
+            work_dir: self.get_work_dir(),
+            command_preview: String::new(),
+            status: ClaudeRunStatus::Running,
+            status_message: "Waiting for Claude Code to start...".to_string(),
+            live_text: String::new(),
+            final_text: None,
+            stderr_lines: vec![],
+            events: vec![ClaudeRunEvent::info(
+                "Run queued",
+                format!("Instruction submitted: {}", instruction),
+            )],
+            show_live_bubble: true,
+        });
+        run_id
+    }
+
+    fn apply_claude_run_event(&mut self, run_id: u64, event: ClaudeStreamEvent) {
+        let mut final_message: Option<String> = None;
+        let mut persist_task_id: Option<usize> = None;
+
+        {
+            let Some(run) = self.current_claude_run.as_mut() else {
+                return;
+            };
+
+            if run.run_id != run_id {
+                return;
+            }
+
+            match event {
+                ClaudeStreamEvent::Started { command, workdir } => {
+                    run.command_preview = command.clone();
+                    run.work_dir = workdir.clone();
+                    run.status_message = "Claude Code is running".to_string();
+                    run.events.push(ClaudeRunEvent::info(
+                        "Process started",
+                        format!("Workdir: {}\nCommand: {}", workdir, command),
+                    ));
+                }
+                ClaudeStreamEvent::AssistantText(text) => {
+                    if run.live_text.is_empty() {
+                        run.events.push(ClaudeRunEvent::info(
+                            "Streaming response",
+                            "Claude Code started returning live content",
+                        ));
+                    }
+                    if !run.live_text.is_empty() {
+                        run.live_text.push('\n');
+                    }
+                    run.live_text.push_str(&text);
+                    run.status_message = "Generating response".to_string();
+                }
+                ClaudeStreamEvent::Progress { label, detail } => {
+                    run.status_message = format!("{}...", label);
+                    run.events.push(ClaudeRunEvent::info(label, detail));
+                }
+                ClaudeStreamEvent::Stderr(line) => {
+                    run.stderr_lines.push(line.clone());
+                    let tone = if line.to_lowercase().contains("error") {
+                        ClaudeRunEvent::error("stderr", line)
+                    } else {
+                        ClaudeRunEvent::info("stderr", line)
+                    };
+                    run.events.push(tone);
+                }
+                ClaudeStreamEvent::Finished { result } => {
+                    run.status = ClaudeRunStatus::Completed;
+                    run.status_message = "Claude Code completed".to_string();
+                    self.request_in_flight = false;
+                    self.request_status_text = None;
+                    self.request_kind = None;
+                    if run.live_text.trim().is_empty() {
+                        run.live_text = result.clone();
+                    }
+                    run.final_text = Some(result);
+                    run.show_live_bubble = false;
+                    run.events.push(ClaudeRunEvent::success(
+                        "Run completed",
+                        format!("Generated {} characters", run.live_text.chars().count()),
+                    ));
+                    final_message = Some(format!("[Claude Code]\n{}", run.live_text));
+                    persist_task_id = run.task_id;
+                }
+                ClaudeStreamEvent::Failed { error } => {
+                    run.status = ClaudeRunStatus::Failed;
+                    run.status_message = "Claude Code failed".to_string();
+                    self.request_in_flight = false;
+                    self.request_status_text = None;
+                    self.request_kind = None;
+                    run.show_live_bubble = false;
+                    run.events.push(ClaudeRunEvent::error("Run failed", error.clone()));
+                    let mut message = String::from("Claude Code execution error: ");
+                    message.push_str(&error);
+                    if !run.live_text.trim().is_empty() {
+                        message = format!(
+                            "[Claude Code]\n{}\n\n[Run failed]\n{}",
+                            run.live_text, error
+                        );
+                    }
+                    final_message = Some(message);
+                    persist_task_id = run.task_id;
+                }
+            }
+        }
+
+        if let Some(message) = final_message {
+            if persist_task_id == self.active_task_id {
+                self.messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: message.clone(),
+                });
+                self.needs_auto_scroll = true;
+            }
+            if let Some(task_id) = persist_task_id {
+                task_db::insert_message(&self.db.conn, task_id, "assistant", &message).ok();
+            }
+        }
+    }
+
+    fn spawn_claude_code_run(
+        &mut self,
+        instruction: String,
+        session_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let run_id = self.begin_claude_run(&instruction);
+        let project_dir = std::path::PathBuf::from(self.get_work_dir());
+
+        let (sender, receiver) = mpsc::channel::<ClaudeStreamEvent>();
+        let worker_sender = sender.clone();
+        let final_sender = sender.clone();
+        let instruction_for_worker = instruction.clone();
+        let session_id_for_worker = session_id.clone();
+        let project_dir_for_worker = project_dir.clone();
+
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let result = tokio::task::spawn_blocking(move || {
+                agents::claude_code::ClaudeCodeAgent::execute_instruction_stream(
+                    &project_dir_for_worker,
+                    &instruction_for_worker,
+                    session_id_for_worker.as_deref(),
+                    worker_sender,
+                )
+            })
+            .await;
+
+            match result {
+                Ok(Ok(output)) => {
+                    let _ = final_sender.send(ClaudeStreamEvent::Finished { result: output });
+                }
+                Ok(Err(error)) => {
+                    let _ = final_sender.send(ClaudeStreamEvent::Failed {
+                        error: error.to_string(),
+                    });
+                }
+                Err(error) => {
+                    let _ = final_sender.send(ClaudeStreamEvent::Failed {
+                        error: format!("Tokio join error: {}", error),
+                    });
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                let mut disconnected = false;
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(event) => {
+                            let _ = this.update(cx, |this, cx| {
+                                this.apply_claude_run_event(run_id, event);
+                                cx.notify();
+                            });
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnected {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(Duration::from_millis(60))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
     // Action handlers for model config dialog
     fn open_model_config_dialog(&mut self, _: &OpenModelConfigDialog, _: &mut Window, cx: &mut Context<Self>) {
         self.editing_model_name = self.model_name.clone();
@@ -376,6 +706,26 @@ impl AppState {
         }
     }
 
+    fn open_register(&mut self, _: &OpenRegister, _: &mut Window, cx: &mut Context<Self>) {
+        self.editing_username = "".to_string();
+        self.editing_email = "".to_string();
+        self.editing_password = "".to_string();
+        self.show_register_dialog = true;
+        cx.notify();
+    }
+
+    fn submit_register(&mut self, _: &SubmitRegister, _: &mut Window, cx: &mut Context<Self>) {
+        // Handle registration logic here (e.g., API call, validation)
+        // For now, just close the dialog
+        self.show_register_dialog = false;
+        cx.notify();
+    }
+
+    fn cancel_register(&mut self, _: &CancelRegister, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_register_dialog = false;
+        cx.notify();
+    }
+
 }
 
 impl Render for AppState {
@@ -397,6 +747,9 @@ impl Render for AppState {
             })
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(_window, cx))
+            })
+            .when(self.show_register_dialog, |this| {
+                this.child(self.render_register_dialog(_window, cx))
             })
             .when(self.show_export_dialog, |this| {
                 this.child(self.render_export_dialog(cx))
@@ -456,6 +809,7 @@ impl AppState {
 
         nav = nav.child(self.make_nav_item(t(lang, Translations::NEW_WORKSPACE).to_string(), "⌘N".to_string(), cx));
         nav = nav.child(self.make_nav_item(t(lang, Translations::MODEL_CONFIG).to_string(), "⌘M".to_string(), cx));
+        nav = nav.child(self.make_nav_register_item(cx));
 
         nav
     }
@@ -484,6 +838,22 @@ impl AppState {
             })
             .child(div().text_sm().text_color(SECONDARY_TEXT).child(label))
             .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child(shortcut))
+    }
+
+    fn make_nav_register_item(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .cursor_pointer()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                this.open_register(&OpenRegister, _window, cx);
+            }))
+            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Register"))
+            .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child("⌘R"))
     }
 
     fn pick_folder_dialog() -> Option<(PathBuf, String)> {
@@ -1031,6 +1401,174 @@ impl AppState {
             )
     }
 
+    fn render_register_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let username_editor = window.use_keyed_state("register_username_editor", cx, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(self.editing_username.clone(), window, cx);
+            editor
+        });
+
+        let email_editor = window.use_keyed_state("register_email_editor", cx, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(self.editing_email.clone(), window, cx);
+            editor
+        });
+
+        let password_editor = window.use_keyed_state("register_password_editor", cx, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("••••••••", window, cx);
+            editor.set_text(self.editing_password.clone(), window, cx);
+            editor
+        });
+
+        let username_focus = username_editor.read(cx).focus_handle(cx);
+        let email_focus = email_editor.read(cx).focus_handle(cx);
+        let password_focus = password_editor.read(cx).focus_handle(cx);
+
+        let weak_username = username_editor.downgrade();
+        let weak_email = email_editor.downgrade();
+        let weak_password = password_editor.downgrade();
+
+        // Overlay
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                this.cancel_register(&CancelRegister, _window, cx);
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(400.0))
+                    .p_5()
+                    .bg(CARD_BG)
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .shadow_md()
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child("Create Account")
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Username"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&username_focus)
+                                    .child(username_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Email"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&email_focus)
+                                    .child(email_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Password"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .bg(gpui::white())
+                                    .track_focus(&password_focus)
+                                    .child(password_editor.clone()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        this.cancel_register(&CancelRegister, _window, cx);
+                                    }))
+                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child("Cancel"))
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(BRAND_BLUE)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        if let Some(editor) = weak_username.upgrade() {
+                                            this.editing_username = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        if let Some(editor) = weak_email.upgrade() {
+                                            this.editing_email = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        if let Some(editor) = weak_password.upgrade() {
+                                            this.editing_password = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                        }
+                                        this.submit_register(&SubmitRegister, _window, cx);
+                                    }))
+                                    .child(div().text_sm().text_color(gpui::white()).child("Register"))
+                            )
+                    )
+            )
+    }
+
     fn render_workspace_popup(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let ws_id = self.delete_confirm_workspace_id.unwrap_or(0);
         let pos = self.popup_position;
@@ -1259,6 +1797,14 @@ impl AppState {
 
     fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
+        let live_run = self
+            .current_claude_run
+            .as_ref()
+            .filter(|run| run.task_id == self.active_task_id && run.show_live_bubble)
+            .cloned();
+        let general_ai_pending = self.request_in_flight
+            && matches!(self.request_kind, Some(RequestKind::GeneralAi))
+            && live_run.is_none();
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
 
@@ -1268,7 +1814,7 @@ impl AppState {
             self.needs_auto_scroll = false;
         }
 
-        div()
+        let mut message_list = div()
             .flex_col()
             .gap_5()
             .w_full()
@@ -1369,7 +1915,122 @@ impl AppState {
                 };
 
                 message_container
-            }))
+            }));
+
+        if let Some(run) = live_run.as_ref() {
+            message_list = message_list.child(self.render_claude_live_message(run));
+        }
+
+        if general_ai_pending {
+            message_list = message_list.child(self.render_general_ai_pending_message());
+        }
+
+        message_list
+    }
+
+    fn render_claude_live_message(&self, run: &ClaudeRunPanelState) -> impl IntoElement {
+        let preview = if run.live_text.trim().is_empty() {
+            run.status_message.clone()
+        } else {
+            run.live_text.clone()
+        };
+
+        div()
+            .flex_col()
+            .items_start()
+            .gap_2()
+            .w_full()
+            .mb_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(MUTED_TEXT)
+                            .child(format!("Claude Code · {}", run.status.label()))
+                    )
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .p_4()
+                    .rounded_2xl()
+                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
+                    .max_w(px(520.0))
+                    .min_w(px(35.0))
+                    .w_full()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT)
+                            .child(run.status_message.clone())
+                    )
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .whitespace_normal()
+                            .child(preview)
+                    )
+            )
+    }
+
+    fn render_general_ai_pending_message(&self) -> impl IntoElement {
+        let status_text = self
+            .request_status_text
+            .clone()
+            .unwrap_or_else(|| "AI is thinking...".to_string());
+
+        div()
+            .flex_col()
+            .items_start()
+            .gap_2()
+            .w_full()
+            .mb_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(MUTED_TEXT)
+                            .child("Assistant")
+                    )
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .p_4()
+                    .rounded_2xl()
+                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
+                    .max_w(px(520.0))
+                    .min_w(px(35.0))
+                    .w_full()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT)
+                            .child(status_text)
+                    )
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .whitespace_normal()
+                            .child("Thinking...")
+                    )
+            )
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1382,6 +2043,19 @@ impl AppState {
         let composer_focus = composer_editor.read(cx).focus_handle(cx);
         let weak_composer = composer_editor.downgrade();
         let weak_composer_for_action = weak_composer.clone();
+
+        let request_in_flight = self.request_in_flight;
+        let request_status_text = self.request_status_text.clone();
+        let send_bg = if request_in_flight {
+            Hsla { h: 0.0, s: 0.0, l: 0.78, a: 1.0 }
+        } else {
+            BRAND_BLUE
+        };
+        let send_label = if request_in_flight {
+            "Sending..."
+        } else {
+            "Send"
+        };
 
         div()
             .flex()
@@ -1399,6 +2073,9 @@ impl AppState {
                     .border_color(BORDER_LIGHT)
                     .track_focus(&composer_focus)
                     .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                        if this.request_in_flight {
+                            return;
+                        }
                         if let Some(editor) = weak_composer_for_action.upgrade() {
                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                             if !text.is_empty() {
@@ -1424,64 +2101,15 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
+                                        this.request_in_flight = true;
+                                        this.request_status_text = Some("Claude Code is running...".to_string());
+                                        this.request_kind = Some(RequestKind::ClaudeCode);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
                                         });
                                         cx.notify();
-
-                                        let task_id = this.active_task_id;
-
-                                        cx.spawn(async move |this, cx| {
-                                            // Execute Claude Code
-                                            let project_dir = if let Some(tid) = task_id {
-                                                std::path::PathBuf::from(format!("/tmp/one_task_{}", tid))
-                                            } else {
-                                                std::path::PathBuf::from("/tmp")
-                                            };
-
-                                            let instruction_clone = instruction.clone();
-                                            let session_id_clone = session_id.clone();
-                                            let project_dir_clone = project_dir.clone();
-
-                                            let join_handle = tokio::task::spawn_blocking(move || {
-                                                agents::claude_code::ClaudeCodeAgent::execute_instruction(
-                                                    &project_dir_clone,
-                                                    &instruction_clone,
-                                                    session_id_clone.as_deref(),
-                                                )
-                                            });
-                                            let join_result = join_handle.await;
-
-                                            match join_result {
-                                                Ok(Ok(resp)) => {
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: format!("[Claude Code]\n{}", resp),
-                                                        });
-                                                        if let Some(tid) = task_id {
-                                                            task_db::insert_message(&this.db.conn, tid, "assistant", &resp).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Ok(Err(e)) => {
-                                                    eprintln!("[Claude Code] Error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: format!("Claude Code 执行错误: {}", e),
-                                                        });
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("[Claude Code] Join error: {:?}", e);
-                                                }
-                                            }
-                                        }).detach();
+                                        this.spawn_claude_code_run(instruction, session_id, cx);
                                     }
                                     _ => {
                                         // Default: send to general AI
@@ -1493,6 +2121,9 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
+                                        this.request_in_flight = true;
+                                        this.request_status_text = Some("Waiting for AI response...".to_string());
+                                        this.request_kind = Some(RequestKind::GeneralAi);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
@@ -1530,6 +2161,9 @@ impl AppState {
                                                             role: "assistant".to_string(),
                                                             content: resp.clone(),
                                                         });
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
                                                         // Save assistant message to database
                                                         if let Some(task_id) = this.active_task_id {
                                                             task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
@@ -1568,12 +2202,60 @@ impl AppState {
                                                 }
                                                 Ok(Ok(Err(e))) => {
                                                     eprintln!("API error: {}", e);
+                                                    let error_message = format!(
+                                                        "AI request failed: {}\n\nPlease check network connectivity, Base URL, and API key.",
+                                                        e
+                                                    );
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                                 Ok(Err(e)) => {
                                                     eprintln!("Spawn error: {:?}", e);
+                                                    let error_message = format!("AI runtime spawn error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                                 Err(e) => {
                                                     eprintln!("Tokio error: {:?}", e);
+                                                    let error_message = format!("AI runtime error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                             }
                                         }).detach();
@@ -1589,11 +2271,14 @@ impl AppState {
                     .px_5()
                     .py_3()
                     .rounded_lg()
-                    .bg(BRAND_BLUE)
+                    .bg(send_bg)
                     .cursor_pointer()
                     .text_color(gpui::white())
                     .text_base()
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                        if this.request_in_flight {
+                            return;
+                        }
                         if let Some(editor) = weak_composer.upgrade() {
                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                             if !text.is_empty() {
@@ -1619,64 +2304,15 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
+                                        this.request_in_flight = true;
+                                        this.request_status_text = Some("Claude Code is running...".to_string());
+                                        this.request_kind = Some(RequestKind::ClaudeCode);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
                                         });
                                         cx.notify();
-
-                                        let task_id = this.active_task_id;
-
-                                        cx.spawn(async move |this, cx| {
-                                            // Execute Claude Code
-                                            let project_dir = if let Some(tid) = task_id {
-                                                std::path::PathBuf::from(format!("/tmp/one_task_{}", tid))
-                                            } else {
-                                                std::path::PathBuf::from("/tmp")
-                                            };
-
-                                            let instruction_clone = instruction.clone();
-                                            let session_id_clone = session_id.clone();
-                                            let project_dir_clone = project_dir.clone();
-
-                                            let join_handle = tokio::task::spawn_blocking(move || {
-                                                agents::claude_code::ClaudeCodeAgent::execute_instruction(
-                                                    &project_dir_clone,
-                                                    &instruction_clone,
-                                                    session_id_clone.as_deref(),
-                                                )
-                                            });
-                                            let join_result = join_handle.await;
-
-                                            match join_result {
-                                                Ok(Ok(resp)) => {
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: format!("[Claude Code]\n{}", resp),
-                                                        });
-                                                        if let Some(tid) = task_id {
-                                                            task_db::insert_message(&this.db.conn, tid, "assistant", &resp).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Ok(Err(e)) => {
-                                                    eprintln!("[Claude Code] Error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: format!("Claude Code 执行错误: {}", e),
-                                                        });
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("[Claude Code] Join error: {:?}", e);
-                                                }
-                                            }
-                                        }).detach();
+                                        this.spawn_claude_code_run(instruction, session_id, cx);
                                     }
                                     _ => {
                                         // Default: send to general AI
@@ -1688,6 +2324,9 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
+                                        this.request_in_flight = true;
+                                        this.request_status_text = Some("Waiting for AI response...".to_string());
+                                        this.request_kind = Some(RequestKind::GeneralAi);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
@@ -1725,6 +2364,9 @@ impl AppState {
                                                             role: "assistant".to_string(),
                                                             content: resp.clone(),
                                                         });
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
                                                         // Save assistant message to database
                                                         if let Some(task_id) = this.active_task_id {
                                                             task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
@@ -1763,12 +2405,60 @@ impl AppState {
                                                 }
                                                 Ok(Ok(Err(e))) => {
                                                     eprintln!("API error: {}", e);
+                                                    let error_message = format!(
+                                                        "AI request failed: {}\n\nPlease check network connectivity, Base URL, and API key.",
+                                                        e
+                                                    );
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                                 Ok(Err(e)) => {
                                                     eprintln!("Spawn error: {:?}", e);
+                                                    let error_message = format!("AI runtime spawn error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                                 Err(e) => {
                                                     eprintln!("Tokio error: {:?}", e);
+                                                    let error_message = format!("AI runtime error: {}", e);
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.request_in_flight = false;
+                                                        this.request_status_text = None;
+                                                        this.request_kind = None;
+                                                        this.messages.push(ChatMessage {
+                                                            role: "assistant".to_string(),
+                                                            content: error_message.clone(),
+                                                        });
+                                                        this.needs_auto_scroll = true;
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
+                                                        }
+                                                        cx.notify();
+                                                    });
                                                 }
                                             }
                                         }).detach();
@@ -1777,32 +2467,256 @@ impl AppState {
                             }
                         }
                     }))
-                    .child("Send")
+                    .child(send_label)
             )
+            .when_some(request_status_text, |this, status| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(MUTED_TEXT)
+                        .child(status)
+                )
+            })
     }
 
     fn render_sidebar(&self) -> impl IntoElement {
         let sidebar_bg = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
+        let run = self
+            .current_claude_run
+            .as_ref()
+            .filter(|run| run.task_id == self.active_task_id)
+            .cloned();
 
-        div()
+        let mut sidebar = div()
             .flex()
             .flex_col()
-            .w(px(280.0))
+            .w(px(320.0))
             .h_full()
             .bg(sidebar_bg)
-            .child(self.render_sidebar_section("Todo".to_string(), vec![]))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_sidebar_section("Artifacts".to_string(), vec![]))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_sidebar_section("References".to_string(), vec![]))
-    }
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(40.0))
+                    .px_4()
+                    .bg(WORKSPACE_BG)
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child("Claude Code Run")
+                    )
+            );
 
-    fn render_sidebar_section(&self, title: String, _items: Vec<String>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .p_3()
-            .child(div().text_xs().text_color(MUTED_TEXT).mb_2().child(title))
+        if let Some(run) = run {
+            let status_color = run.status.color();
+            let live_output = if let Some(final_text) = run.final_text.clone() {
+                final_text
+            } else if run.live_text.trim().is_empty() {
+                run.status_message.clone()
+            } else {
+                run.live_text.clone()
+            };
+
+            let mut timeline = div().flex().flex_col().gap_2();
+            for event in run.events.iter().rev() {
+                timeline = timeline.child(
+                    div()
+                        .flex_col()
+                        .gap_1()
+                        .p_3()
+                        .rounded_lg()
+                        .bg(CARD_BG)
+                        .border_1()
+                        .border_color(BORDER_LIGHT)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(event.tone.color())
+                                .font_weight(FontWeight::BOLD)
+                                .child(event.title.clone())
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(SECONDARY_TEXT)
+                                .whitespace_normal()
+                                .child(event.detail.clone())
+                        )
+                );
+            }
+
+            let stderr_preview = if run.stderr_lines.is_empty() {
+                "No stderr output".to_string()
+            } else {
+                run.stderr_lines
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            sidebar = sidebar.child(
+                div()
+                    .id("claude-run-panel-content")
+                    .overflow_scroll()
+                    .flex_1()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::white())
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(status_color)
+                                            .child(run.status.label())
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(MUTED_TEXT)
+                                            .child(run.status_message.clone())
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(PRIMARY_TEXT)
+                                    .font_weight(FontWeight::BOLD)
+                                    .whitespace_normal()
+                                    .child(run.instruction.clone())
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(MUTED_TEXT)
+                                    .whitespace_normal()
+                                    .child(format!("Workdir: {}", run.work_dir))
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("Live Output"))
+                            .child(
+                                div()
+                                    .p_3()
+                                    .rounded_lg()
+                                    .bg(CARD_BG)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(PRIMARY_TEXT)
+                                            .whitespace_normal()
+                                            .child(live_output)
+                                    )
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("Command"))
+                            .child(
+                                div()
+                                    .p_3()
+                                    .rounded_lg()
+                                    .bg(CARD_BG)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT)
+                                            .whitespace_normal()
+                                            .child(if run.command_preview.is_empty() {
+                                                "Claude command has not started yet".to_string()
+                                            } else {
+                                                run.command_preview.clone()
+                                            })
+                                    )
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("stderr"))
+                            .child(
+                                div()
+                                    .p_3()
+                                    .rounded_lg()
+                                    .bg(CARD_BG)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(if run.stderr_lines.is_empty() { SECONDARY_TEXT } else { Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 } })
+                                            .whitespace_normal()
+                                            .child(stderr_preview)
+                                    )
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("Timeline"))
+                            .child(timeline)
+                    )
+            );
+        } else {
+            sidebar = sidebar.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(PRIMARY_TEXT)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("No Claude run yet")
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(MUTED_TEXT)
+                                    .whitespace_normal()
+                                    .child("Send a Claude Code request and this panel will show live progress, logs, and the final result.")
+                            )
+                    )
+            );
+        }
+
+        sidebar
     }
 
     fn render_terminal_resizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

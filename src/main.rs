@@ -3599,6 +3599,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .items_center()
+                            .w_full()
+                            .max_w(px(320.0))
                             .child(
                                 div()
                                     .text_sm()
@@ -3610,6 +3612,7 @@ impl AppState {
                                 div()
                                     .text_xs()
                                     .text_color(MUTED_TEXT)
+                                    .text_center()
                                     .whitespace_normal()
                                     .child("Send a Claude Code request and this panel will show live progress, logs, and the final result.")
                             )

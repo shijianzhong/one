@@ -17,6 +17,8 @@ pub enum ClaudeStreamEvent {
     AssistantText(String),
     Progress { label: String, detail: String },
     Stderr(String),
+    Session { session_id: String },
+    AskUserQuestion { prompt: String, options: Vec<String> },
     Finished { result: String },
     Failed { error: String },
 }
@@ -83,7 +85,16 @@ impl ClaudeCodeAgent {
             .and_then(|value| value.as_str())
             .unwrap_or("unknown");
 
-        match type_str {
+        let mut prefix_events = Vec::new();
+        if let Some(session_id) = json.get("session_id").and_then(|value| value.as_str()) {
+            if !session_id.trim().is_empty() {
+                prefix_events.push(ClaudeStreamEvent::Session {
+                    session_id: session_id.to_string(),
+                });
+            }
+        }
+
+        let mut events = match type_str {
             "assistant" => {
                 let mut events = Vec::new();
                 let mut text_parts = Vec::new();
@@ -118,6 +129,26 @@ impl ClaudeCodeAgent {
 
                 events
             }
+            "ask_user_question" | "question" | "input_required" => {
+                let prompt = json
+                    .get("question")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| json.get("prompt").and_then(|value| value.as_str()))
+                    .or_else(|| json.get("message").and_then(|value| value.as_str()))
+                    .unwrap_or("Claude Code is waiting for your answer")
+                    .to_string();
+                let options = json
+                    .get("options")
+                    .and_then(|value| value.as_array())
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(|text| text.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                vec![ClaudeStreamEvent::AskUserQuestion { prompt, options }]
+            }
             "result" => {
                 let detail = json
                     .get("result")
@@ -142,7 +173,10 @@ impl ClaudeCodeAgent {
                 label: other.to_string(),
                 detail: Self::extract_detail(&json),
             }],
-        }
+        };
+
+        prefix_events.append(&mut events);
+        prefix_events
     }
 
     pub fn execute_instruction_stream(

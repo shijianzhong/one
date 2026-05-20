@@ -5,6 +5,7 @@ use gpui::{
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable, ScrollHandle,
 };
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -129,13 +130,13 @@ struct TerminalLine {
     output: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum RequestKind {
     GeneralAi,
     ClaudeCode,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum ClaudeRunStatus {
     Running,
     Completed,
@@ -160,7 +161,7 @@ impl ClaudeRunStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum ClaudeRunTone {
     Info,
     Success,
@@ -177,14 +178,14 @@ impl ClaudeRunTone {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum FormattedContent {
     Plain(String),
     Json(String),
     Code(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ClaudeRunEvent {
     title: String,
     tone: ClaudeRunTone,
@@ -220,7 +221,7 @@ impl ClaudeRunEvent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ClaudeRunPanelState {
     run_id: u64,
     task_id: Option<usize>,
@@ -235,6 +236,9 @@ struct ClaudeRunPanelState {
     events: Vec<ClaudeRunEvent>,
     show_live_bubble: bool,
     preview: Option<PreviewState>,
+    session_id: Option<String>,
+    artifacts: Vec<ArtifactEntry>,
+    pending_question: Option<PendingQuestion>,
 }
 
 #[derive(Debug)]
@@ -242,7 +246,7 @@ struct PreviewProcessHandle {
     child: Child,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum PreviewStatus {
     Idle,
     Ready,
@@ -267,7 +271,7 @@ impl PreviewStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PreviewState {
     status: PreviewStatus,
     entry_file: Option<String>,
@@ -288,6 +292,21 @@ enum PreviewLaunchResult {
     Failed {
         note: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtifactEntry {
+    name: String,
+    relative_path: String,
+    absolute_path: String,
+    kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingQuestion {
+    prompt: String,
+    options: Vec<String>,
+    session_id: Option<String>,
 }
 
 fn format_event_detail(detail: &str) -> FormattedContent {
@@ -441,6 +460,157 @@ struct TaskItem {
 }
 
 impl AppState {
+    fn slugify_task_title(title: &str) -> String {
+        let mut slug = String::new();
+        let mut prev_dash = false;
+        for ch in title.chars() {
+            if ch.is_ascii_alphanumeric() {
+                slug.push(ch.to_ascii_lowercase());
+                prev_dash = false;
+            } else if !prev_dash {
+                slug.push('-');
+                prev_dash = true;
+            }
+        }
+        slug.trim_matches('-').to_string().chars().take(32).collect::<String>()
+    }
+
+    fn get_task_dir_for_ids(&self, workspace_id: usize, task_id: usize, task_title: &str) -> PathBuf {
+        let workspace_root = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.path.clone())
+            .unwrap_or_else(|| self.default_work_dir.clone());
+        let slug = Self::slugify_task_title(task_title);
+        let dir_name = if slug.is_empty() {
+            format!("{}", task_id)
+        } else {
+            format!("{}-{}", task_id, slug)
+        };
+        workspace_root.join("tasks").join(dir_name)
+    }
+
+    fn get_active_task_location(&self) -> Option<(usize, usize, String)> {
+        let workspace_id = self.active_workspace_id?;
+        let task_id = self.active_task_id?;
+        let task = self.get_active_task()?;
+        Some((workspace_id, task_id, task.title.clone()))
+    }
+
+    fn get_active_task_dir_path(&self) -> Option<PathBuf> {
+        let (workspace_id, task_id, title) = self.get_active_task_location()?;
+        Some(self.get_task_dir_for_ids(workspace_id, task_id, &title))
+    }
+
+    fn get_claude_meta_dir_for_task_dir(task_dir: &std::path::Path) -> PathBuf {
+        task_dir.join(".claude")
+    }
+
+    fn ensure_task_storage_dir(&self, workspace_id: usize, task_id: usize, task_title: &str) -> PathBuf {
+        let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
+        let _ = std::fs::create_dir_all(&task_dir);
+        let _ = std::fs::create_dir_all(Self::get_claude_meta_dir_for_task_dir(&task_dir));
+        task_dir
+    }
+
+    fn load_artifacts_for_task_dir(task_dir: &std::path::Path) -> Vec<ArtifactEntry> {
+        fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<ArtifactEntry>, depth: usize) {
+            if depth > 4 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if path.is_dir() {
+                    if [".claude", ".git", "node_modules", "target"].contains(&name.as_str()) {
+                        continue;
+                    }
+                    walk(root, &path, out, depth + 1);
+                } else if path.is_file() {
+                    let relative_path = path
+                        .strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let kind = path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.to_ascii_lowercase())
+                        .unwrap_or_else(|| "file".to_string());
+                    out.push(ArtifactEntry {
+                        name,
+                        relative_path,
+                        absolute_path: path.to_string_lossy().to_string(),
+                        kind,
+                    });
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        if task_dir.exists() {
+            walk(task_dir, task_dir, &mut out, 0);
+        }
+        out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        out
+    }
+
+    fn persist_current_claude_state(&self) {
+        let Some(run) = self.current_claude_run.as_ref() else {
+            return;
+        };
+        let Some(task_id) = run.task_id else {
+            return;
+        };
+        let Some(workspace_id) = self.active_workspace_id else {
+            return;
+        };
+        let task_title = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "task".to_string());
+        let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, &task_title);
+        let meta_dir = Self::get_claude_meta_dir_for_task_dir(&task_dir);
+        let _ = std::fs::create_dir_all(&meta_dir);
+        let state_path = meta_dir.join("run_state.json");
+        if let Ok(json) = serde_json::to_string_pretty(run) {
+            let _ = std::fs::write(state_path, json);
+        }
+    }
+
+    fn load_claude_state_for_task(&self, workspace_id: usize, task_id: usize, task_title: &str) -> Option<ClaudeRunPanelState> {
+        let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
+        let state_path = Self::get_claude_meta_dir_for_task_dir(&task_dir).join("run_state.json");
+        let content = std::fs::read_to_string(state_path).ok()?;
+        let mut state = serde_json::from_str::<ClaudeRunPanelState>(&content).ok()?;
+        state.artifacts = Self::load_artifacts_for_task_dir(&task_dir);
+        Some(state)
+    }
+
+    fn restore_task_context(&mut self) {
+        if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
+            let _ = self.ensure_task_storage_dir(workspace_id, task_id, &title);
+            let msgs = task_db::load_messages(&self.db.conn, task_id).unwrap_or_default();
+            self.messages = msgs
+                .into_iter()
+                .map(|m| ChatMessage {
+                    role: m.role,
+                    content: m.content,
+                })
+                .collect();
+            self.current_claude_run = self.load_claude_state_for_task(workspace_id, task_id, &title);
+        } else {
+            self.messages.clear();
+            self.current_claude_run = None;
+        }
+    }
     fn new(_window: &mut Window, _cx: &mut Context<Self>, config: Config) -> Self {
         let db = task_db::Database::new().expect("Failed to initialize database");
 
@@ -540,11 +710,12 @@ impl AppState {
     }
 
     fn get_work_dir(&self) -> String {
-        // 优先使用 active workspace 的真实路径
+        if let Some(task_dir) = self.get_active_task_dir_path() {
+            return task_dir.to_string_lossy().to_string();
+        }
         if let Some(ws) = self.get_active_workspace() {
             return ws.path.to_string_lossy().to_string();
         }
-        // fallback 到临时目录（只有当没有任何 workspace 时）
         if let Some(task_id) = self.active_task_id {
             format!("/tmp/one_task_{}", task_id)
         } else {
@@ -568,15 +739,13 @@ impl AppState {
     }
 
     fn add_task_to_workspace(&mut self, workspace_id: usize, title: String, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) {
-            let id = task_db::insert_task(&self.db.conn, workspace_id, &title)
-                .unwrap_or(workspace.tasks.len() + 1);
-
-            workspace.tasks.push(TaskItem {
-                id,
-                title,
-            });
+        if let Some(workspace_index) = self.workspaces.iter().position(|w| w.id == workspace_id) {
+            let fallback_id = self.workspaces[workspace_index].tasks.len() + 1;
+            let id = task_db::insert_task(&self.db.conn, workspace_id, &title).unwrap_or(fallback_id);
+            self.workspaces[workspace_index].tasks.push(TaskItem { id, title: title.clone() });
             self.active_task_id = Some(id);
+            let _ = self.ensure_task_storage_dir(workspace_id, id, &title);
+            self.restore_task_context();
             cx.notify();
         }
     }
@@ -610,7 +779,14 @@ impl AppState {
                 url: None,
                 note: "Preview will be prepared after the run completes".to_string(),
             }),
+            session_id: None,
+            artifacts: self
+                .get_active_task_dir_path()
+                .map(|dir| Self::load_artifacts_for_task_dir(&dir))
+                .unwrap_or_default(),
+            pending_question: None,
         });
+        self.persist_current_claude_state();
         run_id
     }
 
@@ -624,6 +800,23 @@ impl AppState {
     fn open_url_in_browser(&self, url: &str) {
         let _ = Command::new("open")
             .arg(url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    fn open_folder_in_finder(&self, path: &str) {
+        let _ = Command::new("open")
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    fn reveal_file_in_finder(&self, path: &str) {
+        let _ = Command::new("open")
+            .arg("-R")
+            .arg(path)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
@@ -811,6 +1004,32 @@ impl AppState {
                     };
                     run.events.push(tone);
                 }
+                ClaudeStreamEvent::Session { session_id } => {
+                    run.session_id = Some(session_id.clone());
+                    run.events.push(ClaudeRunEvent::info(
+                        "Session updated",
+                        format!("session_id={}", session_id),
+                    ));
+                }
+                ClaudeStreamEvent::AskUserQuestion { prompt, options } => {
+                    run.pending_question = Some(PendingQuestion {
+                        prompt: prompt.clone(),
+                        options: options.clone(),
+                        session_id: run.session_id.clone(),
+                    });
+                    run.status_message = "Claude Code is waiting for your answer".to_string();
+                    self.request_in_flight = false;
+                    self.request_status_text = None;
+                    self.request_kind = None;
+                    run.events.push(ClaudeRunEvent::info(
+                        "Question",
+                        if options.is_empty() {
+                            prompt
+                        } else {
+                            format!("{}\nOptions: {}", prompt, options.join(", "))
+                        },
+                    ));
+                }
                 ClaudeStreamEvent::Finished { result } => {
                     run.status = ClaudeRunStatus::Completed;
                     run.status_message = "Claude Code completed".to_string();
@@ -826,6 +1045,7 @@ impl AppState {
                         "Run completed",
                         format!("Generated {} characters", run.live_text.chars().count()),
                     ));
+                    run.artifacts = Self::load_artifacts_for_task_dir(&PathBuf::from(&run.work_dir));
                     final_message = Some(format!("[Claude Code]\n{}", run.live_text));
                     persist_task_id = run.task_id;
                     finished_work_dir = Some(run.work_dir.clone());
@@ -925,6 +1145,7 @@ impl AppState {
                 task_db::insert_message(&self.db.conn, task_id, "assistant", &message).ok();
             }
         }
+        self.persist_current_claude_state();
     }
 
     fn spawn_claude_code_run(
@@ -934,7 +1155,11 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let run_id = self.begin_claude_run(&instruction);
-        let project_dir = std::path::PathBuf::from(self.get_work_dir());
+        let project_dir = if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
+            self.ensure_task_storage_dir(workspace_id, task_id, &title)
+        } else {
+            std::path::PathBuf::from(self.get_work_dir())
+        };
 
         let (sender, receiver) = mpsc::channel::<ClaudeStreamEvent>();
         let worker_sender = sender.clone();
@@ -1002,6 +1227,27 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    fn continue_claude_with_answer(&mut self, answer: String, cx: &mut Context<Self>) {
+        let session_id = self
+            .current_claude_run
+            .as_ref()
+            .and_then(|run| run.session_id.clone());
+        if let Some(run) = self.current_claude_run.as_mut() {
+            run.pending_question = None;
+            run.status = ClaudeRunStatus::Running;
+            run.status_message = "Continuing Claude Code run".to_string();
+            run.events.push(ClaudeRunEvent::info(
+                "User answered",
+                answer.clone(),
+            ));
+        }
+        self.request_in_flight = true;
+        self.request_kind = Some(RequestKind::ClaudeCode);
+        self.request_status_text = Some("Claude Code is continuing...".to_string());
+        self.persist_current_claude_state();
+        self.spawn_claude_code_run(answer, session_id, cx);
     }
 
     // Action handlers for model config dialog
@@ -1088,9 +1334,9 @@ impl AppState {
 }
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = if self.sidebar_visible {
-            Some(self.render_sidebar(cx).into_any_element())
+            Some(self.render_sidebar(window, cx).into_any_element())
         } else {
             None
         };
@@ -1100,20 +1346,20 @@ impl Render for AppState {
             .bg(CARD_BG)
             .child(self.render_nav(cx))
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_chat(_window, cx))
+            .child(self.render_chat(window, cx))
             .when_some(sidebar, |this, sidebar| {
                 this.child(div().w(px(1.0)).bg(BORDER_LIGHT))
                     .child(sidebar)
             })
             .when(self.terminal_visible, |this| {
                 this.child(self.render_terminal_resizer(cx))
-                    .child(self.render_terminal(_window, cx))
+                    .child(self.render_terminal(window, cx))
             })
             .when(self.show_model_config_dialog, |this| {
-                this.child(self.render_model_config_dialog(_window, cx))
+                this.child(self.render_model_config_dialog(window, cx))
             })
             .when(self.show_register_dialog, |this| {
-                this.child(self.render_register_dialog(_window, cx))
+                this.child(self.render_register_dialog(window, cx))
             })
             .when(self.show_export_dialog, |this| {
                 this.child(self.render_export_dialog(cx))
@@ -1341,6 +1587,8 @@ impl AppState {
                     if let Some(ws) = this.workspaces.iter().find(|w| w.id == ws_id) {
                         if let Some(new_task) = ws.tasks.iter().find(|t| t.title == "New Task") {
                             this.active_task_id = Some(new_task.id);
+                            this.restore_task_context();
+                            cx.notify();
                             return;
                         }
                     }
@@ -1430,16 +1678,7 @@ impl AppState {
                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                             this.active_workspace_id = Some(ws_id);
                             this.active_task_id = Some(task_id);
-                            // Load messages for the selected task
-                            if let Some(tid) = this.active_task_id {
-                                let msgs = task_db::load_messages(&this.db.conn, tid).unwrap_or_default();
-                                this.messages = msgs.into_iter().map(|m| ChatMessage {
-                                    role: m.role,
-                                    content: m.content,
-                                }).collect();
-                            } else {
-                                this.messages.clear();
-                            }
+                            this.restore_task_context();
                             cx.notify();
                         }));
 
@@ -2843,7 +3082,7 @@ impl AppState {
             })
     }
 
-    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar_bg = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
         let run = self
             .current_claude_run
@@ -2877,6 +3116,7 @@ impl AppState {
 
         if let Some(run) = run {
             let status_color = run.status.color();
+            let task_dir = run.work_dir.clone();
             let live_output = if let Some(final_text) = run.final_text.clone() {
                 final_text
             } else if run.live_text.trim().is_empty() {
@@ -2893,6 +3133,14 @@ impl AppState {
                 .as_ref()
                 .map(|preview| preview.status.color())
                 .unwrap_or(MUTED_TEXT);
+            let pending_question = run.pending_question.clone();
+            let question_editor = window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
+                let mut editor = Editor::single_line(window, cx);
+                editor.set_placeholder_text("Answer Claude's question...", window, cx);
+                editor
+            });
+            let question_focus = question_editor.read(cx).focus_handle(cx);
+            let weak_question_editor = question_editor.downgrade();
 
             let mut timeline = div().flex().flex_col().gap_2();
             for event in run.events.iter().rev() {
@@ -3078,6 +3326,192 @@ impl AppState {
                                                 }))
                                                 .child("Open In Browser")
                                         )
+                                )
+                            })
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(div().text_xs().text_color(MUTED_TEXT).child("Artifacts"))
+                                    .child(
+                                        div()
+                                            .px_3()
+                                            .py_2()
+                                            .rounded_md()
+                                            .bg(WORKSPACE_BG)
+                                            .text_xs()
+                                            .text_color(PRIMARY_TEXT)
+                                            .cursor_pointer()
+                                            .on_mouse_down(gpui::MouseButton::Left, {
+                                                let task_dir = task_dir.clone();
+                                                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                                                    this.open_folder_in_finder(&task_dir);
+                                                })
+                                            })
+                                            .child("Open Task Folder")
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .flex_col()
+                                    .gap_2()
+                                    .children(run.artifacts.iter().take(12).cloned().map(|artifact| {
+                                        let absolute_path = artifact.absolute_path.clone();
+                                        let label = format!("{} · {}", artifact.relative_path, artifact.kind);
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .px_2()
+                                            .py_2()
+                                            .rounded_md()
+                                            .bg(WORKSPACE_BG)
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(PRIMARY_TEXT)
+                                                    .whitespace_normal()
+                                                    .child(label)
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(BRAND_BLUE)
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                                                        this.reveal_file_in_finder(&absolute_path);
+                                                    }))
+                                                    .child("Reveal")
+                                            )
+                                            .into_any_element()
+                                    }))
+                            )
+                            .when(run.artifacts.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(SECONDARY_TEXT)
+                                        .child("No artifacts detected for this task yet.")
+                                )
+                            })
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CARD_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(div().text_xs().text_color(MUTED_TEXT).child("Questions"))
+                            .when_some(pending_question.clone(), |this, question| {
+                                this.child(
+                                    div()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(PRIMARY_TEXT)
+                                                .whitespace_normal()
+                                                .child(question.prompt.clone())
+                                        )
+                                        .when(!question.options.is_empty(), |this| {
+                                            this.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_2()
+                                                    .children(question.options.iter().cloned().map(|option| {
+                                                        let option_label = option.clone();
+                                                        div()
+                                                            .px_3()
+                                                            .py_2()
+                                                            .rounded_md()
+                                                            .bg(WORKSPACE_BG)
+                                                            .cursor_pointer()
+                                                            .text_xs()
+                                                            .text_color(PRIMARY_TEXT)
+                                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                                this.continue_claude_with_answer(option.clone(), cx);
+                                                            }))
+                                                            .child(option_label)
+                                                            .into_any_element()
+                                                    }))
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .px_2()
+                                                        .py_2()
+                                                        .rounded_md()
+                                                        .bg(WORKSPACE_BG)
+                                                        .track_focus(&question_focus)
+                                                        .on_action(cx.listener({
+                                                            let weak_question_editor = weak_question_editor.clone();
+                                                            move |this, _: &Confirm, _window, cx| {
+                                                                if let Some(editor) = weak_question_editor.upgrade() {
+                                                                    let answer = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                                                    if !answer.is_empty() {
+                                                                        editor.update(cx, |editor, cx| editor.set_text("", _window, cx));
+                                                                        this.continue_claude_with_answer(answer, cx);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }))
+                                                        .child(question_editor.clone())
+                                                )
+                                                .child(
+                                                    div()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .rounded_md()
+                                                        .bg(BRAND_BLUE)
+                                                        .text_xs()
+                                                        .text_color(gpui::white())
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener({
+                                                            let weak_question_editor = weak_question_editor.clone();
+                                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                                if let Some(editor) = weak_question_editor.upgrade() {
+                                                                    let answer = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                                                    if !answer.is_empty() {
+                                                                        editor.update(cx, |editor, cx| editor.set_text("", _window, cx));
+                                                                        this.continue_claude_with_answer(answer, cx);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }))
+                                                        .child("Submit")
+                                                )
+                                        )
+                                )
+                            })
+                            .when(pending_question.is_none(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(SECONDARY_TEXT)
+                                        .child("No pending questions from Claude Code.")
                                 )
                             })
                     )

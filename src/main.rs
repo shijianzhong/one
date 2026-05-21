@@ -564,6 +564,7 @@ struct Workspace {
 struct TaskItem {
     id: usize,
     title: String,
+    is_draft: bool,
 }
 
 impl AppState {
@@ -916,6 +917,7 @@ impl AppState {
                         .map(|t| TaskItem {
                             id: t.id,
                             title: t.title,
+                            is_draft: t.is_draft,
                         })
                         .collect();
                     Workspace {
@@ -1033,16 +1035,21 @@ impl AppState {
         self.active_workspace_id = Some(id);
     }
 
-    fn add_task_to_workspace(&mut self, workspace_id: usize, title: String, cx: &mut Context<Self>) {
-        if let Some(workspace_index) = self.workspaces.iter().position(|w| w.id == workspace_id) {
-            let fallback_id = self.workspaces[workspace_index].tasks.len() + 1;
-            let id = task_db::insert_task(&self.db.conn, workspace_id, &title).unwrap_or(fallback_id);
-            self.workspaces[workspace_index].tasks.push(TaskItem { id, title: title.clone() });
-            self.active_task_id = Some(id);
-            let _ = self.ensure_task_storage_dir(workspace_id, id, &title);
-            self.restore_task_context();
-            cx.notify();
+    fn ensure_workspace_draft_task(&mut self, workspace_id: usize) -> Option<usize> {
+        let ws_index = self.workspaces.iter().position(|w| w.id == workspace_id)?;
+        let draft_id = task_db::ensure_draft_task(&self.db.conn, workspace_id).ok()?;
+
+        if let Ok(rows) = task_db::load_tasks(&self.db.conn, workspace_id) {
+            self.workspaces[ws_index].tasks = rows
+                .into_iter()
+                .map(|t| TaskItem { id: t.id, title: t.title, is_draft: t.is_draft })
+                .collect();
         }
+
+        if let Some(title) = self.workspaces[ws_index].tasks.iter().find(|t| t.id == draft_id).map(|t| t.title.clone()) {
+            let _ = self.ensure_task_storage_dir(workspace_id, draft_id, &title);
+        }
+        Some(draft_id)
     }
 
     fn begin_claude_run(&mut self, instruction: &str) -> u64 {
@@ -1780,19 +1787,22 @@ impl AppState {
         if let Some((path, name)) = Self::pick_folder_dialog() {
             // 检查是否已存在相同路径的 workspace
             if let Some(existing_ws) = self.workspaces.iter().find(|w| w.path == path) {
-                // 已存在 → 查找是否有 "New Task"，有则定位，无则新建
                 self.active_workspace_id = Some(existing_ws.id);
-                if let Some(new_task) = existing_ws.tasks.iter().find(|t| t.title == "New Task") {
-                    self.active_task_id = Some(new_task.id);
-                } else {
-                    self.active_task_id = None;
-                    self.add_task_to_workspace(existing_ws.id, "New Task".to_string(), cx);
-                }
+                self.active_task_id = existing_ws
+                    .tasks
+                    .iter()
+                    .find(|t| t.is_draft)
+                    .map(|t| t.id)
+                    .or_else(|| existing_ws.tasks.first().map(|t| t.id));
+                self.restore_task_context();
+                cx.notify();
             } else {
-                // 不存在 → 创建新 workspace + New Task
+                // 不存在 → 创建新 workspace + 默认 task
                 self.add_workspace(path, name);
                 if let Some(ws_id) = self.active_workspace_id {
-                    self.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                    self.active_task_id = self.ensure_workspace_draft_task(ws_id);
+                    self.restore_task_context();
+                    cx.notify();
                 }
             }
         }
@@ -1878,17 +1888,9 @@ impl AppState {
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                     cx.stop_propagation();
                     this.active_workspace_id = Some(ws_id);
-                    // Check if there's already a "New Task" in this workspace
-                    if let Some(ws) = this.workspaces.iter().find(|w| w.id == ws_id) {
-                        if let Some(new_task) = ws.tasks.iter().find(|t| t.title == "New Task") {
-                            this.active_task_id = Some(new_task.id);
-                            this.restore_task_context();
-                            cx.notify();
-                            return;
-                        }
-                    }
-                    // No New Task found, create one
-                    this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                    this.active_task_id = this.ensure_workspace_draft_task(ws_id);
+                    this.restore_task_context();
+                    cx.notify();
                 }));
 
             let ws_label = workspace.name.clone();
@@ -1989,10 +1991,28 @@ impl AppState {
                                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                     cx.stop_propagation();
                                     if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                                        let was_draft = ws.tasks.iter().find(|t| t.id == task_id).map(|t| t.is_draft).unwrap_or(false);
+                                        let was_active = this.active_task_id == Some(task_id);
                                         ws.tasks.retain(|t| t.id != task_id);
                                         task_db::delete_task(&this.db.conn, task_id).ok();
-                                        if this.active_task_id == Some(task_id) {
-                                            this.active_task_id = None;
+
+                                        if was_draft || was_active {
+                                            if let Ok(rows) = task_db::load_tasks(&this.db.conn, ws_id) {
+                                                ws.tasks = rows
+                                                    .into_iter()
+                                                    .map(|t| TaskItem { id: t.id, title: t.title, is_draft: t.is_draft })
+                                                    .collect();
+                                            }
+                                        }
+
+                                        if was_active {
+                                            this.active_task_id = ws
+                                                .tasks
+                                                .iter()
+                                                .find(|t| t.is_draft)
+                                                .map(|t| t.id)
+                                                .or_else(|| ws.tasks.first().map(|t| t.id));
+                                            this.restore_task_context();
                                         }
                                         cx.notify();
                                     }
@@ -2518,17 +2538,10 @@ impl AppState {
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                 cx.stop_propagation();
                                 this.active_workspace_id = Some(ws_id);
-                                // Check if there's already a "New Task" in this workspace
-                                if let Some(ws) = this.workspaces.iter().find(|w| w.id == ws_id) {
-                                    if let Some(new_task) = ws.tasks.iter().find(|t| t.title == "New Task") {
-                                        this.active_task_id = Some(new_task.id);
-                                        this.delete_confirm_workspace_id = None;
-                                        return;
-                                    }
-                                }
-                                // No New Task found, create one
-                                this.add_task_to_workspace(ws_id, "New Task".to_string(), cx);
+                                this.active_task_id = this.ensure_workspace_draft_task(ws_id);
                                 this.delete_confirm_workspace_id = None;
+                                this.restore_task_context();
+                                cx.notify();
                             }))
                             .child("添加新任务")
                     )

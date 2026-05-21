@@ -20,16 +20,22 @@ impl Database {
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             path TEXT NOT NULL,
-            expanded INTEGER DEFAULT 0
+            expanded INTEGER DEFAULT 0,
+            default_task_id INTEGER
         )").unwrap())();
+
+        ensure_workspace_default_task_column(conn_ref)?;
 
         let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY,
             workspace_id INTEGER NOT NULL,
             title TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'todo',
+            is_draft INTEGER DEFAULT 0,
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
         )").unwrap())();
+
+        ensure_task_draft_column(conn_ref)?;
 
         let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY,
@@ -87,6 +93,58 @@ impl Database {
     }
 }
 
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = Statement::prepare(conn, &format!("PRAGMA table_info({})", table))?;
+    let cols: Vec<String> = stmt
+        .map(|s| s.column_text(1).map(|v| v.to_string()))?
+        .into_iter()
+        .collect();
+    Ok(cols.iter().any(|c| c == column))
+}
+
+fn ensure_workspace_default_task_column(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "workspaces", "default_task_id")? {
+        let _ = (conn.exec("ALTER TABLE workspaces ADD COLUMN default_task_id INTEGER").unwrap())();
+    }
+
+    Ok(())
+}
+
+fn ensure_task_draft_column(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "tasks", "is_draft")? {
+        let _ = (conn.exec("ALTER TABLE tasks ADD COLUMN is_draft INTEGER DEFAULT 0").unwrap())();
+    }
+
+    // At most one draft per workspace; do not auto-create drafts here.
+    let mut stmt = Statement::prepare(conn, "SELECT id FROM workspaces")?;
+    let workspace_ids: Vec<usize> = stmt
+        .map(|s| s.column_int64(0).map(|v| v as usize))?
+        .into_iter()
+        .collect();
+
+    for workspace_id in workspace_ids {
+        let mut stmt = Statement::prepare(
+            conn,
+            "SELECT id FROM tasks WHERE workspace_id = ? AND is_draft = 1 ORDER BY id",
+        )?;
+        stmt.with_bindings(&workspace_id)?;
+        let draft_ids: Vec<usize> = stmt
+            .map(|s| s.column_int64(0).map(|v| v as usize))?
+            .into_iter()
+            .collect();
+
+        if draft_ids.len() > 1 {
+            for id in draft_ids.into_iter().skip(1) {
+                let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE id = ?")?;
+                stmt.with_bindings(&id)?;
+                stmt.exec()?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn get_db_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -107,6 +165,7 @@ pub struct WorkspaceRow {
 pub struct TaskRow {
     pub id: usize,
     pub title: String,
+    pub is_draft: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -127,13 +186,39 @@ pub fn load_workspaces(conn: &Connection) -> Result<Vec<WorkspaceRow>> {
 }
 
 pub fn load_tasks(conn: &Connection, workspace_id: usize) -> Result<Vec<TaskRow>> {
-    let mut stmt = Statement::prepare(conn, "SELECT id, title FROM tasks WHERE workspace_id = ?")?;
+    let mut stmt = Statement::prepare(conn, "SELECT id, title, is_draft FROM tasks WHERE workspace_id = ? ORDER BY id")?;
     stmt.with_bindings(&workspace_id)?;
     stmt.map(|s| {
         let id = s.column_int64(0)? as usize;
         let title = s.column_text(1)?.to_string();
-        Ok(TaskRow { id, title })
+        let is_draft = s.column_int64(2).unwrap_or(0) != 0;
+        Ok(TaskRow { id, title, is_draft })
     })
+}
+
+pub fn ensure_draft_task(conn: &Connection, workspace_id: usize) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id FROM tasks WHERE workspace_id = ? AND is_draft = 1 ORDER BY id LIMIT 1",
+    )?;
+    stmt.with_bindings(&workspace_id)?;
+    let mut existing: Vec<usize> = stmt
+        .map(|s| s.column_int64(0).map(|v| v as usize))?
+        .into_iter()
+        .collect();
+    if let Some(id) = existing.pop() {
+        return Ok(id);
+    }
+
+    let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE workspace_id = ?")?;
+    stmt.with_bindings(&workspace_id)?;
+    stmt.exec()?;
+
+    let id = insert_task(conn, workspace_id, "New Task")?;
+    let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 1 WHERE id = ?")?;
+    stmt.with_bindings(&id)?;
+    stmt.exec()?;
+    Ok(id)
 }
 
 pub fn insert_workspace(conn: &Connection, name: &str, path: &str) -> Result<usize> {
@@ -222,6 +307,22 @@ pub fn insert_message(conn: &Connection, task_id: usize, role: &str, content: &s
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
     let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+
+    let mut stmt = Statement::prepare(conn, "SELECT is_draft FROM tasks WHERE id = ?")?;
+    stmt.with_bindings(&task_id)?;
+    let rows: Vec<bool> = stmt
+        .map(|s| {
+            let is_draft = s.column_int64(0).unwrap_or(0) != 0;
+            Ok(is_draft)
+        })?
+        .into_iter()
+        .collect();
+    if let Some(true) = rows.into_iter().next() {
+        let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+
     Ok(id as usize)
 }
 

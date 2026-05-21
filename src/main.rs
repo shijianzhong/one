@@ -504,6 +504,13 @@ fn escape_visible_snippet(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn normalize_single_line_label(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn log_think_boundary_newlines(label: &str, content: &str) {
     if !content.contains("<think>") && !content.contains("</think>") {
         return;
@@ -629,7 +636,17 @@ impl AppState {
                     if let Some(tid) = task_id {
                         if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
                             let clean_sum = strip_think_tags(&sum);
-                            let short_title: String = clean_sum.chars().take(10).collect();
+                            let normalized = normalize_single_line_label(&clean_sum);
+                            let short_title: String = normalized.chars().take(10).collect();
+                            if sum.contains('\n') || sum.contains('\r') || clean_sum.contains('\n') || clean_sum.contains('\r') {
+                                let raw_snip = escape_visible_snippet(&sum, 120);
+                                let clean_snip = escape_visible_snippet(&clean_sum, 120);
+                                let norm_snip = escape_visible_snippet(&normalized, 120);
+                                eprintln!(
+                                    "[CHAT-TITLE] raw='{}' clean='{}' normalized='{}' final='{}'",
+                                    raw_snip, clean_snip, norm_snip, short_title
+                                );
+                            }
                             task_db::update_task_title(db_conn, tid, &short_title).ok();
                             for ws in &mut self.workspaces {
                                 for t in &mut ws.tasks {
@@ -2022,6 +2039,13 @@ impl AppState {
 
     fn render_chat_header(&mut self, title: String, work_dir: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
+        if title.contains('\n') || title.contains('\r') {
+            eprintln!(
+                "[CHAT-HEADER] title_has_newline title='{}'",
+                escape_visible_snippet(&title, 120)
+            );
+        }
+        let title = normalize_single_line_label(&title);
         div()
             .flex()
             .items_center()
@@ -2029,10 +2053,19 @@ impl AppState {
             .h(px(40.0))
             .px_4()
             .bg(NAV_BG)
-            .child(div().text_base().text_color(PRIMARY_TEXT).child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_base()
+                    .text_color(PRIMARY_TEXT)
+                    .text_ellipsis()
+                    .child(title)
+            )
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .gap_3()
                     .items_center()
                     .child(

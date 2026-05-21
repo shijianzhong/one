@@ -6,6 +6,7 @@ use gpui::{
     Focusable, ScrollHandle,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -35,7 +36,7 @@ use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
 use services::{Config, load_config, save_config};
-use services::api::call_chat_api_sync;
+use services::api::call_chat_api_stream;
 use agents::claude_code::ClaudeStreamEvent;
 use agents::router::AgentRouter;
 
@@ -122,6 +123,12 @@ struct AppState {
     request_kind: Option<RequestKind>,
     // Agent system
     agent_router: AgentRouter,
+    think_collapsed: HashMap<String, bool>,
+    next_general_ai_run_id: u64,
+    general_ai_run_id: Option<u64>,
+    general_ai_task_id: Option<usize>,
+    general_ai_live_text: String,
+    general_ai_show_live_bubble: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +141,13 @@ struct TerminalLine {
 enum RequestKind {
     GeneralAi,
     ClaudeCode,
+}
+
+#[derive(Debug, Clone)]
+enum GeneralAiStreamEvent {
+    Delta(String),
+    Finished { result: String },
+    Failed { error: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,9 +400,9 @@ fn render_formatted_content(
 }
 
 #[derive(Debug, Clone)]
-struct ContentPart {
-    text: String,
-    is_think: bool,
+enum ContentPart {
+    Normal(String),
+    Think { text: String, complete: bool },
 }
 
 fn strip_think_tags(content: &str) -> String {
@@ -404,44 +418,130 @@ fn strip_think_tags(content: &str) -> String {
 }
 
 fn parse_think_content(content: &str) -> Vec<ContentPart> {
-    let mut parts = Vec::new();
-    let mut current_pos = 0;
+    let open = "<think>";
+    let close = "</think>";
 
-    for cap in content.match_indices("<think>") {
-        let start = cap.0;
-        if current_pos < start {
-            parts.push(ContentPart {
-                text: content[current_pos..start].to_string(),
-                is_think: false,
-            });
+    let mut parts = Vec::new();
+    let mut pos = 0;
+    let mut prev_was_think = false;
+
+    while pos < content.len() {
+        let start_rel = match content[pos..].find(open) {
+            Some(idx) => idx,
+            None => break,
+        };
+        let start = pos + start_rel;
+
+        if pos < start {
+            let mut text = content[pos..start].to_string();
+            if prev_was_think {
+                text = text
+                    .trim_start_matches(|ch| ch == '\n' || ch == '\r')
+                    .to_string();
+            }
+            text = text
+                .trim_end_matches(|ch| ch == '\n' || ch == '\r')
+                .to_string();
+            if !text.is_empty() {
+                parts.push(ContentPart::Normal(text));
+            }
         }
 
-        if let Some(end) = content[start..].find("</think>") {
-            let end = start + end + "</think>".len();
-            let think_content = &content[start..end];
-            parts.push(ContentPart {
-                text: think_content.to_string(),
-                is_think: true,
+        let inner_start = start + open.len();
+        if let Some(close_rel) = content[inner_start..].find(close) {
+            let close_start = inner_start + close_rel;
+            let inner_text = content[inner_start..close_start]
+                .trim_matches(|ch| ch == '\n' || ch == '\r')
+                .to_string();
+            parts.push(ContentPart::Think {
+                text: inner_text,
+                complete: true,
             });
-            current_pos = end;
+            prev_was_think = true;
+            pos = close_start + close.len();
+        } else {
+            let inner_text = content[inner_start..]
+                .trim_matches(|ch| ch == '\n' || ch == '\r')
+                .to_string();
+            parts.push(ContentPart::Think {
+                text: inner_text,
+                complete: false,
+            });
+            prev_was_think = true;
+            pos = content.len();
         }
     }
 
-    if current_pos < content.len() {
-        parts.push(ContentPart {
-            text: content[current_pos..].to_string(),
-            is_think: false,
-        });
+    if pos < content.len() {
+        let mut text = content[pos..].to_string();
+        if prev_was_think {
+            text = text
+                .trim_start_matches(|ch| ch == '\n' || ch == '\r')
+                .to_string();
+        }
+        if !text.is_empty() {
+            parts.push(ContentPart::Normal(text));
+        }
     }
 
     if parts.is_empty() {
-        parts.push(ContentPart {
-            text: content.to_string(),
-            is_think: false,
-        });
+        parts.push(ContentPart::Normal(content.to_string()));
     }
 
     parts
+}
+
+fn escape_visible_snippet(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for ch in text.chars().take(max_chars) {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn log_think_boundary_newlines(label: &str, content: &str) {
+    if !content.contains("<think>") && !content.contains("</think>") {
+        return;
+    }
+
+    let mut open_index = 0usize;
+    while let Some(rel) = content[open_index..].find("<think>") {
+        let i = open_index + rel;
+        let after = i + "<think>".len();
+        let mut count = 0usize;
+        for ch in content[after..].chars() {
+            if ch == '\n' || ch == '\r' {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        let snippet = escape_visible_snippet(&content[after..], 60);
+        eprintln!("[THINK-SPACING] {label} open@{i} after_newlines={count} after_snip='{snippet}'");
+        open_index = after;
+    }
+
+    let mut close_index = 0usize;
+    while let Some(rel) = content[close_index..].find("</think>") {
+        let i = close_index + rel;
+        let after = i + "</think>".len();
+        let mut count = 0usize;
+        for ch in content[after..].chars() {
+            if ch == '\n' || ch == '\r' {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        let snippet = escape_visible_snippet(&content[after..], 60);
+        eprintln!("[THINK-SPACING] {label} close@{i} after_newlines={count} after_snip='{snippet}'");
+        close_index = after;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +560,178 @@ struct TaskItem {
 }
 
 impl AppState {
+    fn begin_general_ai_run(&mut self) -> u64 {
+        self.next_general_ai_run_id += 1;
+        let run_id = self.next_general_ai_run_id;
+        self.request_in_flight = true;
+        self.request_status_text = Some("Waiting for AI response...".to_string());
+        self.request_kind = Some(RequestKind::GeneralAi);
+        self.general_ai_run_id = Some(run_id);
+        self.general_ai_task_id = self.active_task_id;
+        self.general_ai_live_text.clear();
+        self.general_ai_show_live_bubble = true;
+        run_id
+    }
+
+    fn apply_general_ai_stream_event(&mut self, run_id: u64, event: GeneralAiStreamEvent) {
+        if self.general_ai_run_id != Some(run_id) {
+            return;
+        }
+
+        let run_task_id = self.general_ai_task_id;
+        match event {
+            GeneralAiStreamEvent::Delta(delta) => {
+                if self.general_ai_live_text.is_empty() {
+                    self.request_status_text = Some("Generating response...".to_string());
+                }
+                self.general_ai_live_text.push_str(&delta);
+                if delta.contains("<think>") || delta.contains("</think>") {
+                    log_think_boundary_newlines("general_ai:delta", &self.general_ai_live_text);
+                }
+                self.needs_auto_scroll = run_task_id == self.active_task_id;
+            }
+            GeneralAiStreamEvent::Finished { result } => {
+                let content = if result.trim().is_empty() {
+                    self.general_ai_live_text.clone()
+                } else {
+                    result
+                };
+
+                log_think_boundary_newlines("general_ai:final", &content);
+
+                self.request_in_flight = false;
+                self.request_status_text = None;
+                self.request_kind = None;
+                self.general_ai_run_id = None;
+                self.general_ai_task_id = None;
+                self.general_ai_show_live_bubble = false;
+                self.general_ai_live_text.clear();
+
+                if run_task_id == self.active_task_id {
+                    self.messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: content.clone(),
+                    });
+                    self.needs_auto_scroll = true;
+                }
+                if let Some(task_id) = run_task_id {
+                    task_db::insert_message(&self.db.conn, task_id, "assistant", &content).ok();
+                }
+
+                if self.pending_summarize && run_task_id == self.active_task_id {
+                    self.pending_summarize = false;
+                    let task_id = self.active_task_id;
+                    let all_messages = self.messages.clone();
+                    let db_conn = &self.db.conn;
+                    let base_url = self.model_base_url.clone();
+                    let api_key = self.model_api_key.clone();
+                    let model = self.model_name.clone();
+                    if let Some(tid) = task_id {
+                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
+                            let clean_sum = strip_think_tags(&sum);
+                            let short_title: String = clean_sum.chars().take(10).collect();
+                            task_db::update_task_title(db_conn, tid, &short_title).ok();
+                            for ws in &mut self.workspaces {
+                                for t in &mut ws.tasks {
+                                    if t.id == tid {
+                                        t.title = short_title.clone();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            GeneralAiStreamEvent::Failed { error } => {
+                let error_message = format!(
+                    "AI request failed: {}\n\nPlease check network connectivity, Base URL, and API key.",
+                    error
+                );
+
+                self.request_in_flight = false;
+                self.request_status_text = None;
+                self.request_kind = None;
+                self.general_ai_run_id = None;
+                self.general_ai_task_id = None;
+                self.general_ai_show_live_bubble = false;
+                self.general_ai_live_text.clear();
+
+                if run_task_id == self.active_task_id {
+                    self.messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: error_message.clone(),
+                    });
+                    self.needs_auto_scroll = true;
+                }
+                if let Some(task_id) = run_task_id {
+                    task_db::insert_message(&self.db.conn, task_id, "assistant", &error_message).ok();
+                }
+            }
+        }
+    }
+
+    fn spawn_general_ai_run(&mut self, cx: &mut Context<Self>) {
+        let run_id = self.begin_general_ai_run();
+
+        let base_url = self.model_base_url.clone();
+        let api_key = self.model_api_key.clone();
+        let model = self.model_name.clone();
+        let messages = self.messages.clone();
+
+        let (sender, receiver) = mpsc::channel::<GeneralAiStreamEvent>();
+        let delta_sender = sender.clone();
+        let final_sender = sender.clone();
+
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let result = call_chat_api_stream(&base_url, &api_key, &model, &messages, move |delta| {
+                let _ = delta_sender.send(GeneralAiStreamEvent::Delta(delta));
+            })
+            .await;
+
+            match result {
+                Ok(output) => {
+                    let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: output });
+                }
+                Err(error) => {
+                    let _ = final_sender.send(GeneralAiStreamEvent::Failed { error });
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                let mut disconnected = false;
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(event) => {
+                            let _ = this.update(cx, |this, cx| {
+                                this.apply_general_ai_stream_event(run_id, event);
+                                cx.notify();
+                            });
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnected {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(Duration::from_millis(60))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
     fn slugify_task_title(title: &str) -> String {
         let mut slug = String::new();
         let mut prev_dash = false;
@@ -683,6 +955,12 @@ impl AppState {
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
             agent_router: AgentRouter::new(),
+            think_collapsed: HashMap::new(),
+            next_general_ai_run_id: 0,
+            general_ai_run_id: None,
+            general_ai_task_id: None,
+            general_ai_live_text: String::new(),
+            general_ai_show_live_bubble: false,
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -2398,16 +2676,20 @@ impl AppState {
             )
     }
 
-    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let messages = self.messages.clone();
         let live_run = self
             .current_claude_run
             .as_ref()
             .filter(|run| run.task_id == self.active_task_id && run.show_live_bubble)
             .cloned();
+        let general_ai_live_run_id = self
+            .general_ai_run_id
+            .filter(|_| self.general_ai_show_live_bubble && self.general_ai_task_id == self.active_task_id);
         let general_ai_pending = self.request_in_flight
             && matches!(self.request_kind, Some(RequestKind::GeneralAi))
-            && live_run.is_none();
+            && live_run.is_none()
+            && general_ai_live_run_id.is_none();
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
 
@@ -2417,11 +2699,13 @@ impl AppState {
             self.needs_auto_scroll = false;
         }
 
+        let task_id = self.active_task_id.unwrap_or_default();
+
         let mut message_list = div()
             .flex_col()
             .gap_5()
             .w_full()
-            .children(messages.iter().map(|msg| {
+            .children(messages.iter().enumerate().map(|(msg_index, msg)| {
                 let is_user_msg = is_user(&msg.role);
                 let bubble_bg = if is_user_msg {
                     Hsla { h: 0.58, s: 0.75, l: 0.45, a: 1.0 } // Blue bg for user
@@ -2446,7 +2730,7 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_end()
-                                .gap_2()
+                                .gap_1()
                                 .p_4()
                                 .rounded_2xl()
                                 .bg(bubble_bg)
@@ -2461,10 +2745,11 @@ impl AppState {
                                 )
                         )
                 } else {
+                    let mut think_index = 0usize;
                     div()
                         .flex_col()
                         .items_start()
-                        .gap_2()
+                        .gap_1()
                         .w_full()
                         .mb_3()
                         .child(
@@ -2489,31 +2774,94 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_start()
-                                .gap_2()
                                 .p_4()
                                 .rounded_2xl()
                                 .bg(bubble_bg)
                                 .max_w(px(520.0))
                                 .min_w(px(35.0))
                                 .w_full()
-                                .children(parts.iter().map(|part| {
-                                    if part.is_think {
-                                        // Think content: small, muted, indented
-                                        div()
-                                            .pl_4()
-                                            .py_1()
-                                            .text_sm()
-                                            .text_color(TERTIARY_TEXT)
-                                            .whitespace_normal()
-                                            .child(part.text.clone())
-                                    } else {
-                                        div()
-                                            .text_base()
-                                            .text_color(text_color)
-                                            .whitespace_normal()
-                                            .child(part.text.clone())
+                                .children({
+                                    let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
+                                    let mut prev_was_think = false;
+                                    for part in &parts {
+                                        match part {
+                                            ContentPart::Normal(text) => {
+                                                let add_top_padding = prev_was_think;
+                                                prev_was_think = false;
+                                                let el = div()
+                                                    .text_base()
+                                                    .text_color(text_color)
+                                                    .whitespace_normal()
+                                                    .child(text.clone());
+                                                let el = if add_top_padding { el.pt_1() } else { el };
+                                                rendered_parts.push(el.into_any_element());
+                                            }
+                                            ContentPart::Think { text, complete } => {
+                                                prev_was_think = true;
+                                                let current_think_index = think_index;
+                                                think_index += 1;
+                                                let complete = *complete;
+                                                let key = format!("task:{}:msg:{}:think:{}", task_id, msg_index, current_think_index);
+                                                let collapsed = self
+                                                    .think_collapsed
+                                                    .get(&key)
+                                                    .copied()
+                                                    .unwrap_or(complete);
+                                                let header_text = if complete { "思考完成" } else { "正在思考" };
+                                                let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
+                                                let default_collapsed = complete;
+
+                                                let el = div()
+                                                    .flex_col()
+                                                    .w_full()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .px_2()
+                                                            .py_1()
+                                                            .rounded_md()
+                                                            .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                                            .border_1()
+                                                            .border_color(BORDER_LIGHT)
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                                let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
+                                                                this.think_collapsed.insert(key.clone(), next);
+                                                                cx.notify();
+                                                            }))
+                                                            .child(
+                                                                svg()
+                                                                    .path(icon_path)
+                                                                    .size(px(14.0))
+                                                                    .flex_none()
+                                                                    .text_color(MUTED_TEXT)
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(MUTED_TEXT)
+                                                                    .child(header_text)
+                                                            )
+                                                    )
+                                                    .when(!collapsed, |this| {
+                                                        this.child(
+                                                            div()
+                                                                .pl_3()
+                                                                .pr_2()
+                                                                .text_xs()
+                                                                .text_color(TERTIARY_TEXT)
+                                                                .whitespace_normal()
+                                                                .child(text.clone())
+                                                        )
+                                                    });
+                                                rendered_parts.push(el.into_any_element());
+                                            }
+                                        }
                                     }
-                                }))
+                                    rendered_parts
+                                })
                         )
                 };
 
@@ -2521,7 +2869,11 @@ impl AppState {
             }));
 
         if let Some(run) = live_run.as_ref() {
-            message_list = message_list.child(self.render_claude_live_message(run));
+            message_list = message_list.child(self.render_claude_live_message(run, cx));
+        }
+
+        if let Some(run_id) = general_ai_live_run_id {
+            message_list = message_list.child(self.render_general_ai_live_message(run_id, cx));
         }
 
         if general_ai_pending {
@@ -2531,17 +2883,146 @@ impl AppState {
         message_list
     }
 
-    fn render_claude_live_message(&self, run: &ClaudeRunPanelState) -> impl IntoElement {
+    fn render_general_ai_live_message(&mut self, run_id: u64, cx: &mut Context<Self>) -> impl IntoElement {
+        let status_text = self
+            .request_status_text
+            .clone()
+            .unwrap_or_else(|| "AI is thinking...".to_string());
+        let waiting = self.general_ai_live_text.trim().is_empty();
+        let parts = if waiting {
+            Vec::new()
+        } else {
+            parse_think_content(&self.general_ai_live_text)
+        };
+        let mut think_index = 0usize;
+        let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
+        if !waiting {
+            let mut prev_was_think = false;
+            for part in &parts {
+                match part {
+                    ContentPart::Normal(text) => {
+                        let add_top_padding = prev_was_think;
+                        prev_was_think = false;
+                        let el = div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT)
+                            .whitespace_normal()
+                            .child(text.clone());
+                        let el = if add_top_padding { el.pt_1() } else { el };
+                        rendered_parts.push(el.into_any_element());
+                    }
+                    ContentPart::Think { text, complete } => {
+                        prev_was_think = true;
+                        let current_think_index = think_index;
+                        think_index += 1;
+                        let complete = *complete;
+                        let key = format!("general:{}:think:{}", run_id, current_think_index);
+                        let collapsed = self.think_collapsed.get(&key).copied().unwrap_or(false);
+                        let header_text = if complete { "思考完成" } else { "正在思考" };
+                        let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
+
+                        let el = div()
+                            .flex_col()
+                            .w_full()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .cursor_pointer()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        let next = !this.think_collapsed.get(&key).copied().unwrap_or(false);
+                                        this.think_collapsed.insert(key.clone(), next);
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path(icon_path)
+                                            .size(px(14.0))
+                                            .flex_none()
+                                            .text_color(MUTED_TEXT)
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(MUTED_TEXT)
+                                            .child(header_text)
+                                    )
+                            )
+                            .when(!collapsed, |this| {
+                                this.child(
+                                    div()
+                                        .pl_3()
+                                        .pr_2()
+                                        .text_xs()
+                                        .text_color(TERTIARY_TEXT)
+                                        .whitespace_normal()
+                                        .child(text.clone())
+                                )
+                            });
+                        rendered_parts.push(el.into_any_element());
+                    }
+                }
+            }
+        }
+
+        let mut content = div()
+            .flex_col()
+            .items_start()
+            .p_4()
+            .rounded_2xl()
+            .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
+            .max_w(px(520.0))
+            .min_w(px(35.0))
+            .w_full();
+        if waiting {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(TERTIARY_TEXT)
+                    .child(status_text)
+            );
+        } else {
+            content = content.children(rendered_parts);
+        }
+
+        div()
+            .flex_col()
+            .items_start()
+            .gap_1()
+            .w_full()
+            .mb_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
+                    .child(div().text_xs().text_color(MUTED_TEXT).child("Assistant"))
+            )
+            .child(content)
+    }
+
+    fn render_claude_live_message(&mut self, run: &ClaudeRunPanelState, cx: &mut Context<Self>) -> impl IntoElement {
         let preview = if run.live_text.trim().is_empty() {
             run.status_message.clone()
         } else {
             run.live_text.clone()
         };
 
+        let parts = parse_think_content(&preview);
+        let mut think_index = 0usize;
+
         div()
             .flex_col()
             .items_start()
-            .gap_2()
+            .gap_1()
             .w_full()
             .mb_3()
             .child(
@@ -2561,7 +3042,7 @@ impl AppState {
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_2()
+                    .gap_1()
                     .p_4()
                     .rounded_2xl()
                     .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
@@ -2576,10 +3057,90 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .text_base()
-                            .text_color(PRIMARY_TEXT)
-                            .whitespace_normal()
-                            .child(preview)
+                            .flex_col()
+                            .w_full()
+                            .children({
+                                let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
+                                let mut prev_was_think = false;
+                                for part in &parts {
+                                    match part {
+                                        ContentPart::Normal(text) => {
+                                            let add_top_padding = prev_was_think;
+                                            prev_was_think = false;
+                                            let el = div()
+                                                .text_base()
+                                                .text_color(PRIMARY_TEXT)
+                                                .whitespace_normal()
+                                                .child(text.clone());
+                                            let el = if add_top_padding { el.pt_1() } else { el };
+                                            rendered_parts.push(el.into_any_element());
+                                        }
+                                        ContentPart::Think { text, complete } => {
+                                            prev_was_think = true;
+                                            let current_think_index = think_index;
+                                            think_index += 1;
+                                            let complete = *complete;
+                                            let key = format!("live:{}:think:{}", run.run_id, current_think_index);
+                                            let collapsed = self
+                                                .think_collapsed
+                                                .get(&key)
+                                                .copied()
+                                                .unwrap_or(complete);
+                                            let header_text = if complete { "思考完成" } else { "正在思考" };
+                                            let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
+                                            let default_collapsed = complete;
+
+                                            let el = div()
+                                                .flex_col()
+                                                .w_full()
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .px_2()
+                                                        .py_1()
+                                                        .rounded_md()
+                                                        .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                                        .border_1()
+                                                        .border_color(BORDER_LIGHT)
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                            let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
+                                                            this.think_collapsed.insert(key.clone(), next);
+                                                            cx.notify();
+                                                        }))
+                                                        .child(
+                                                            svg()
+                                                                .path(icon_path)
+                                                                .size(px(14.0))
+                                                                .flex_none()
+                                                                .text_color(MUTED_TEXT)
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(MUTED_TEXT)
+                                                                .child(header_text)
+                                                        )
+                                                )
+                                                .when(!collapsed, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .pl_3()
+                                                            .pr_2()
+                                                            .text_xs()
+                                                            .text_color(TERTIARY_TEXT)
+                                                            .whitespace_normal()
+                                                            .child(text.clone())
+                                                    )
+                                                });
+                                            rendered_parts.push(el.into_any_element());
+                                        }
+                                    }
+                                }
+                                rendered_parts
+                            })
                     )
             )
     }
@@ -2626,13 +3187,6 @@ impl AppState {
                             .text_color(TERTIARY_TEXT)
                             .child(status_text)
                     )
-                    .child(
-                        div()
-                            .text_base()
-                            .text_color(PRIMARY_TEXT)
-                            .whitespace_normal()
-                            .child("Thinking...")
-                    )
             )
     }
 
@@ -2648,7 +3202,6 @@ impl AppState {
         let weak_composer_for_action = weak_composer.clone();
 
         let request_in_flight = self.request_in_flight;
-        let request_status_text = self.request_status_text.clone();
         let send_bg = if request_in_flight {
             Hsla { h: 0.0, s: 0.0, l: 0.78, a: 1.0 }
         } else {
@@ -2724,144 +3277,12 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
-                                        this.request_in_flight = true;
-                                        this.request_status_text = Some("Waiting for AI response...".to_string());
-                                        this.request_kind = Some(RequestKind::GeneralAi);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
                                         });
                                         cx.notify();
-
-                                        // Use tokio runtime to spawn blocking task
-                                        let base_url = this.model_base_url.clone();
-                                        let api_key = this.model_api_key.clone();
-                                        let model = this.model_name.clone();
-                                        let messages = this.messages.clone();
-
-                                        eprintln!("[DEBUG] Spawning tokio async task");
-
-                                        cx.spawn(async move |this, cx| {
-                                            eprintln!("[DEBUG] Inside cx.spawn");
-
-                                            // Spawn async work on tokio runtime
-                                            let result = gpui_tokio::Tokio::spawn(cx, async move {
-                                                eprintln!("[DEBUG] Tokio task started");
-                                                // Use spawn_blocking for the synchronous HTTP call
-                                                tokio::task::spawn_blocking(move || {
-                                                    eprintln!("[DEBUG] Thread started");
-                                                    call_chat_api_sync(&base_url, &api_key, &model, &messages)
-                                                }).await
-                                            }).await;
-
-                                            eprintln!("[DEBUG] Received result");
-
-                                            match result {
-                                                Ok(Ok(Ok(resp))) => {
-                                                    eprintln!("[DEBUG] HTTP OK, updating UI");
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: resp.clone(),
-                                                        });
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        // Save assistant message to database
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-
-                                                        // AI summarization: summarize and update task title
-                                                        if this.pending_summarize {
-                                                            this.pending_summarize = false;
-                                                            let task_id = this.active_task_id;
-                                                            let all_messages = this.messages.clone();
-                                                            let db_conn = &this.db.conn;
-                                                            let base_url = this.model_base_url.clone();
-                                                            let api_key = this.model_api_key.clone();
-                                                            let model = this.model_name.clone();
-                                                            if let Some(tid) = task_id {
-                                                                if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
-                                                                    let clean_sum = strip_think_tags(&sum);
-                                                                    let short_title: String = clean_sum.chars().take(10).collect();
-                                                                    task_db::update_task_title(db_conn, tid, &short_title).ok();
-                                                                    for ws in &mut this.workspaces {
-                                                                        for t in &mut ws.tasks {
-                                                                            if t.id == tid {
-                                                                                t.title = short_title.clone();
-                                                                                break;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        cx.notify();
-                                                    });
-                                                    eprintln!("[DEBUG] UI updated");
-                                                }
-                                                Ok(Ok(Err(e))) => {
-                                                    eprintln!("API error: {}", e);
-                                                    let error_message = format!(
-                                                        "AI request failed: {}\n\nPlease check network connectivity, Base URL, and API key.",
-                                                        e
-                                                    );
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Ok(Err(e)) => {
-                                                    eprintln!("Spawn error: {:?}", e);
-                                                    let error_message = format!("AI runtime spawn error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Tokio error: {:?}", e);
-                                                    let error_message = format!("AI runtime error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            }
-                                        }).detach();
+                                        this.spawn_general_ai_run(cx);
                                     }
                                 }
                             }
@@ -2927,144 +3348,12 @@ impl AppState {
                                         if let Some(task_id) = this.active_task_id {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
-                                        this.request_in_flight = true;
-                                        this.request_status_text = Some("Waiting for AI response...".to_string());
-                                        this.request_kind = Some(RequestKind::GeneralAi);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
                                             editor.set_text("", _window, cx);
                                         });
                                         cx.notify();
-
-                                        // Use tokio runtime to spawn blocking task
-                                        let base_url = this.model_base_url.clone();
-                                        let api_key = this.model_api_key.clone();
-                                        let model = this.model_name.clone();
-                                        let messages = this.messages.clone();
-
-                                        eprintln!("[DEBUG] Spawning tokio async task");
-
-                                        cx.spawn(async move |this, cx| {
-                                            eprintln!("[DEBUG] Inside cx.spawn");
-
-                                            // Spawn async work on tokio runtime
-                                            let result = gpui_tokio::Tokio::spawn(cx, async move {
-                                                eprintln!("[DEBUG] Tokio task started");
-                                                // Use spawn_blocking for the synchronous HTTP call
-                                                tokio::task::spawn_blocking(move || {
-                                                    eprintln!("[DEBUG] Thread started");
-                                                    call_chat_api_sync(&base_url, &api_key, &model, &messages)
-                                                }).await
-                                            }).await;
-
-                                            eprintln!("[DEBUG] Received result");
-
-                                            match result {
-                                                Ok(Ok(Ok(resp))) => {
-                                                    eprintln!("[DEBUG] HTTP OK, updating UI");
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: resp.clone(),
-                                                        });
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        // Save assistant message to database
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &resp).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-
-                                                        // AI summarization: summarize and update task title
-                                                        if this.pending_summarize {
-                                                            this.pending_summarize = false;
-                                                            let task_id = this.active_task_id;
-                                                            let all_messages = this.messages.clone();
-                                                            let db_conn = &this.db.conn;
-                                                            let base_url = this.model_base_url.clone();
-                                                            let api_key = this.model_api_key.clone();
-                                                            let model = this.model_name.clone();
-                                                            if let Some(tid) = task_id {
-                                                                if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
-                                                                    let clean_sum = strip_think_tags(&sum);
-                                                                    let short_title: String = clean_sum.chars().take(10).collect();
-                                                                    task_db::update_task_title(db_conn, tid, &short_title).ok();
-                                                                    for ws in &mut this.workspaces {
-                                                                        for t in &mut ws.tasks {
-                                                                            if t.id == tid {
-                                                                                t.title = short_title.clone();
-                                                                                break;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        cx.notify();
-                                                    });
-                                                    eprintln!("[DEBUG] UI updated");
-                                                }
-                                                Ok(Ok(Err(e))) => {
-                                                    eprintln!("API error: {}", e);
-                                                    let error_message = format!(
-                                                        "AI request failed: {}\n\nPlease check network connectivity, Base URL, and API key.",
-                                                        e
-                                                    );
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Ok(Err(e)) => {
-                                                    eprintln!("Spawn error: {:?}", e);
-                                                    let error_message = format!("AI runtime spawn error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Tokio error: {:?}", e);
-                                                    let error_message = format!("AI runtime error: {}", e);
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.request_in_flight = false;
-                                                        this.request_status_text = None;
-                                                        this.request_kind = None;
-                                                        this.messages.push(ChatMessage {
-                                                            role: "assistant".to_string(),
-                                                            content: error_message.clone(),
-                                                        });
-                                                        this.needs_auto_scroll = true;
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "assistant", &error_message).ok();
-                                                        }
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            }
-                                        }).detach();
+                                        this.spawn_general_ai_run(cx);
                                     }
                                 }
                             }
@@ -3072,14 +3361,6 @@ impl AppState {
                     }))
                     .child(send_label)
             )
-            .when_some(request_status_text, |this, status| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(MUTED_TEXT)
-                        .child(status)
-                )
-            })
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

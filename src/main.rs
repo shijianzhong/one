@@ -31,6 +31,7 @@ mod sandbox;
 mod services;
 mod task_db;
 mod agents;
+mod skills_market;
 
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
@@ -39,6 +40,7 @@ use services::{Config, load_config, save_config};
 use services::api::call_chat_api_stream;
 use agents::claude_code::ClaudeStreamEvent;
 use agents::router::AgentRouter;
+use skills_market::SkillsMarketState;
 
 struct DraggedResizer;
 
@@ -78,6 +80,12 @@ const NAV_WIDTH: f32 = 240.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Chat,
+    SkillsMarket,
+}
+
 struct AppState {
     db: task_db::Database,
     workspaces: Vec<Workspace>,
@@ -89,6 +97,8 @@ struct AppState {
     terminal_width: f32,
     terminal_resize_initial_mouse_x: Option<f32>,
     terminal_resize_initial_width: Option<f32>,
+    main_view: MainView,
+    pub(crate) skills_market: SkillsMarketState,
     show_model_config_dialog: bool,
     show_export_dialog: bool,
     exported_json: Option<String>,
@@ -1048,6 +1058,8 @@ impl AppState {
             terminal_width: 500.0,
             terminal_resize_initial_mouse_x: None,
             terminal_resize_initial_width: None,
+            main_view: MainView::Chat,
+            skills_market: SkillsMarketState::new(),
             show_model_config_dialog: false,
             show_export_dialog: false,
             exported_json: None,
@@ -1684,6 +1696,12 @@ impl AppState {
         cx.notify();
     }
 
+    pub(crate) fn open_skills_market(&mut self, cx: &mut Context<Self>) {
+        self.skills_market.refresh();
+        self.main_view = MainView::SkillsMarket;
+        cx.notify();
+    }
+
     fn save_model_config(&mut self, _: &SaveModelConfig, _: &mut Window, cx: &mut Context<Self>) {
         self.model_name = self.editing_model_name.clone();
         self.model_base_url = self.editing_base_url.clone();
@@ -1777,7 +1795,7 @@ impl Render for AppState {
             .bg(CARD_BG)
             .child(self.render_nav(cx))
             .child(div().w(px(1.0)).bg(BORDER_LIGHT))
-            .child(self.render_chat(window, cx))
+            .child(self.render_main_content(window, cx))
             .when_some(sidebar, |this, sidebar| {
                 this.child(div().w(px(1.0)).bg(BORDER_LIGHT))
                     .child(sidebar)
@@ -1802,6 +1820,13 @@ impl Render for AppState {
 }
 
 impl AppState {
+    fn render_main_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        match self.main_view {
+            MainView::Chat => self.render_chat(window, cx).into_any_element(),
+            MainView::SkillsMarket => skills_market::render_skills_market(&*self, window, cx),
+        }
+    }
+
     fn render_nav(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -1849,6 +1874,7 @@ impl AppState {
             .p_2();
 
         nav = nav.child(self.make_nav_item(t(lang, Translations::NEW_WORKSPACE).to_string(), "⌘N".to_string(), cx));
+        nav = nav.child(self.make_nav_item(t(lang, Translations::SKILLS).to_string(), "⌘K".to_string(), cx));
         nav = nav.child(self.make_nav_item(t(lang, Translations::MODEL_CONFIG).to_string(), "⌘M".to_string(), cx));
         nav = nav.child(self.make_nav_register_item(cx));
 
@@ -1857,6 +1883,7 @@ impl AppState {
 
     fn make_nav_item(&mut self, label: String, shortcut: String, cx: &mut Context<Self>) -> impl IntoElement {
         let is_new_workspace = label == t(self.current_lang, Translations::NEW_WORKSPACE);
+        let is_skills = label == t(self.current_lang, Translations::SKILLS);
         let is_model_config = label == t(self.current_lang, Translations::MODEL_CONFIG);
 
         div()
@@ -1870,6 +1897,11 @@ impl AppState {
             .when(is_new_workspace, |this| {
                 this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                     this.handle_new_workspace_click(cx);
+                }))
+            })
+            .when(is_skills, |this| {
+                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.open_skills_market(cx);
                 }))
             })
             .when(is_model_config, |this| {
@@ -2112,6 +2144,7 @@ impl AppState {
                             this.active_workspace_id = Some(ws_id);
                             this.active_task_id = Some(task_id);
                             this.restore_task_context();
+                            this.main_view = MainView::Chat;
                             cx.notify();
                         }));
 

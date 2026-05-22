@@ -36,6 +36,12 @@ impl Translations {
     pub const NAV_ONE: (&'static str, &'static str) = ("ONE", "ONE");
     pub const NEW_WORKSPACE: (&'static str, &'static str) = ("新建 Workspace", "New Workspace");
     pub const SKILLS: (&'static str, &'static str) = ("技能", "Skills");
+    pub const SKILLS_HINT: (&'static str, &'static str) = ("上传并管理技能包（.skill / .zip）", "Upload and manage skill packages (.skill / .zip)");
+    pub const UPLOAD_SKILL_PACKAGE: (&'static str, &'static str) = ("上传技能包", "Upload Skill Package");
+    pub const UPLOAD: (&'static str, &'static str) = ("上传", "Upload");
+    pub const NO_SKILLS: (&'static str, &'static str) = ("还没有安装任何技能。", "No skills installed yet.");
+    pub const DETAILS: (&'static str, &'static str) = ("详情", "Details");
+    pub const CLOSE: (&'static str, &'static str) = ("关闭", "Close");
     pub const AUTOMATION: (&'static str, &'static str) = ("自动化", "Automation");
     pub const MODEL_CONFIG: (&'static str, &'static str) = ("模型配置", "Model Config");
     pub const REGISTER: (&'static str, &'static str) = ("注册", "Register");

@@ -3434,14 +3434,14 @@ impl AppState {
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
-        let composer_editor = window.use_keyed_state("composer_editor", &mut *cx, |window, cx| {
+        let composer_key = match lang {
+            Lang::Zh => "composer_editor_zh",
+            Lang::En => "composer_editor_en",
+        };
+        let composer_editor = window.use_keyed_state(composer_key, &mut *cx, |window, cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text(t(lang, Translations::TYPE_MESSAGE), window, cx);
             editor
-        });
-
-        composer_editor.update(cx, |editor, cx| {
-            editor.set_placeholder_text(t(lang, Translations::TYPE_MESSAGE), window, cx);
         });
 
         let composer_focus = composer_editor.read(cx).focus_handle(cx);

@@ -17,7 +17,7 @@ use dirs;
 use gpui_platform::application;
 use editor::Editor;
 use menu::Confirm;
-use crate::services::summarize_conversation_sync;
+use crate::services::summarize_conversation_async;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 use theme;
 use theme_settings;
@@ -109,6 +109,8 @@ struct AppState {
     chat_scroll_handle: ScrollHandle,
     needs_auto_scroll: bool,
     pending_summarize: bool,
+    next_summarize_job_id: u64,
+    summarize_job_id: Option<u64>,
     sandbox_backend: Backend,
     hovered_workspace_id: Option<usize>,
     delete_confirm_workspace_id: Option<usize>,
@@ -148,6 +150,20 @@ enum GeneralAiStreamEvent {
     Delta(String),
     Finished { result: String },
     Failed { error: String },
+}
+
+#[derive(Debug, Clone)]
+enum SummarizeEvent {
+    Finished {
+        job_id: u64,
+        task_id: usize,
+        summary: String,
+    },
+    Failed {
+        job_id: u64,
+        task_id: usize,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -581,7 +597,12 @@ impl AppState {
         run_id
     }
 
-    fn apply_general_ai_stream_event(&mut self, run_id: u64, event: GeneralAiStreamEvent) {
+    fn apply_general_ai_stream_event(
+        &mut self,
+        run_id: u64,
+        event: GeneralAiStreamEvent,
+        cx: &mut Context<Self>,
+    ) {
         if self.general_ai_run_id != Some(run_id) {
             return;
         }
@@ -630,34 +651,68 @@ impl AppState {
                     self.pending_summarize = false;
                     let task_id = self.active_task_id;
                     let all_messages = self.messages.clone();
-                    let db_conn = &self.db.conn;
                     let base_url = self.model_base_url.clone();
                     let api_key = self.model_api_key.clone();
                     let model = self.model_name.clone();
                     if let Some(tid) = task_id {
-                        if let Ok(sum) = summarize_conversation_sync(&base_url, &api_key, &model, &all_messages) {
-                            let clean_sum = strip_think_tags(&sum);
-                            let normalized = normalize_single_line_label(&clean_sum);
-                            let short_title: String = normalized.chars().take(10).collect();
-                            if sum.contains('\n') || sum.contains('\r') || clean_sum.contains('\n') || clean_sum.contains('\r') {
-                                let raw_snip = escape_visible_snippet(&sum, 120);
-                                let clean_snip = escape_visible_snippet(&clean_sum, 120);
-                                let norm_snip = escape_visible_snippet(&normalized, 120);
-                                eprintln!(
-                                    "[CHAT-TITLE] raw='{}' clean='{}' normalized='{}' final='{}'",
-                                    raw_snip, clean_snip, norm_snip, short_title
-                                );
-                            }
-                            task_db::update_task_title(db_conn, tid, &short_title).ok();
-                            for ws in &mut self.workspaces {
-                                for t in &mut ws.tasks {
-                                    if t.id == tid {
-                                        t.title = short_title.clone();
-                                        break;
-                                    }
+                        self.next_summarize_job_id += 1;
+                        let job_id = self.next_summarize_job_id;
+                        self.summarize_job_id = Some(job_id);
+
+                        let (sender, receiver) = mpsc::channel::<SummarizeEvent>();
+                        let sender_ok = sender.clone();
+                        let sender_err = sender;
+
+                        gpui_tokio::Tokio::spawn(cx, async move {
+                            match summarize_conversation_async(&base_url, &api_key, &model, &all_messages).await {
+                                Ok(summary) => {
+                                    let _ = sender_ok.send(SummarizeEvent::Finished {
+                                        job_id,
+                                        task_id: tid,
+                                        summary,
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = sender_err.send(SummarizeEvent::Failed {
+                                        job_id,
+                                        task_id: tid,
+                                        error,
+                                    });
                                 }
                             }
-                        }
+                        })
+                        .detach();
+
+                        cx.spawn(async move |this, cx| {
+                            loop {
+                                let mut disconnected = false;
+
+                                loop {
+                                    match receiver.try_recv() {
+                                        Ok(event) => {
+                                            let _ = this.update(cx, |this, cx| {
+                                                this.apply_summarize_event(event);
+                                                cx.notify();
+                                            });
+                                        }
+                                        Err(TryRecvError::Empty) => break,
+                                        Err(TryRecvError::Disconnected) => {
+                                            disconnected = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if disconnected {
+                                    break;
+                                }
+
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(60))
+                                    .await;
+                            }
+                        })
+                        .detach();
                     }
                 }
             }
@@ -685,6 +740,57 @@ impl AppState {
                 if let Some(task_id) = run_task_id {
                     task_db::insert_message(&self.db.conn, task_id, "assistant", &error_message).ok();
                 }
+            }
+        }
+    }
+
+    fn apply_summarize_event(&mut self, event: SummarizeEvent) {
+        match event {
+            SummarizeEvent::Finished {
+                job_id,
+                task_id,
+                summary,
+            } => {
+                if self.summarize_job_id != Some(job_id) {
+                    return;
+                }
+                self.summarize_job_id = None;
+                let clean_sum = strip_think_tags(&summary);
+                let normalized = normalize_single_line_label(&clean_sum);
+                let short_title: String = normalized.chars().take(10).collect();
+                if summary.contains('\n')
+                    || summary.contains('\r')
+                    || clean_sum.contains('\n')
+                    || clean_sum.contains('\r')
+                {
+                    let raw_snip = escape_visible_snippet(&summary, 120);
+                    let clean_snip = escape_visible_snippet(&clean_sum, 120);
+                    let norm_snip = escape_visible_snippet(&normalized, 120);
+                    eprintln!(
+                        "[CHAT-TITLE] raw='{}' clean='{}' normalized='{}' final='{}'",
+                        raw_snip, clean_snip, norm_snip, short_title
+                    );
+                }
+                task_db::update_task_title(&self.db.conn, task_id, &short_title).ok();
+                for ws in &mut self.workspaces {
+                    for t in &mut ws.tasks {
+                        if t.id == task_id {
+                            t.title = short_title.clone();
+                            break;
+                        }
+                    }
+                }
+            }
+            SummarizeEvent::Failed {
+                job_id,
+                task_id,
+                error,
+            } => {
+                if self.summarize_job_id != Some(job_id) {
+                    return;
+                }
+                self.summarize_job_id = None;
+                eprintln!("[CHAT-TITLE] summarize failed task_id={} error={}", task_id, error);
             }
         }
     }
@@ -726,7 +832,7 @@ impl AppState {
                     match receiver.try_recv() {
                         Ok(event) => {
                             let _ = this.update(cx, |this, cx| {
-                                this.apply_general_ai_stream_event(run_id, event);
+                                this.apply_general_ai_stream_event(run_id, event, cx);
                                 cx.notify();
                             });
                         }
@@ -961,6 +1067,8 @@ impl AppState {
             messages: vec![],
             needs_auto_scroll: false,
             pending_summarize: false,
+            next_summarize_job_id: 0,
+            summarize_job_id: None,
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],

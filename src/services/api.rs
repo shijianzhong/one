@@ -205,14 +205,14 @@ where
     Ok(full_text)
 }
 
-pub fn summarize_conversation_sync(
+pub async fn summarize_conversation_async(
     base_url: &str,
     api_key: &str,
     model: &str,
     conversation: &[ChatMessage],
 ) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -224,7 +224,11 @@ pub fn summarize_conversation_sync(
 
     let summary_prompt = format!(
         "请用10个字以内总结以下对话内容，只返回总结文字，不要其他内容：\n{}\n总结：",
-        conversation.iter().map(|m| format!("{}: {}", m.role, m.content)).collect::<Vec<_>>().join("\n")
+        conversation
+            .iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     let chat_messages = vec![serde_json::json!({
@@ -238,21 +242,20 @@ pub fn summarize_conversation_sync(
     };
 
     let url = format!("{}/chat/completions", base_url);
-    let body_str = serde_json::to_string(&request_body).unwrap();
-
     let response = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
-        .body(body_str)
+        .json(&request_body)
         .send()
+        .await
         .map_err(|e| e.to_string())?;
 
     if !response.status().is_success() {
         return Err(format!("API error: {}", response.status()));
     }
 
-    let body_str = response.text().map_err(|e| e.to_string())?;
+    let body_str = response.text().await.map_err(|e| e.to_string())?;
 
     #[derive(serde::Deserialize)]
     struct ApiResponse {
@@ -270,7 +273,6 @@ pub fn summarize_conversation_sync(
     }
 
     let api_response: ApiResponse = serde_json::from_str(&body_str).map_err(|e| e.to_string())?;
-
     Ok(api_response
         .choices
         .first()

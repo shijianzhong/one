@@ -214,7 +214,7 @@ pub fn ensure_draft_task(conn: &Connection, workspace_id: usize) -> Result<usize
     stmt.with_bindings(&workspace_id)?;
     stmt.exec()?;
 
-    let id = insert_task(conn, workspace_id, "New Task")?;
+    let id = insert_task(conn, workspace_id, "")?;
     let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 1 WHERE id = ?")?;
     stmt.with_bindings(&id)?;
     stmt.exec()?;

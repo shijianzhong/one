@@ -174,11 +174,11 @@ enum ClaudeRunStatus {
 }
 
 impl ClaudeRunStatus {
-    fn label(&self) -> &'static str {
+    fn label(&self, lang: Lang) -> &'static str {
         match self {
-            Self::Running => "Running",
-            Self::Completed => "Completed",
-            Self::Failed => "Failed",
+            Self::Running => t(lang, Translations::STATUS_RUNNING),
+            Self::Completed => t(lang, Translations::STATUS_COMPLETED),
+            Self::Failed => t(lang, Translations::STATUS_FAILED),
         }
     }
 
@@ -284,11 +284,11 @@ enum PreviewStatus {
 }
 
 impl PreviewStatus {
-    fn label(&self) -> &'static str {
+    fn label(&self, lang: Lang) -> &'static str {
         match self {
-            Self::Idle => "Idle",
-            Self::Ready => "Ready",
-            Self::Failed => "Failed",
+            Self::Idle => t(lang, Translations::PREVIEW_IDLE),
+            Self::Ready => t(lang, Translations::PREVIEW_READY),
+            Self::Failed => t(lang, Translations::STATUS_FAILED),
         }
     }
 
@@ -588,7 +588,7 @@ impl AppState {
         self.next_general_ai_run_id += 1;
         let run_id = self.next_general_ai_run_id;
         self.request_in_flight = true;
-        self.request_status_text = Some("Waiting for AI response...".to_string());
+        self.request_status_text = Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string());
         self.request_kind = Some(RequestKind::GeneralAi);
         self.general_ai_run_id = Some(run_id);
         self.general_ai_task_id = self.active_task_id;
@@ -611,7 +611,7 @@ impl AppState {
         match event {
             GeneralAiStreamEvent::Delta(delta) => {
                 if self.general_ai_live_text.is_empty() {
-                    self.request_status_text = Some("Generating response...".to_string());
+                    self.request_status_text = Some(t(self.current_lang, Translations::GENERATING_RESPONSE).to_string());
                 }
                 self.general_ai_live_text.push_str(&delta);
                 if delta.contains("<think>") || delta.contains("</think>") {
@@ -1165,8 +1165,9 @@ impl AppState {
         let run_id = self.next_claude_run_id;
         self.sidebar_visible = true;
         self.request_in_flight = true;
-        self.request_status_text = Some("Claude Code is running...".to_string());
+        self.request_status_text = Some(t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
         self.request_kind = Some(RequestKind::ClaudeCode);
+        let lang = self.current_lang;
         self.current_claude_run = Some(ClaudeRunPanelState {
             run_id,
             task_id: self.active_task_id,
@@ -1174,20 +1175,20 @@ impl AppState {
             work_dir: self.get_work_dir(),
             command_preview: String::new(),
             status: ClaudeRunStatus::Running,
-            status_message: "Waiting for Claude Code to start...".to_string(),
+            status_message: t(lang, Translations::WAITING_FOR_CLAUDE_START).to_string(),
             live_text: String::new(),
             final_text: None,
             stderr_lines: vec![],
             events: vec![ClaudeRunEvent::info(
-                "Run queued",
-                format!("Instruction submitted: {}", instruction),
+                t(lang, Translations::RUN_QUEUED),
+                format!("{}: {}", t(lang, Translations::INSTRUCTION_SUBMITTED), instruction),
             )],
             show_live_bubble: true,
             preview: Some(PreviewState {
                 status: PreviewStatus::Idle,
                 entry_file: None,
                 url: None,
-                note: "Preview will be prepared after the run completes".to_string(),
+                note: t(lang, Translations::PREVIEW_AFTER_RUN_NOTE).to_string(),
             }),
             session_id: None,
             artifacts: self
@@ -1288,18 +1289,19 @@ impl AppState {
 
     fn try_prepare_preview(&mut self, work_dir: &str, hint_text: &str) -> PreviewLaunchResult {
         self.stop_preview_process();
+        let lang = self.current_lang;
 
         let root = PathBuf::from(work_dir);
         if !root.exists() {
             return PreviewLaunchResult::Failed {
-                note: format!("Preview directory does not exist: {}", root.display()),
+                note: format!("{}: {}", t(lang, Translations::PREVIEW_DIR_MISSING), root.display()),
             };
         }
 
         let html_files = Self::collect_html_files(&root);
         if html_files.is_empty() {
             return PreviewLaunchResult::NotFound {
-                note: "No previewable HTML file found in this workspace.".to_string(),
+                note: t(lang, Translations::NO_PREVIEWABLE_HTML).to_string(),
             };
         }
 
@@ -1351,20 +1353,22 @@ impl AppState {
                 PreviewLaunchResult::Ready {
                     url,
                     entry_file: entry.to_string_lossy().to_string(),
-                    note: format!("Serving workspace root: {}", serve_dir.display()),
+                    note: format!("{}: {}", t(lang, Translations::SERVING_WORKSPACE_ROOT), serve_dir.display()),
                 }
             }
             Err(error) => PreviewLaunchResult::Failed {
                 note: format!(
-                    "Failed to start preview server in {}: {}",
+                    "{}: {}: {}",
+                    t(lang, Translations::FAILED_TO_START_PREVIEW_SERVER),
                     serve_dir.display(),
-                    error
+                    error,
                 ),
             },
         }
     }
 
     fn apply_claude_run_event(&mut self, run_id: u64, event: ClaudeStreamEvent) {
+        let lang = self.current_lang;
         let mut final_message: Option<String> = None;
         let mut persist_task_id: Option<usize> = None;
         let mut finished_work_dir: Option<String> = None;
@@ -1382,24 +1386,30 @@ impl AppState {
                 ClaudeStreamEvent::Started { command, workdir } => {
                     run.command_preview = command.clone();
                     run.work_dir = workdir.clone();
-                    run.status_message = "Claude Code is running".to_string();
+                    run.status_message = t(lang, Translations::CLAUDE_CODE_RUNNING).to_string();
                     run.events.push(ClaudeRunEvent::info(
-                        "Process started",
-                        format!("Workdir: {}\nCommand: {}", workdir, command),
+                        t(lang, Translations::PROCESS_STARTED),
+                        format!(
+                            "{}: {}\n{}: {}",
+                            t(lang, Translations::WORKDIR),
+                            workdir,
+                            t(lang, Translations::COMMAND),
+                            command
+                        ),
                     ));
                 }
                 ClaudeStreamEvent::AssistantText(text) => {
                     if run.live_text.is_empty() {
                         run.events.push(ClaudeRunEvent::info(
-                            "Streaming response",
-                            "Claude Code started returning live content",
+                            t(lang, Translations::STREAMING_RESPONSE),
+                            t(lang, Translations::CLAUDE_STARTED_LIVE_CONTENT),
                         ));
                     }
                     if !run.live_text.is_empty() {
                         run.live_text.push('\n');
                     }
                     run.live_text.push_str(&text);
-                    run.status_message = "Generating response".to_string();
+                    run.status_message = t(lang, Translations::GENERATING_RESPONSE).to_string();
                 }
                 ClaudeStreamEvent::Progress { label, detail } => {
                     run.status_message = format!("{}...", label);
@@ -1407,18 +1417,19 @@ impl AppState {
                 }
                 ClaudeStreamEvent::Stderr(line) => {
                     run.stderr_lines.push(line.clone());
+                    let stderr_label = t(lang, Translations::STDERR);
                     let tone = if line.to_lowercase().contains("error") {
-                        ClaudeRunEvent::error("stderr", line)
+                        ClaudeRunEvent::error(stderr_label, line)
                     } else {
-                        ClaudeRunEvent::info("stderr", line)
+                        ClaudeRunEvent::info(stderr_label, line)
                     };
                     run.events.push(tone);
                 }
                 ClaudeStreamEvent::Session { session_id } => {
                     run.session_id = Some(session_id.clone());
                     run.events.push(ClaudeRunEvent::info(
-                        "Session updated",
-                        format!("session_id={}", session_id),
+                        t(lang, Translations::SESSION_UPDATED),
+                        format!("{}={}", t(lang, Translations::SESSION_ID), session_id),
                     ));
                 }
                 ClaudeStreamEvent::AskUserQuestion { prompt, options } => {
@@ -1427,22 +1438,22 @@ impl AppState {
                         options: options.clone(),
                         session_id: run.session_id.clone(),
                     });
-                    run.status_message = "Claude Code is waiting for your answer".to_string();
+                    run.status_message = t(lang, Translations::CLAUDE_WAITING_FOR_ANSWER).to_string();
                     self.request_in_flight = false;
                     self.request_status_text = None;
                     self.request_kind = None;
                     run.events.push(ClaudeRunEvent::info(
-                        "Question",
+                        t(lang, Translations::QUESTION),
                         if options.is_empty() {
                             prompt
                         } else {
-                            format!("{}\nOptions: {}", prompt, options.join(", "))
+                            format!("{}\n{}: {}", prompt, t(lang, Translations::OPTIONS), options.join(", "))
                         },
                     ));
                 }
                 ClaudeStreamEvent::Finished { result } => {
                     run.status = ClaudeRunStatus::Completed;
-                    run.status_message = "Claude Code completed".to_string();
+                    run.status_message = t(lang, Translations::CLAUDE_COMPLETED).to_string();
                     self.request_in_flight = false;
                     self.request_status_text = None;
                     self.request_kind = None;
@@ -1452,28 +1463,31 @@ impl AppState {
                     run.final_text = Some(result);
                     run.show_live_bubble = false;
                     run.events.push(ClaudeRunEvent::success(
-                        "Run completed",
-                        format!("Generated {} characters", run.live_text.chars().count()),
+                        t(lang, Translations::RUN_COMPLETED),
+                        format!("{}: {}", t(lang, Translations::GENERATED_CHARACTERS), run.live_text.chars().count()),
                     ));
                     run.artifacts = Self::load_artifacts_for_task_dir(&PathBuf::from(&run.work_dir));
-                    final_message = Some(format!("[Claude Code]\n{}", run.live_text));
+                    final_message = Some(format!("{}\n{}", t(lang, Translations::CLAUDE_CODE_TAG), run.live_text));
                     persist_task_id = run.task_id;
                     finished_work_dir = Some(run.work_dir.clone());
                 }
                 ClaudeStreamEvent::Failed { error } => {
                     run.status = ClaudeRunStatus::Failed;
-                    run.status_message = "Claude Code failed".to_string();
+                    run.status_message = t(lang, Translations::CLAUDE_FAILED).to_string();
                     self.request_in_flight = false;
                     self.request_status_text = None;
                     self.request_kind = None;
                     run.show_live_bubble = false;
-                    run.events.push(ClaudeRunEvent::error("Run failed", error.clone()));
-                    let mut message = String::from("Claude Code execution error: ");
+                    run.events.push(ClaudeRunEvent::error(t(lang, Translations::RUN_FAILED), error.clone()));
+                    let mut message = t(lang, Translations::CLAUDE_EXECUTION_ERROR).to_string();
                     message.push_str(&error);
                     if !run.live_text.trim().is_empty() {
                         message = format!(
-                            "[Claude Code]\n{}\n\n[Run failed]\n{}",
-                            run.live_text, error
+                            "{}\n{}\n\n{}\n{}",
+                            t(lang, Translations::CLAUDE_CODE_TAG),
+                            run.live_text,
+                            t(lang, Translations::RUN_FAILED_TAG),
+                            error
                         );
                     }
                     final_message = Some(message);
@@ -1509,13 +1523,13 @@ impl AppState {
                             note: note.clone(),
                         });
                         run.events.push(ClaudeRunEvent::success(
-                            "Preview ready",
+                            t(lang, Translations::PREVIEW_READY_EVENT),
                             format!("{}\n{}", url, note),
                         ));
                         auto_open_url = Some(url);
                         run.events.push(ClaudeRunEvent::info(
-                            "Browser opened",
-                            "Opened preview URL in external browser",
+                            t(lang, Translations::BROWSER_OPENED),
+                            t(lang, Translations::OPENED_PREVIEW_URL),
                         ));
                     }
                     PreviewLaunchResult::NotFound { note } => {
@@ -1525,7 +1539,7 @@ impl AppState {
                             url: None,
                             note: note.clone(),
                         });
-                        run.events.push(ClaudeRunEvent::info("Preview skipped", note));
+                        run.events.push(ClaudeRunEvent::info(t(lang, Translations::PREVIEW_SKIPPED), note));
                     }
                     PreviewLaunchResult::Failed { note } => {
                         run.preview = Some(PreviewState {
@@ -1534,7 +1548,7 @@ impl AppState {
                             url: None,
                             note: note.clone(),
                         });
-                        run.events.push(ClaudeRunEvent::error("Preview failed", note));
+                        run.events.push(ClaudeRunEvent::error(t(lang, Translations::PREVIEW_FAILED_EVENT), note));
                     }
                 }
             }
@@ -1640,6 +1654,7 @@ impl AppState {
     }
 
     fn continue_claude_with_answer(&mut self, answer: String, cx: &mut Context<Self>) {
+        let lang = self.current_lang;
         let session_id = self
             .current_claude_run
             .as_ref()
@@ -1647,15 +1662,15 @@ impl AppState {
         if let Some(run) = self.current_claude_run.as_mut() {
             run.pending_question = None;
             run.status = ClaudeRunStatus::Running;
-            run.status_message = "Continuing Claude Code run".to_string();
+            run.status_message = t(lang, Translations::CONTINUING_CLAUDE_RUN).to_string();
             run.events.push(ClaudeRunEvent::info(
-                "User answered",
+                t(lang, Translations::USER_ANSWERED),
                 answer.clone(),
             ));
         }
         self.request_in_flight = true;
         self.request_kind = Some(RequestKind::ClaudeCode);
-        self.request_status_text = Some("Claude Code is continuing...".to_string());
+        self.request_status_text = Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string());
         self.persist_current_claude_state();
         self.spawn_claude_code_run(answer, session_id, cx);
     }
@@ -1711,8 +1726,14 @@ impl AppState {
     fn export_chat(&mut self, _: &ExportChat, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(task_id) = self.active_task_id {
             if let Some(task) = self.get_active_task() {
+                let lang = self.current_lang;
+                let md_title = if task.title.trim().is_empty() {
+                    t(lang, Translations::NEW_TASK).to_string()
+                } else {
+                    task.title.clone()
+                };
                 let json = task_db::export_messages_json(&self.db.conn, task_id).unwrap_or_default();
-                let md = task_db::export_messages_markdown(&self.db.conn, task_id, &task.title).unwrap_or_default();
+                let md = task_db::export_messages_markdown(&self.db.conn, task_id, &md_title).unwrap_or_default();
                 self.exported_json = Some(json);
                 self.exported_md = Some(md);
                 self.show_export_dialog = true;
@@ -1861,6 +1882,7 @@ impl AppState {
     }
 
     fn make_nav_register_item(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         div()
             .flex()
             .items_center()
@@ -1872,7 +1894,7 @@ impl AppState {
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                 this.open_register(&OpenRegister, _window, cx);
             }))
-            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Register"))
+            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::REGISTER)))
             .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child("⌘R"))
     }
 
@@ -1933,6 +1955,7 @@ impl AppState {
         // Ensure default workspace exists before rendering
         self.ensure_default_workspace();
 
+        let lang = self.current_lang;
         let workspaces = self.workspaces.clone();
         let active_workspace_id = self.active_workspace_id;
         let active_task_id = self.active_task_id;
@@ -1949,7 +1972,7 @@ impl AppState {
                 this.delete_confirm_workspace_id = None;
             }));
 
-        result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child("WORKSPACES"));
+        result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child(t(lang, Translations::WORKSPACES_HEADING)));
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
@@ -2077,7 +2100,12 @@ impl AppState {
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
-                    let title_display = task.title.trim().to_string();
+                    let lang = self.current_lang;
+                    let title_display = if task.title.trim().is_empty() {
+                        t(lang, Translations::NEW_TASK).to_string()
+                    } else {
+                        task.title.trim().to_string()
+                    };
 
                     task_div = task_div
                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -2138,7 +2166,16 @@ impl AppState {
     }
 
     fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.get_active_task().map(|t| t.title.clone()).unwrap_or_else(|| "No task selected".to_string());
+        let lang = self.current_lang;
+        let title = if let Some(task) = self.get_active_task() {
+            if task.title.trim().is_empty() {
+                t(lang, Translations::NEW_TASK).to_string()
+            } else {
+                task.title.clone()
+            }
+        } else {
+            t(lang, Translations::NO_TASK_SELECTED).to_string()
+        };
         let work_dir = self.get_work_dir();
         let sidebar_visible = self.sidebar_visible;
         let terminal_visible = self.terminal_visible;
@@ -2274,6 +2311,7 @@ impl AppState {
     }
 
     fn render_model_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let app = &mut *cx;
 
         let model_name_editor = window.use_keyed_state("model_name_editor", app, |window, cx| {
@@ -2290,7 +2328,7 @@ impl AppState {
 
         let api_key_editor = window.use_keyed_state("api_key_editor", app, |window, cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("sk-...", window, cx);
+            editor.set_placeholder_text(t(lang, Translations::API_KEY_PLACEHOLDER), window, cx);
             editor.set_text(self.editing_api_key.clone(), window, cx);
             editor
         });
@@ -2332,14 +2370,14 @@ impl AppState {
                             .text_base()
                             .text_color(PRIMARY_TEXT)
                             .font_weight(FontWeight::BOLD)
-                            .child("Model Service Config")
+                            .child(t(lang, Translations::MODEL_SERVICE_CONFIG))
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Model Name"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::MODEL_NAME)))
                             .child(
                                 div()
                                     .flex()
@@ -2359,7 +2397,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Base URL"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::BASE_URL)))
                             .child(
                                 div()
                                     .flex()
@@ -2379,7 +2417,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("API Key"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::API_KEY)))
                             .child(
                                 div()
                                     .flex()
@@ -2413,7 +2451,7 @@ impl AppState {
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         this.cancel_model_config(&CancelModelConfig, _window, cx);
                                     }))
-                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child("Cancel"))
+                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child(t(lang, Translations::CANCEL)))
                             )
                             .child(
                                 div()
@@ -2437,13 +2475,14 @@ impl AppState {
                                         }
                                         this.save_model_config(&SaveModelConfig, _window, cx);
                                     }))
-                                    .child(div().text_sm().text_color(gpui::white()).child("Save"))
+                                    .child(div().text_sm().text_color(gpui::white()).child(t(lang, Translations::SAVE)))
                             )
                     )
             )
     }
 
     fn render_register_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let username_editor = window.use_keyed_state("register_username_editor", cx, |window, cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_text(self.editing_username.clone(), window, cx);
@@ -2500,14 +2539,14 @@ impl AppState {
                             .text_base()
                             .text_color(PRIMARY_TEXT)
                             .font_weight(FontWeight::BOLD)
-                            .child("Create Account")
+                            .child(t(lang, Translations::CREATE_ACCOUNT))
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Username"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::USERNAME)))
                             .child(
                                 div()
                                     .flex()
@@ -2527,7 +2566,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Email"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::EMAIL)))
                             .child(
                                 div()
                                     .flex()
@@ -2547,7 +2586,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child("Password"))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::PASSWORD)))
                             .child(
                                 div()
                                     .flex()
@@ -2581,7 +2620,7 @@ impl AppState {
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         this.cancel_register(&CancelRegister, _window, cx);
                                     }))
-                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child("Cancel"))
+                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child(t(lang, Translations::CANCEL)))
                             )
                             .child(
                                 div()
@@ -2605,13 +2644,14 @@ impl AppState {
                                         }
                                         this.submit_register(&SubmitRegister, _window, cx);
                                     }))
-                                    .child(div().text_sm().text_color(gpui::white()).child("Register"))
+                                    .child(div().text_sm().text_color(gpui::white()).child(t(lang, Translations::REGISTER)))
                             )
                     )
             )
     }
 
     fn render_workspace_popup(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let ws_id = self.delete_confirm_workspace_id.unwrap_or(0);
         let pos = self.popup_position;
         div()
@@ -2651,7 +2691,7 @@ impl AppState {
                                 this.restore_task_context();
                                 cx.notify();
                             }))
-                            .child("添加新任务")
+                            .child(t(lang, Translations::NEW_TASK))
                     )
                     .child(
                         div()
@@ -2675,7 +2715,7 @@ impl AppState {
                                 this.delete_confirm_workspace_id = None;
                                 cx.notify();
                             }))
-                            .child("删除 Workspace")
+                            .child(t(lang, Translations::DELETE_WORKSPACE))
                     )
             )
     }
@@ -2734,7 +2774,7 @@ impl AppState {
                                     .overflow_hidden()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT)
-                                    .child(format!("JSON:\n{}", json_content))
+                                    .child(format!("{}:\n{}", t(lang, Translations::JSON), json_content))
                             )
                             .child(
                                 div()
@@ -2747,7 +2787,7 @@ impl AppState {
                                     .overflow_hidden()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT)
-                                    .child(format!("Markdown:\n{}", md_content))
+                                    .child(format!("{}:\n{}", t(lang, Translations::MARKDOWN), md_content))
                             )
                     )
                     .child(
@@ -2769,8 +2809,8 @@ impl AppState {
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(json) = this.exported_json.clone() {
                                             if let Some(path) = rfd::FileDialog::new()
-                                                .set_title("Export JSON")
-                                                .add_filter("JSON", &["json"])
+                                                .set_title(t(this.current_lang, Translations::EXPORT_JSON_TITLE))
+                                                .add_filter(t(this.current_lang, Translations::JSON), &["json"])
                                                 .save_file() {
                                                 std::fs::write(&path, json).ok();
                                             }
@@ -2780,7 +2820,7 @@ impl AppState {
                                         this.exported_md = None;
                                         cx.notify();
                                     }))
-                                    .child("Save JSON")
+                                    .child(t(lang, Translations::SAVE_JSON))
                             )
                             .child(
                                 div()
@@ -2796,8 +2836,8 @@ impl AppState {
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(md) = this.exported_md.clone() {
                                             if let Some(path) = rfd::FileDialog::new()
-                                                .set_title("Export Markdown")
-                                                .add_filter("Markdown", &["md"])
+                                                .set_title(t(this.current_lang, Translations::EXPORT_MARKDOWN_TITLE))
+                                                .add_filter(t(this.current_lang, Translations::MARKDOWN), &["md"])
                                                 .save_file() {
                                                 std::fs::write(&path, md).ok();
                                             }
@@ -2807,7 +2847,7 @@ impl AppState {
                                         this.exported_md = None;
                                         cx.notify();
                                     }))
-                                    .child("Save Markdown")
+                                    .child(t(lang, Translations::SAVE_MARKDOWN))
                             )
                             .child(
                                 div()
@@ -2961,7 +3001,11 @@ impl AppState {
                                                     .get(&key)
                                                     .copied()
                                                     .unwrap_or(complete);
-                                                let header_text = if complete { "思考完成" } else { "正在思考" };
+                                                let header_text = if complete {
+                                                    t(lang, Translations::THINKING_DONE)
+                                                } else {
+                                                    t(lang, Translations::THINKING_IN_PROGRESS)
+                                                };
                                                 let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
                                                 let default_collapsed = complete;
 
@@ -3038,10 +3082,11 @@ impl AppState {
     }
 
     fn render_general_ai_live_message(&mut self, run_id: u64, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let status_text = self
             .request_status_text
             .clone()
-            .unwrap_or_else(|| "AI is thinking...".to_string());
+            .unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string());
         let waiting = self.general_ai_live_text.trim().is_empty();
         let parts = if waiting {
             Vec::new()
@@ -3072,7 +3117,11 @@ impl AppState {
                         let complete = *complete;
                         let key = format!("general:{}:think:{}", run_id, current_think_index);
                         let collapsed = self.think_collapsed.get(&key).copied().unwrap_or(false);
-                        let header_text = if complete { "思考完成" } else { "正在思考" };
+                        let header_text = if complete {
+                            t(lang, Translations::THINKING_DONE)
+                        } else {
+                            t(lang, Translations::THINKING_IN_PROGRESS)
+                        };
                         let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
 
                         let el = div()
@@ -3158,12 +3207,13 @@ impl AppState {
                     .items_center()
                     .gap_2()
                     .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
-                    .child(div().text_xs().text_color(MUTED_TEXT).child("Assistant"))
+                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::ASSISTANT)))
             )
             .child(content)
     }
 
     fn render_claude_live_message(&mut self, run: &ClaudeRunPanelState, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let preview = if run.live_text.trim().is_empty() {
             run.status_message.clone()
         } else {
@@ -3189,7 +3239,7 @@ impl AppState {
                         div()
                             .text_xs()
                             .text_color(MUTED_TEXT)
-                            .child(format!("Claude Code · {}", run.status.label()))
+                            .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
                     )
             )
             .child(
@@ -3240,7 +3290,11 @@ impl AppState {
                                                 .get(&key)
                                                 .copied()
                                                 .unwrap_or(complete);
-                                            let header_text = if complete { "思考完成" } else { "正在思考" };
+                                            let header_text = if complete {
+                                                t(lang, Translations::THINKING_DONE)
+                                            } else {
+                                                t(lang, Translations::THINKING_IN_PROGRESS)
+                                            };
                                             let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
                                             let default_collapsed = complete;
 
@@ -3300,10 +3354,11 @@ impl AppState {
     }
 
     fn render_general_ai_pending_message(&self) -> impl IntoElement {
+        let lang = self.current_lang;
         let status_text = self
             .request_status_text
             .clone()
-            .unwrap_or_else(|| "AI is thinking...".to_string());
+            .unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string());
 
         div()
             .flex_col()
@@ -3321,7 +3376,7 @@ impl AppState {
                         div()
                             .text_xs()
                             .text_color(MUTED_TEXT)
-                            .child("Assistant")
+                            .child(t(lang, Translations::ASSISTANT))
                     )
             )
             .child(
@@ -3345,10 +3400,15 @@ impl AppState {
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.current_lang;
         let composer_editor = window.use_keyed_state("composer_editor", &mut *cx, |window, cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Type a message...", window, cx);
+            editor.set_placeholder_text(t(lang, Translations::TYPE_MESSAGE), window, cx);
             editor
+        });
+
+        composer_editor.update(cx, |editor, cx| {
+            editor.set_placeholder_text(t(lang, Translations::TYPE_MESSAGE), window, cx);
         });
 
         let composer_focus = composer_editor.read(cx).focus_handle(cx);
@@ -3362,9 +3422,9 @@ impl AppState {
             BRAND_BLUE
         };
         let send_label = if request_in_flight {
-            "Sending..."
+            t(lang, Translations::SENDING)
         } else {
-            "Send"
+            t(lang, Translations::SEND)
         };
 
         div()
@@ -3412,7 +3472,7 @@ impl AppState {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
                                         this.request_in_flight = true;
-                                        this.request_status_text = Some("Claude Code is running...".to_string());
+                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
                                         this.request_kind = Some(RequestKind::ClaudeCode);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
@@ -3483,7 +3543,7 @@ impl AppState {
                                             task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
                                         }
                                         this.request_in_flight = true;
-                                        this.request_status_text = Some("Claude Code is running...".to_string());
+                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
                                         this.request_kind = Some(RequestKind::ClaudeCode);
                                         this.needs_auto_scroll = true;
                                         editor.update(cx, |editor, cx| {
@@ -3519,6 +3579,7 @@ impl AppState {
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar_bg = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
+        let lang = self.current_lang;
         let run = self
             .current_claude_run
             .as_ref()
@@ -3545,7 +3606,7 @@ impl AppState {
                             .text_sm()
                             .text_color(PRIMARY_TEXT)
                             .font_weight(FontWeight::BOLD)
-                            .child("Claude Code Run")
+                            .child(t(lang, Translations::CLAUDE_CODE_RUN))
                     )
             );
 
@@ -3562,8 +3623,8 @@ impl AppState {
             let preview = run.preview.clone();
             let preview_label = preview
                 .as_ref()
-                .map(|preview| preview.status.label().to_string())
-                .unwrap_or_else(|| "Idle".to_string());
+                .map(|preview| preview.status.label(lang).to_string())
+                .unwrap_or_else(|| t(lang, Translations::PREVIEW_IDLE).to_string());
             let preview_color = preview
                 .as_ref()
                 .map(|preview| preview.status.color())
@@ -3571,7 +3632,7 @@ impl AppState {
             let pending_question = run.pending_question.clone();
             let question_editor = window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
                 let mut editor = Editor::single_line(window, cx);
-                editor.set_placeholder_text("Answer Claude's question...", window, cx);
+                editor.set_placeholder_text(t(lang, Translations::ANSWER_CLAUDE_QUESTION), window, cx);
                 editor
             });
             let question_focus = question_editor.read(cx).focus_handle(cx);
@@ -3602,7 +3663,7 @@ impl AppState {
             }
 
             let stderr_preview = if run.stderr_lines.is_empty() {
-                "No stderr output".to_string()
+                t(lang, Translations::NO_STDERR_OUTPUT).to_string()
             } else {
                 run.stderr_lines
                     .iter()
@@ -3644,7 +3705,7 @@ impl AppState {
                                             .py_1()
                                             .rounded_md()
                                             .bg(status_color)
-                                            .child(run.status.label())
+                                            .child(run.status.label(lang))
                                     )
                                     .child(
                                         div()
@@ -3666,7 +3727,7 @@ impl AppState {
                                     .text_xs()
                                     .text_color(MUTED_TEXT)
                                     .whitespace_normal()
-                                    .child(format!("Workdir: {}", run.work_dir))
+                                    .child(format!("{}: {}", t(lang, Translations::WORKDIR), run.work_dir))
                             )
                     )
                     .child(
@@ -3678,7 +3739,7 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("Progress"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::PROGRESS)))
                             .child(
                                 div()
                                     .text_sm()
@@ -3701,7 +3762,7 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_xs().text_color(MUTED_TEXT).child("Preview"))
+                                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::PREVIEW)))
                                     .child(
                                         div()
                                             .text_xs()
@@ -3719,7 +3780,7 @@ impl AppState {
                                         preview
                                             .as_ref()
                                             .map(|preview| preview.note.clone())
-                                            .unwrap_or_else(|| "No preview information".to_string())
+                                            .unwrap_or_else(|| t(lang, Translations::NO_PREVIEW_INFO).to_string())
                                     )
                             )
                             .when_some(preview.clone().and_then(|preview| preview.entry_file), |this, entry_file| {
@@ -3728,7 +3789,7 @@ impl AppState {
                                         .text_xs()
                                         .text_color(MUTED_TEXT)
                                         .whitespace_normal()
-                                        .child(format!("Entry: {}", entry_file))
+                                        .child(format!("{}: {}", t(lang, Translations::ENTRY), entry_file))
                                 )
                             })
                             .when_some(preview.clone().and_then(|preview| preview.url), |this, url| {
@@ -3759,7 +3820,7 @@ impl AppState {
                                                         this.open_url_in_browser(&url);
                                                     }
                                                 }))
-                                                .child("Open In Browser")
+                                                .child(t(lang, Translations::OPEN_IN_BROWSER))
                                         )
                                 )
                             })
@@ -3778,7 +3839,7 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_xs().text_color(MUTED_TEXT).child("Artifacts"))
+                                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::ARTIFACTS)))
                                     .child(
                                         div()
                                             .px_3()
@@ -3794,7 +3855,7 @@ impl AppState {
                                                     this.open_folder_in_finder(&task_dir);
                                                 })
                                             })
-                                            .child("Open Task Folder")
+                                            .child(t(lang, Translations::OPEN_TASK_FOLDER))
                                     )
                             )
                             .child(
@@ -3828,7 +3889,7 @@ impl AppState {
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
                                                         this.reveal_file_in_finder(&absolute_path);
                                                     }))
-                                                    .child("Reveal")
+                                                    .child(t(lang, Translations::REVEAL))
                                             )
                                             .into_any_element()
                                     }))
@@ -3838,7 +3899,7 @@ impl AppState {
                                     div()
                                         .text_xs()
                                         .text_color(SECONDARY_TEXT)
-                                        .child("No artifacts detected for this task yet.")
+                                        .child(t(lang, Translations::NO_ARTIFACTS_YET))
                                 )
                             })
                     )
@@ -3851,7 +3912,7 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("Questions"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::QUESTIONS)))
                             .when_some(pending_question.clone(), |this, question| {
                                 this.child(
                                     div()
@@ -3936,7 +3997,7 @@ impl AppState {
                                                                 }
                                                             }
                                                         }))
-                                                        .child("Submit")
+                                                        .child(t(lang, Translations::SUBMIT))
                                                 )
                                         )
                                 )
@@ -3946,7 +4007,7 @@ impl AppState {
                                     div()
                                         .text_xs()
                                         .text_color(SECONDARY_TEXT)
-                                        .child("No pending questions from Claude Code.")
+                                        .child(t(lang, Translations::NO_PENDING_QUESTIONS))
                                 )
                             })
                     )
@@ -3959,7 +4020,7 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("Live Output"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::LIVE_OUTPUT)))
                             .child(
                                 div()
                                     .text_sm()
@@ -3977,14 +4038,14 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("Command"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::COMMAND)))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(SECONDARY_TEXT)
                                     .whitespace_normal()
                                     .child(if run.command_preview.is_empty() {
-                                        "Claude command has not started yet".to_string()
+                                        t(lang, Translations::COMMAND_NOT_STARTED).to_string()
                                     } else {
                                         run.command_preview.clone()
                                     })
@@ -3999,7 +4060,7 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("stderr"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::STDERR)))
                             .child(
                                 div()
                                     .text_xs()
@@ -4017,7 +4078,7 @@ impl AppState {
                             .bg(CARD_BG)
                             .border_1()
                             .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child("Timeline"))
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TIMELINE)))
                             .child(timeline)
                     )
             );
@@ -4041,7 +4102,7 @@ impl AppState {
                                     .text_sm()
                                     .text_color(PRIMARY_TEXT)
                                     .font_weight(FontWeight::BOLD)
-                                    .child("No Claude run yet")
+                                    .child(t(lang, Translations::NO_CLAUDE_RUN_YET))
                             )
                             .child(
                                 div()
@@ -4049,7 +4110,7 @@ impl AppState {
                                     .text_color(MUTED_TEXT)
                                     .text_center()
                                     .whitespace_normal()
-                                    .child("Send a Claude Code request and this panel will show live progress, logs, and the final result.")
+                                    .child(t(lang, Translations::CLAUDE_PANEL_HINT))
                             )
                     )
             );
@@ -4093,6 +4154,7 @@ impl AppState {
         let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.45, a: 1.0 };
         let error_color = Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 };
         let width = self.terminal_width;
+        let lang = self.current_lang;
 
         // Get working directory based on active task
         let work_dir = self.get_work_dir();
@@ -4100,7 +4162,7 @@ impl AppState {
         // Create terminal input editor
         let terminal_editor = window.use_keyed_state("terminal_editor", &mut *cx, |window, cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Type a command...", window, cx);
+            editor.set_placeholder_text(t(lang, Translations::TYPE_COMMAND), window, cx);
             editor
         });
 
@@ -4119,7 +4181,7 @@ impl AppState {
                     .h(px(36.0))
                     .px_3()
                     .bg(WORKSPACE_BG)
-                    .child(div().text_xs().text_color(MUTED_TEXT).child("Terminal"))
+                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TERMINAL)))
                     .child(
                         div()
                             .text_xs()

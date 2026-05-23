@@ -124,10 +124,7 @@ impl Session {
 
     /// Check if session is in a terminal state
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.state,
-            SessionState::Cancelled | SessionState::Closed
-        )
+        matches!(self.state, SessionState::Cancelled | SessionState::Closed)
     }
 
     /// Check if session can accept prompts
@@ -226,7 +223,10 @@ impl SessionManager {
 
     /// Update session state
     pub async fn update_state(&self, id: &str, state: SessionState) -> Result<(), AcpError> {
-        let session = self.get_session(id).await.ok_or_else(|| AcpError::SessionNotFound(id.to_string()))?;
+        let session = self
+            .get_session(id)
+            .await
+            .ok_or_else(|| AcpError::SessionNotFound(id.to_string()))?;
 
         let mut session = (*session).clone();
         match state {
@@ -250,7 +250,10 @@ impl SessionManager {
         id: &str,
         agent_session_id: &str,
     ) -> Result<(), AcpError> {
-        let session = self.get_session(id).await.ok_or_else(|| AcpError::SessionNotFound(id.to_string()))?;
+        let session = self
+            .get_session(id)
+            .await
+            .ok_or_else(|| AcpError::SessionNotFound(id.to_string()))?;
 
         let mut session = (*session).clone();
         session.set_agent_session_id(agent_session_id.to_string());
@@ -331,13 +334,19 @@ mod tests {
             session.id.clone()
         };
 
-        manager.update_state(&session_id, SessionState::Active).await.unwrap();
+        manager
+            .update_state(&session_id, SessionState::Active)
+            .await
+            .unwrap();
         {
             let session = manager.get_session(&session_id).await.unwrap();
             assert_eq!(session.state, SessionState::Active);
         }
 
-        manager.update_state(&session_id, SessionState::Idle).await.unwrap();
+        manager
+            .update_state(&session_id, SessionState::Idle)
+            .await
+            .unwrap();
         {
             let session = manager.get_session(&session_id).await.unwrap();
             assert_eq!(session.state, SessionState::Idle);

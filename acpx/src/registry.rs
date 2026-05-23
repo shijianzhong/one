@@ -8,13 +8,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::agent::Agent;
-use crate::protocol::AgentCapabilities;
 use crate::error::AcpError;
+use crate::protocol::AgentCapabilities;
 use crate::protocol::{
     SessionCancelParams, SessionCancelResult, SessionCloseParams, SessionCloseResult,
-    SessionListResult, SessionLoadParams, SessionNewParams, SessionNewResult,
-    SessionPromptParams, SessionPromptResult, SessionResumeParams, SessionSetModeParams,
-    SessionSetModeResult,
+    SessionListResult, SessionLoadParams, SessionNewParams, SessionNewResult, SessionPromptParams,
+    SessionPromptResult, SessionResumeParams, SessionSetModeParams, SessionSetModeResult,
 };
 use crate::session::SessionManager;
 
@@ -165,9 +164,10 @@ impl Registry {
         agent_name: &str,
         params: SessionNewParams,
     ) -> Result<SessionNewResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_new(params).await
     }
@@ -178,9 +178,10 @@ impl Registry {
         agent_name: &str,
         params: SessionPromptParams,
     ) -> Result<SessionPromptResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_prompt(params).await
     }
@@ -191,9 +192,10 @@ impl Registry {
         agent_name: &str,
         params: SessionCancelParams,
     ) -> Result<SessionCancelResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_cancel(params).await
     }
@@ -204,9 +206,10 @@ impl Registry {
         agent_name: &str,
         params: SessionLoadParams,
     ) -> Result<SessionNewResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_load(params).await
     }
@@ -217,9 +220,10 @@ impl Registry {
         agent_name: &str,
         params: SessionResumeParams,
     ) -> Result<SessionNewResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_resume(params).await
     }
@@ -230,9 +234,10 @@ impl Registry {
         agent_name: &str,
         params: SessionCloseParams,
     ) -> Result<SessionCloseResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_close(params).await
     }
@@ -243,21 +248,20 @@ impl Registry {
         agent_name: &str,
         params: SessionSetModeParams,
     ) -> Result<SessionSetModeResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_set_mode(params).await
     }
 
     /// List sessions
-    pub async fn session_list(
-        &self,
-        agent_name: &str,
-    ) -> Result<SessionListResult, AcpError> {
-        let agent = self.get(agent_name).await.ok_or_else(|| {
-            AcpError::AgentNotAvailable(agent_name.to_string())
-        })?;
+    pub async fn session_list(&self, agent_name: &str) -> Result<SessionListResult, AcpError> {
+        let agent = self
+            .get(agent_name)
+            .await
+            .ok_or_else(|| AcpError::AgentNotAvailable(agent_name.to_string()))?;
 
         agent.session_list().await
     }
@@ -378,10 +382,7 @@ mod tests {
         let registry = Registry::new();
         let agent = Arc::new(TestAgent);
 
-        registry
-            .register("test", "test", agent)
-            .await
-            .unwrap();
+        registry.register("test", "test", agent).await.unwrap();
 
         assert!(registry.contains("test").await);
     }
@@ -391,10 +392,7 @@ mod tests {
         let registry = Registry::new();
         let agent = Arc::new(TestAgent);
 
-        registry
-            .register("test", "test", agent)
-            .await
-            .unwrap();
+        registry.register("test", "test", agent).await.unwrap();
 
         let retrieved = registry.get("test").await;
         assert!(retrieved.is_some());
@@ -405,17 +403,17 @@ mod tests {
         let registry = Registry::new();
         let agent = Arc::new(TestAgent);
 
-        registry
-            .register("test", "test", agent)
-            .await
-            .unwrap();
+        registry.register("test", "test", agent).await.unwrap();
 
         let result = registry
-            .session_new("test", SessionNewParams {
-                cwd: "/tmp".to_string(),
-                additional_directories: vec![],
-                mcp_servers: vec![],
-            })
+            .session_new(
+                "test",
+                SessionNewParams {
+                    cwd: "/tmp".to_string(),
+                    additional_directories: vec![],
+                    mcp_servers: vec![],
+                },
+            )
             .await;
 
         assert!(result.is_ok());
@@ -428,10 +426,7 @@ mod tests {
         let registry = Registry::new();
         let agent = Arc::new(TestAgent);
 
-        registry
-            .register("test", "test", agent)
-            .await
-            .unwrap();
+        registry.register("test", "test", agent).await.unwrap();
 
         let result = registry
             .session_prompt(
@@ -453,11 +448,14 @@ mod tests {
         let registry = Registry::new();
 
         let result = registry
-            .session_new("nonexistent", SessionNewParams {
-                cwd: "/tmp".to_string(),
-                additional_directories: vec![],
-                mcp_servers: vec![],
-            })
+            .session_new(
+                "nonexistent",
+                SessionNewParams {
+                    cwd: "/tmp".to_string(),
+                    additional_directories: vec![],
+                    mcp_servers: vec![],
+                },
+            )
             .await;
 
         assert!(result.is_err());

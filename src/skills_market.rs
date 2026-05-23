@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use gpui::{div, px, svg, AnyElement, Context, InteractiveElement, StatefulInteractiveElement, Window, prelude::*};
+use gpui::{
+    div, prelude::*, px, svg, AnyElement, Context, InteractiveElement, StatefulInteractiveElement,
+    Window,
+};
 
 use crate::i18n::{t, Translations};
 
@@ -47,10 +50,7 @@ impl SkillsMarketState {
                 let path = entry.path();
                 if path.is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    items.push(InstalledSkill {
-                        name,
-                        path,
-                    });
+                    items.push(InstalledSkill { name, path });
                 }
             }
         }
@@ -162,7 +162,7 @@ pub(crate) fn render_skills_market(
                                         .text_lg()
                                         .text_color(crate::PRIMARY_TEXT())
                                         .font_weight(gpui::FontWeight::BOLD)
-                                        .child(t(lang, Translations::SKILLS))
+                                        .child(t(lang, Translations::SKILLS)),
                                 )
                                 .child(
                                     div()
@@ -174,10 +174,15 @@ pub(crate) fn render_skills_market(
                                         .border_color(crate::BORDER_LIGHT())
                                         .text_xs()
                                         .text_color(crate::SECONDARY_TEXT())
-                                        .child("CAP")
-                                )
+                                        .child("CAP"),
+                                ),
                         )
-                        .child(div().text_sm().text_color(crate::MUTED_TEXT()).child(t(lang, Translations::SKILLS_HINT)))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(crate::MUTED_TEXT())
+                                .child(t(lang, Translations::SKILLS_HINT)),
+                        ),
                 )
                 .child(
                     div()
@@ -189,7 +194,11 @@ pub(crate) fn render_skills_market(
                         .border_color(crate::BORDER_LIGHT())
                         .text_xs()
                         .text_color(crate::MUTED_TEXT())
-                        .child(format!("{} {}", state.installed.len(), t(lang, Translations::CAPABILITIES)))
+                        .child(format!(
+                            "{} {}",
+                            state.installed.len(),
+                            t(lang, Translations::CAPABILITIES)
+                        )),
                 ),
         )
         .child(
@@ -208,10 +217,13 @@ pub(crate) fn render_skills_market(
                         .cursor_pointer()
                         .text_xs()
                         .text_color(crate::MUTED_TEXT())
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                            this.main_view = crate::MainView::Chat;
-                            cx.notify();
-                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                this.main_view = crate::MainView::Chat;
+                                cx.notify();
+                            }),
+                        )
                         .child(t(lang, Translations::EXPLORER)),
                 )
                 .child(
@@ -236,19 +248,25 @@ pub(crate) fn render_skills_market(
                         .cursor_pointer()
                         .text_sm()
                         .text_color(gpui::white())
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .set_title(t(this.current_lang, Translations::UPLOAD_SKILL_PACKAGE))
-                                .add_filter("Skill", &["skill", "zip"])
-                                .pick_file()
-                            {
-                                if let Err(err) = this.skills_market.install_from_file(path) {
-                                    this.skills_market.status_text = None;
-                                    this.skills_market.error_text = Some(err);
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title(t(
+                                        this.current_lang,
+                                        Translations::UPLOAD_SKILL_PACKAGE,
+                                    ))
+                                    .add_filter("Skill", &["skill", "zip"])
+                                    .pick_file()
+                                {
+                                    if let Err(err) = this.skills_market.install_from_file(path) {
+                                        this.skills_market.status_text = None;
+                                        this.skills_market.error_text = Some(err);
+                                    }
+                                    cx.notify();
                                 }
-                                cx.notify();
-                            }
-                        }))
+                            }),
+                        )
                         .child(t(lang, Translations::UPLOAD)),
                 ),
         );
@@ -317,11 +335,14 @@ pub(crate) fn render_skills_market(
                     .bg(crate::SURFACE_PANEL())
                     .cursor_pointer()
                     .hover(|this| this.bg(crate::SURFACE_ELEVATED()))
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                        this.skills_market.selected = Some(skill_for_click.clone());
-                        this.skills_market.show_detail = true;
-                        cx.notify();
-                    }))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                            this.skills_market.selected = Some(skill_for_click.clone());
+                            this.skills_market.show_detail = true;
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
@@ -340,25 +361,34 @@ pub(crate) fn render_skills_market(
                                             .bg(crate::CANVAS_BG())
                                             .border_1()
                                             .border_color(crate::BORDER_LIGHT())
-                                            .child(
-                                                match crate::icon_asset_path("skill") {
-                                                    Some(path) => svg()
-                                                        .path(path)
-                                                        .size(px(14.0))
-                                                        .flex_none()
-                                                        .text_color(crate::SECONDARY_TEXT())
-                                                        .into_any_element(),
-                                                    None => div()
-                                                        .text_xs()
-                                                        .text_color(crate::SECONDARY_TEXT())
-                                                        .child(crate::icon_label("skill"))
-                                                        .into_any_element(),
-                                                }
-                                            )
+                                            .child(match crate::icon_asset_path("skill") {
+                                                Some(path) => svg()
+                                                    .path(path)
+                                                    .size(px(14.0))
+                                                    .flex_none()
+                                                    .text_color(crate::SECONDARY_TEXT())
+                                                    .into_any_element(),
+                                                None => div()
+                                                    .text_xs()
+                                                    .text_color(crate::SECONDARY_TEXT())
+                                                    .child(crate::icon_label("skill"))
+                                                    .into_any_element(),
+                                            }),
                                     )
-                                    .child(div().text_base().text_color(crate::PRIMARY_TEXT()).font_weight(gpui::FontWeight::BOLD).child(skill.name))
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .text_color(crate::PRIMARY_TEXT())
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(skill.name),
+                                    ),
                             )
-                            .child(div().text_xs().text_color(crate::MUTED_TEXT()).child(t(lang, Translations::DETAILS))),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(crate::MUTED_TEXT())
+                                    .child(t(lang, Translations::DETAILS)),
+                            ),
                     )
                     .child(
                         div()
@@ -393,11 +423,14 @@ pub(crate) fn render_skills_market(
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                    this.skills_market.show_detail = false;
-                    this.skills_market.selected = None;
-                    cx.notify();
-                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.skills_market.show_detail = false;
+                        this.skills_market.selected = None;
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
                         .flex()
@@ -410,7 +443,10 @@ pub(crate) fn render_skills_market(
                         .border_1()
                         .border_color(crate::BORDER_LIGHT())
                         .shadow_md()
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                        )
                         .child(
                             div()
                                 .text_base()
@@ -425,34 +461,41 @@ pub(crate) fn render_skills_market(
                                 .child(path_str),
                         )
                         .child(
-                            div()
-                                .flex()
-                                .gap_3()
-                                .mt_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .h(px(36.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
+                            div().flex().gap_3().mt_2().child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .rounded_lg()
-                                        .border_1()
-                                        .border_color(crate::BORDER_LIGHT())
+                                    .border_1()
+                                    .border_color(crate::BORDER_LIGHT())
                                     .bg(crate::CANVAS_BG())
-                                        .cursor_pointer()
-                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                            this.skills_market.show_detail = false;
-                                            this.skills_market.selected = None;
-                                            cx.notify();
-                                        }))
-                                        .child(t(lang, Translations::CLOSE)),
-                                ),
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.skills_market.show_detail = false;
+                                                this.skills_market.selected = None;
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
+                                    .child(t(lang, Translations::CLOSE)),
+                            ),
                         ),
                 )
                 .into_any_element();
 
-            page = div().relative().flex().flex_1().child(page).child(overlay).into_any_element();
+            page = div()
+                .relative()
+                .flex()
+                .flex_1()
+                .child(page)
+                .child(overlay)
+                .into_any_element();
         }
     }
 

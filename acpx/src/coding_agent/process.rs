@@ -78,7 +78,10 @@ impl ProcessManager {
             session_id: Some(session_id.to_string()),
         }));
 
-        self.processes.write().await.insert(session_id.to_string(), handle.clone());
+        self.processes
+            .write()
+            .await
+            .insert(session_id.to_string(), handle.clone());
 
         Ok(handle)
     }
@@ -199,10 +202,7 @@ impl CommandBuilder {
 }
 
 /// Execute a command with timeout
-pub async fn execute_with_timeout<F, Fut>(
-    timeout_duration: Duration,
-    future: F,
-) -> Result<String>
+pub async fn execute_with_timeout<F, Fut>(timeout_duration: Duration, future: F) -> Result<String>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<String>>,
@@ -215,7 +215,8 @@ where
         Err(_) => Err(AcpError::ExecutionTimeout {
             session_id: "unknown".to_string(),
             timeout_ms: timeout_duration.as_millis() as u64,
-        }.into()),
+        }
+        .into()),
     }
 }
 

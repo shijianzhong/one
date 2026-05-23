@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 
-use super::{Agent, AgentConfig, AgentInstance, AgentStatus, BusinessAgentConfig, BusinessCapability};
+use super::{
+    Agent, AgentConfig, AgentInstance, AgentStatus, BusinessAgentConfig, BusinessCapability,
+};
 use crate::memory::types::ChatMessage;
 use crate::task_db;
 
@@ -182,7 +184,8 @@ impl BusinessAgentGenerator {
         model: &str,
     ) -> Result<BusinessAgentConfig> {
         // Use LLM to analyze conversation and generate agent spec
-        let conversation_str = conversation.iter()
+        let conversation_str = conversation
+            .iter()
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n");
@@ -200,7 +203,8 @@ impl BusinessAgentGenerator {
                 role: "user".to_string(),
                 content: prompt,
             }],
-        ).map_err(|e| anyhow::anyhow!("API call failed: {}", e))?;
+        )
+        .map_err(|e| anyhow::anyhow!("API call failed: {}", e))?;
 
         let spec: BusinessAgentConfig = serde_json::from_str(&result)
             .map_err(|e| anyhow::anyhow!("Failed to parse agent config: {}", e))?;

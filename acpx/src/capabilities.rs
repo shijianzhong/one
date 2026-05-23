@@ -219,9 +219,7 @@ mod tests {
 
     #[test]
     fn test_client_capabilities_builder() {
-        let caps = ClientCapabilitiesBuilder::new()
-            .without_fs()
-            .build();
+        let caps = ClientCapabilitiesBuilder::new().without_fs().build();
         assert!(caps.fs.is_none());
     }
 

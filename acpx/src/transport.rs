@@ -3,7 +3,7 @@
 //! Stdio transport implementation for local agent communication.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -36,11 +36,7 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Create a new stdio transport from an existing child process
-    pub fn new(
-        stdin: ChildStdin,
-        stdout: ChildStdout,
-        stderr: ChildStderr,
-    ) -> Self {
+    pub fn new(stdin: ChildStdin, stdout: ChildStdout, stderr: ChildStderr) -> Self {
         Self {
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
@@ -82,8 +78,7 @@ impl StdioTransport {
         // Use blocking write since ChildStdin is sync
         std::io::Write::write_all(&mut *stdin, encoded.as_bytes())
             .context("Failed to write to stdin")?;
-        std::io::Write::write_all(&mut *stdin, b"\n")
-            .context("Failed to write newline")?;
+        std::io::Write::write_all(&mut *stdin, b"\n").context("Failed to write newline")?;
         std::io::Write::flush(&mut *stdin).context("Failed to flush stdin")?;
 
         Ok(())
@@ -148,11 +143,7 @@ pub struct SyncStdioTransport {
 
 impl SyncStdioTransport {
     /// Create a new synchronous stdio transport
-    pub fn new(
-        stdin: ChildStdin,
-        stdout: ChildStdout,
-        stderr: ChildStderr,
-    ) -> Self {
+    pub fn new(stdin: ChildStdin, stdout: ChildStdout, stderr: ChildStderr) -> Self {
         Self {
             stdin,
             stdout: BufReader::new(stdout),
@@ -161,11 +152,7 @@ impl SyncStdioTransport {
     }
 
     /// Spawn an agent process synchronously
-    pub fn spawn(
-        command: &str,
-        args: &[&str],
-        cwd: Option<&std::path::Path>,
-    ) -> Result<Self> {
+    pub fn spawn(command: &str, args: &[&str], cwd: Option<&std::path::Path>) -> Result<Self> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .stdin(Stdio::piped())

@@ -1,7 +1,7 @@
 use gpui::{
-    App, ClipboardItem, Context, CursorStyle, EntityInputHandler, FocusHandle,
-    Focusable, InteractiveElement, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    ParentElement, Render, SharedString, Styled, Window, actions, div, hsla, white,
+    actions, div, hsla, white, App, ClipboardItem, Context, CursorStyle, EntityInputHandler,
+    FocusHandle, Focusable, InteractiveElement, MouseButton, MouseDownEvent, MouseUpEvent,
+    ParentElement, Pixels, Render, SharedString, Styled, Window,
 };
 use std::ops::Range;
 
@@ -233,7 +233,11 @@ impl TextInput {
             char_idx += 1;
             byte_offset = i;
         }
-        let offset_bytes = if char_idx >= offset { self.value.len() } else { byte_offset };
+        let offset_bytes = if char_idx >= offset {
+            self.value.len()
+        } else {
+            byte_offset
+        };
 
         if event.modifiers.shift {
             self.select_to(offset_bytes, cx);
@@ -247,7 +251,12 @@ impl TextInput {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &gpui::MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             let char_count = self.value.chars().count();
             let char_width = 8.0;
@@ -264,7 +273,11 @@ impl TextInput {
                 char_idx += 1;
                 byte_offset = i;
             }
-            let offset_bytes = if char_idx >= offset { self.value.len() } else { byte_offset };
+            let offset_bytes = if char_idx >= offset {
+                self.value.len()
+            } else {
+                byte_offset
+            };
 
             self.select_to(offset_bytes, cx);
         }
@@ -312,11 +325,7 @@ impl EntityInputHandler for TextInput {
         })
     }
 
-    fn marked_text_range(
-        &self,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
         self.marked_range.clone()
     }
 
@@ -411,13 +420,17 @@ impl Render for TextInput {
             .px_3()
             .text_sm()
             .bg(white())
-            .child(
-                if value.is_empty() {
-                    div().text_sm().text_color(hsla(0., 0., 0., 0.4)).child(placeholder)
-                } else {
-                    div().text_sm().text_color(hsla(0., 0., 0., 1.)).child(value)
-                }
-            )
+            .child(if value.is_empty() {
+                div()
+                    .text_sm()
+                    .text_color(hsla(0., 0., 0., 0.4))
+                    .child(placeholder)
+            } else {
+                div()
+                    .text_sm()
+                    .text_color(hsla(0., 0., 0., 1.))
+                    .child(value)
+            })
     }
 }
 

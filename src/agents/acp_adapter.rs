@@ -9,9 +9,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::agents::{
-    Agent, AgentConfig, AgentInstance, AgentStatus,
-};
+use crate::agents::{Agent, AgentConfig, AgentInstance, AgentStatus};
 use acpx;
 use acpx::protocol::{ContentBlock, SessionNewParams, SessionPromptParams};
 
@@ -50,7 +48,10 @@ impl Agent for AcpAgentAdapter {
             mcp_servers: vec![],
         };
 
-        let result = self.acp_agent.session_new(params).await
+        let result = self
+            .acp_agent
+            .session_new(params)
+            .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         Ok(AgentInstance {
@@ -66,22 +67,32 @@ impl Agent for AcpAgentAdapter {
     }
 
     async fn send_message(&self, instance: &mut AgentInstance, msg: &str) -> Result<String> {
-        let session_id = instance.session_state.get("session_id")
+        let session_id = instance
+            .session_state
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
         let params = SessionPromptParams {
             session_id: session_id.to_string(),
-            content: vec![ContentBlock::Text { text: msg.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: msg.to_string(),
+            }],
             system_prompt: None,
             mode: None,
         };
 
-        let result = self.acp_agent.session_prompt(params).await
+        let result = self
+            .acp_agent
+            .session_prompt(params)
+            .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         instance.status = AgentStatus::Idle;
-        Ok(format!("Session {} completed with reason: {:?}", result.session_id, result.stop_reason))
+        Ok(format!(
+            "Session {} completed with reason: {:?}",
+            result.session_id, result.stop_reason
+        ))
     }
 
     async fn get_status(&self, instance: &AgentInstance) -> AgentStatus {

@@ -42,7 +42,10 @@ pub fn decode_value<T: DeserializeOwned>(json: &str) -> Result<T> {
 
 /// Split a stream buffer into messages
 pub fn split_messages(buffer: &str) -> Vec<&str> {
-    buffer.split('\n').filter(|s| !s.trim().is_empty()).collect()
+    buffer
+        .split('\n')
+        .filter(|s| !s.trim().is_empty())
+        .collect()
 }
 
 /// Validate that a message doesn't contain embedded newlines
@@ -54,7 +57,8 @@ pub fn validate_message(msg: &str) -> Result<()> {
         return Err(AcpError::CodecError(format!(
             "Message contains {} embedded newline(s), expected 0",
             newline_count
-        )).into());
+        ))
+        .into());
     }
     // Also ensure the message isn't all whitespace
     if trimmed.is_empty() {
@@ -128,7 +132,8 @@ mod tests {
 
     #[test]
     fn test_validate_message_with_embedded_newline() {
-        let msg = "{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"params\":{\"text\":\"hello\nworld\"}}";
+        let msg =
+            "{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"params\":{\"text\":\"hello\nworld\"}}";
         let result = validate_message(msg);
         assert!(result.is_err());
     }

@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-pub mod types;
-pub mod claude_code;
-pub mod business;
-pub mod router;
 pub mod acp_adapter;
+pub mod business;
+pub mod claude_code;
+pub mod router;
+pub mod types;
 
 pub use types::*;
 
@@ -72,7 +72,10 @@ impl AgentManager {
 
     pub async fn get_instance_by_task(&self, task_id: usize) -> Option<AgentInstance> {
         let instances = self.instances.lock().await;
-        instances.values().find(|i| i.task_id == Some(task_id)).cloned()
+        instances
+            .values()
+            .find(|i| i.task_id == Some(task_id))
+            .cloned()
     }
 }
 

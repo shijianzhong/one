@@ -63,9 +63,12 @@ impl SandboxBackend for PtyBackend {
 
         let sessions = self.sessions.clone();
         let mut sessions_lock = sessions.lock().await;
-        sessions_lock.insert(task_id, PtyInstance {
-            working_dir: work_dir.clone(),
-        });
+        sessions_lock.insert(
+            task_id,
+            PtyInstance {
+                working_dir: work_dir.clone(),
+            },
+        );
 
         Ok(SandboxSession {
             task_id,
@@ -77,7 +80,10 @@ impl SandboxBackend for PtyBackend {
         let sessions = self.sessions.clone();
         let mut sessions_lock = sessions.lock().await;
         if let Some(instance) = sessions_lock.remove(&task_id) {
-            eprintln!("[PtyBackend] Sandbox {} destroyed (kept dir: {:?})", task_id, instance.working_dir);
+            eprintln!(
+                "[PtyBackend] Sandbox {} destroyed (kept dir: {:?})",
+                task_id, instance.working_dir
+            );
         }
         Ok(())
     }
@@ -91,9 +97,12 @@ impl SandboxBackend for PtyBackend {
             } else {
                 let work_dir = self.get_working_dir(task_id);
                 std::fs::create_dir_all(&work_dir)?;
-                sessions_lock.insert(task_id, PtyInstance {
-                    working_dir: work_dir.clone(),
-                });
+                sessions_lock.insert(
+                    task_id,
+                    PtyInstance {
+                        working_dir: work_dir.clone(),
+                    },
+                );
                 work_dir
             }
         };
@@ -128,10 +137,12 @@ impl SandboxBackend for PtyBackend {
 #[cfg(feature = "sandbox")]
 pub mod docker {
     use super::*;
-    use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, HostConfig, Binds};
-    use bollard::Docker;
+    use bollard::container::{
+        Binds, Config, CreateContainerOptions, HostConfig, RemoveContainerOptions,
+    };
     use bollard::exec::{CreateExecOptions, StartExecResults};
     use bollard::volume::CreateVolumeOptions;
+    use bollard::Docker;
 
     const SANDBOX_IMAGE: &str = "ubuntu:22.04";
     const SANDBOX_WORKSPACE_DIR: &str = "/sessions";
@@ -185,14 +196,20 @@ pub mod docker {
             let mut instances = self.instances.lock().await;
 
             if let Some(instance) = instances.remove(&oldest_task_id) {
-                eprintln!("[DockerBackend] Evicting container {} for task {}", instance.container_id, oldest_task_id);
-                let _ = self.docker.remove_container(
-                    &instance.container_id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                ).await;
+                eprintln!(
+                    "[DockerBackend] Evicting container {} for task {}",
+                    instance.container_id, oldest_task_id
+                );
+                let _ = self
+                    .docker
+                    .remove_container(
+                        &instance.container_id,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await;
             }
             Ok(())
         }
@@ -234,9 +251,7 @@ pub mod docker {
                 cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
                 working_dir: Some(SANDBOX_WORKSPACE_DIR.to_string()),
                 host_config: Some(HostConfig {
-                    binds: Some(vec![
-                        format!("{}:{}", host_work_dir, SANDBOX_WORKSPACE_DIR),
-                    ]),
+                    binds: Some(vec![format!("{}:{}", host_work_dir, SANDBOX_WORKSPACE_DIR)]),
                     auto_remove: Some(false), // We manage lifecycle manually
                     ..Default::default()
                 }),
@@ -245,15 +260,19 @@ pub mod docker {
 
             // Remove existing container with same name if exists
             let container_name = format!("one-sandbox-{}", task_id);
-            let _ = self.docker.remove_container(
-                &container_name,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            ).await;
+            let _ = self
+                .docker
+                .remove_container(
+                    &container_name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
 
-            let container = self.docker
+            let container = self
+                .docker
                 .create_container(
                     Some(CreateContainerOptions {
                         name: Some(container_name),
@@ -281,8 +300,12 @@ pub mod docker {
                 queue.push(task_id);
             }
 
-            eprintln!("[DockerBackend] Created container {} for task {} (LRU size: {})",
-                container.id, task_id, self.lru_queue.lock().await.len());
+            eprintln!(
+                "[DockerBackend] Created container {} for task {} (LRU size: {})",
+                container.id,
+                task_id,
+                self.lru_queue.lock().await.len()
+            );
 
             Ok(instance)
         }
@@ -328,21 +351,23 @@ pub mod docker {
             let cmd_str = cmd.join(" ");
             let full_cmd = vec!["sh", "-c", &cmd_str];
 
-            let exec = self.docker.create_exec(
-                &instance.container_id,
-                CreateExecOptions {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    cmd: Some(full_cmd),
-                    ..Default::default()
-                },
-            )
-            .await?;
+            let exec = self
+                .docker
+                .create_exec(
+                    &instance.container_id,
+                    CreateExecOptions {
+                        attach_stdout: Some(true),
+                        attach_stderr: Some(true),
+                        cmd: Some(full_cmd),
+                        ..Default::default()
+                    },
+                )
+                .await?;
 
             match self.docker.start_exec(&exec.id, None).await? {
                 StartExecResults::Attached { mut output, .. } => {
-                    use futures::StreamExt;
                     use bollard::container::LogOutput;
+                    use futures::StreamExt;
                     let mut result = Vec::new();
                     while let Some(msg) = futures::StreamExt::next(&mut output).await {
                         if let Ok(LogOutput::StdOut { message }) = msg {

@@ -2,9 +2,9 @@
 //!
 //! Wrapper for invoking Claude Code CLI commands.
 
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader};
 
 use anyhow::{Context, Result};
 use which::which;
@@ -41,7 +41,11 @@ impl ClaudeCli {
     }
 
     /// Execute session/new equivalent
-    pub async fn session_new(&self, cwd: &str, _mcp_servers: &[McpServer]) -> Result<(String, String)> {
+    pub async fn session_new(
+        &self,
+        cwd: &str,
+        _mcp_servers: &[McpServer],
+    ) -> Result<(String, String)> {
         // For session/new, we just spawn a quick test to get session info
         // Claude CLI doesn't have an explicit "create session" - sessions are created on first use
         let output = Command::new(&self.path)
@@ -139,7 +143,8 @@ impl ClaudeCli {
             return Err(AcpError::InternalError(format!(
                 "Claude CLI exited with status: {:?}",
                 status
-            )).into());
+            ))
+            .into());
         }
 
         Ok(result_text.trim().to_string())
@@ -184,7 +189,9 @@ impl ClaudeCli {
                     for item in arr {
                         match item.get("type")?.as_str()? {
                             "text" => {
-                                return Some(ClaudeResponse::Text(item.get("text")?.as_str()?.to_string()));
+                                return Some(ClaudeResponse::Text(
+                                    item.get("text")?.as_str()?.to_string(),
+                                ));
                             }
                             "thinking" => {
                                 if let Some(thinking) = item.get("thinking")?.as_str() {
@@ -204,11 +211,12 @@ impl ClaudeCli {
                 let result = json.get("result")?.as_str()?.to_string();
                 Some(ClaudeResponse::Result(result))
             }
-            "system" => {
-                Some(ClaudeResponse::System)
-            }
+            "system" => Some(ClaudeResponse::System),
             "error" => {
-                let error = json.get("error").and_then(|e| e.as_str()).unwrap_or("Unknown error");
+                let error = json
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("Unknown error");
                 Some(ClaudeResponse::Error(error.to_string()))
             }
             "progress" | "info" => {

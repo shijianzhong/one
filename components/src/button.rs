@@ -1,20 +1,13 @@
 //! Button widget implementation.
 
 use gpui::{
-    actions, App, Context, CursorStyle, FocusHandle, Focusable, InteractiveElement,
-    MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, Styled, Window,
+    actions, App, Context, CursorStyle, FocusHandle, Focusable, InteractiveElement, MouseButton,
+    MouseDownEvent, MouseUpEvent, ParentElement, Render, Styled, Window,
 };
 
 use crate::traits::state::ComponentState;
 
-actions!(
-    button,
-    [
-        Press,
-        Release,
-        Click,
-    ]
-);
+actions!(button, [Press, Release, Click,]);
 
 pub struct Button {
     label: gpui::SharedString,

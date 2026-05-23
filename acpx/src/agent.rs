@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::protocol::AgentCapabilities;
 use crate::error::AcpError;
+use crate::protocol::AgentCapabilities;
 use crate::protocol::{
-    SessionCloseParams, SessionCloseResult, SessionListResult, SessionLoadParams,
-    SessionNewParams, SessionNewResult, SessionPromptParams, SessionPromptResult,
-    SessionResumeParams, SessionSetModeParams, SessionSetModeResult,
+    SessionCloseParams, SessionCloseResult, SessionListResult, SessionLoadParams, SessionNewParams,
+    SessionNewResult, SessionPromptParams, SessionPromptResult, SessionResumeParams,
+    SessionSetModeParams, SessionSetModeResult,
 };
 use crate::session::SessionManager;
 
@@ -56,10 +56,16 @@ pub trait Agent: Send + Sync {
     async fn session_load(&self, params: SessionLoadParams) -> Result<SessionNewResult, AcpError>;
 
     /// Resume a session without replay
-    async fn session_resume(&self, params: SessionResumeParams) -> Result<SessionNewResult, AcpError>;
+    async fn session_resume(
+        &self,
+        params: SessionResumeParams,
+    ) -> Result<SessionNewResult, AcpError>;
 
     /// Close a session
-    async fn session_close(&self, params: SessionCloseParams) -> Result<SessionCloseResult, AcpError>;
+    async fn session_close(
+        &self,
+        params: SessionCloseParams,
+    ) -> Result<SessionCloseResult, AcpError>;
 
     /// Set session mode
     async fn session_set_mode(

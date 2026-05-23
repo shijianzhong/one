@@ -1,53 +1,51 @@
+use dirs;
 use gpui::{
-    svg,
-    AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent,
-    Hsla, IntoElement, ParentElement, Point, Pixels, px, size, Render,
-    Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
-    Focusable, ScrollHandle,
+    div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, DragMoveEvent, Focusable,
+    Hsla, IntoElement, ParentElement, Pixels, Point, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc::{self, TryRecvError};
+use std::sync::Arc;
 use std::time::Duration;
-use dirs;
 
-use gpui_platform::application;
-use editor::Editor;
-use menu::Confirm;
 use crate::services::summarize_conversation_async;
+use editor::Editor;
+use gpui_platform::application;
+use menu::Confirm;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 use theme;
 use theme_settings;
 
 use gpui::FontWeight;
 
-mod i18n;
-pub(crate) mod ui_theme;
-mod memory;
+mod agents;
 mod assets;
+mod i18n;
+mod memory;
 mod sandbox;
 mod services;
-mod task_db;
-mod agents;
 mod skills_market;
+mod task_db;
+pub(crate) mod ui_theme;
 
+use agents::claude_code::ClaudeStreamEvent;
+use agents::router::AgentRouter;
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
-use services::{Config, load_config, save_config};
 use services::api::call_chat_api_stream;
-use agents::claude_code::ClaudeStreamEvent;
-use agents::router::AgentRouter;
+use services::{load_config, save_config, Config};
 use skills_market::SkillsMarketState;
 
 pub(crate) use ui_theme::{
-    ThemeMode, get_theme_mode, set_theme_mode,
-    NAV_BG, CARD_BG, PRIMARY_TEXT, SECONDARY_TEXT, TERTIARY_TEXT, MUTED_TEXT, BRAND_BLUE, BORDER_LIGHT,
-    ACTIVE_BG, WORKSPACE_BG, CANVAS_BG, SURFACE_ELEVATED, SURFACE_ACCENT, SURFACE_PANEL, USER_BUBBLE_BG,
-    ASSISTANT_BUBBLE_BG, INPUT_BG,
+    get_theme_mode, set_theme_mode, ThemeMode, ACCENT_TEXT, ACTIVE_BG, ASSISTANT_BUBBLE_BG,
+    AVATAR_BG, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, CARD_BG, FLOATING_PANEL_BG, GHOST_SURFACE_BG,
+    HEADER_BG, INPUT_BG, MUTED_TEXT, NAV_BG, PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_ACCENT,
+    SURFACE_ELEVATED, SURFACE_PANEL, TERTIARY_TEXT, USER_BUBBLE_BG, WORKSPACE_BG,
 };
 
 struct DraggedResizer;
@@ -239,8 +237,18 @@ impl ClaudeRunStatus {
     fn color(&self) -> Hsla {
         match self {
             Self::Running => BRAND_BLUE(),
-            Self::Completed => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
-            Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+            Self::Completed => Hsla {
+                h: 0.36,
+                s: 0.65,
+                l: 0.42,
+                a: 1.0,
+            },
+            Self::Failed => Hsla {
+                h: 0.0,
+                s: 0.72,
+                l: 0.52,
+                a: 1.0,
+            },
         }
     }
 }
@@ -256,8 +264,18 @@ impl ClaudeRunTone {
     fn color(&self) -> Hsla {
         match self {
             Self::Info => SECONDARY_TEXT(),
-            Self::Success => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
-            Self::Error => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+            Self::Success => Hsla {
+                h: 0.36,
+                s: 0.65,
+                l: 0.42,
+                a: 1.0,
+            },
+            Self::Error => Hsla {
+                h: 0.0,
+                s: 0.72,
+                l: 0.52,
+                a: 1.0,
+            },
         }
     }
 }
@@ -349,8 +367,18 @@ impl PreviewStatus {
     fn color(&self) -> Hsla {
         match self {
             Self::Idle => MUTED_TEXT(),
-            Self::Ready => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
-            Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
+            Self::Ready => Hsla {
+                h: 0.36,
+                s: 0.65,
+                l: 0.42,
+                a: 1.0,
+            },
+            Self::Failed => Hsla {
+                h: 0.0,
+                s: 0.72,
+                l: 0.52,
+                a: 1.0,
+            },
         }
     }
 }
@@ -439,7 +467,12 @@ fn render_formatted_content(
         FormattedContent::Json(text) => div()
             .p_2()
             .rounded_md()
-            .bg(Hsla { h: 0.0, s: 0.0, l: 0.98, a: 1.0 })
+            .bg(Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.98,
+                a: 1.0,
+            })
             .border_1()
             .border_color(BORDER_LIGHT())
             .child(
@@ -448,13 +481,18 @@ fn render_formatted_content(
                     .text_color(block_color)
                     .font_family("Menlo")
                     .whitespace_normal()
-                    .child(text.clone())
+                    .child(text.clone()),
             )
             .into_any_element(),
         FormattedContent::Code(text) => div()
             .p_2()
             .rounded_md()
-            .bg(Hsla { h: 0.62, s: 0.15, l: 0.97, a: 1.0 })
+            .bg(Hsla {
+                h: 0.62,
+                s: 0.15,
+                l: 0.97,
+                a: 1.0,
+            })
             .border_1()
             .border_color(BORDER_LIGHT())
             .child(
@@ -463,7 +501,7 @@ fn render_formatted_content(
                     .text_color(block_color)
                     .font_family("Menlo")
                     .whitespace_normal()
-                    .child(text.clone())
+                    .child(text.clone()),
             )
             .into_any_element(),
     }
@@ -479,7 +517,11 @@ fn strip_think_tags(content: &str) -> String {
     let mut result = content.to_string();
     while let Some(start) = result.find("<think>") {
         if let Some(end) = result[start..].find("</think>") {
-            result = format!("{}{}", &result[..start], &result[start+end+"</think>".len()..]);
+            result = format!(
+                "{}{}",
+                &result[..start],
+                &result[start + end + "</think>".len()..]
+            );
         } else {
             break;
         }
@@ -616,7 +658,9 @@ fn log_think_boundary_newlines(label: &str, content: &str) {
             }
         }
         let snippet = escape_visible_snippet(&content[after..], 60);
-        eprintln!("[THINK-SPACING] {label} close@{i} after_newlines={count} after_snip='{snippet}'");
+        eprintln!(
+            "[THINK-SPACING] {label} close@{i} after_newlines={count} after_snip='{snippet}'"
+        );
         close_index = after;
     }
 }
@@ -642,7 +686,8 @@ impl AppState {
         self.next_general_ai_run_id += 1;
         let run_id = self.next_general_ai_run_id;
         self.request_in_flight = true;
-        self.request_status_text = Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string());
+        self.request_status_text =
+            Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string());
         self.request_kind = Some(RequestKind::GeneralAi);
         self.general_ai_run_id = Some(run_id);
         self.general_ai_task_id = self.active_task_id;
@@ -665,7 +710,8 @@ impl AppState {
         match event {
             GeneralAiStreamEvent::Delta(delta) => {
                 if self.general_ai_live_text.is_empty() {
-                    self.request_status_text = Some(t(self.current_lang, Translations::GENERATING_RESPONSE).to_string());
+                    self.request_status_text =
+                        Some(t(self.current_lang, Translations::GENERATING_RESPONSE).to_string());
                 }
                 self.general_ai_live_text.push_str(&delta);
                 if delta.contains("<think>") || delta.contains("</think>") {
@@ -718,7 +764,14 @@ impl AppState {
                         let sender_err = sender;
 
                         gpui_tokio::Tokio::spawn(cx, async move {
-                            match summarize_conversation_async(&base_url, &api_key, &model, &all_messages).await {
+                            match summarize_conversation_async(
+                                &base_url,
+                                &api_key,
+                                &model,
+                                &all_messages,
+                            )
+                            .await
+                            {
                                 Ok(summary) => {
                                     let _ = sender_ok.send(SummarizeEvent::Finished {
                                         job_id,
@@ -737,34 +790,32 @@ impl AppState {
                         })
                         .detach();
 
-                        cx.spawn(async move |this, cx| {
-                            loop {
-                                let mut disconnected = false;
+                        cx.spawn(async move |this, cx| loop {
+                            let mut disconnected = false;
 
-                                loop {
-                                    match receiver.try_recv() {
-                                        Ok(event) => {
-                                            let _ = this.update(cx, |this, cx| {
-                                                this.apply_summarize_event(event);
-                                                cx.notify();
-                                            });
-                                        }
-                                        Err(TryRecvError::Empty) => break,
-                                        Err(TryRecvError::Disconnected) => {
-                                            disconnected = true;
-                                            break;
-                                        }
+                            loop {
+                                match receiver.try_recv() {
+                                    Ok(event) => {
+                                        let _ = this.update(cx, |this, cx| {
+                                            this.apply_summarize_event(event);
+                                            cx.notify();
+                                        });
+                                    }
+                                    Err(TryRecvError::Empty) => break,
+                                    Err(TryRecvError::Disconnected) => {
+                                        disconnected = true;
+                                        break;
                                     }
                                 }
-
-                                if disconnected {
-                                    break;
-                                }
-
-                                cx.background_executor()
-                                    .timer(Duration::from_millis(60))
-                                    .await;
                             }
+
+                            if disconnected {
+                                break;
+                            }
+
+                            cx.background_executor()
+                                .timer(Duration::from_millis(60))
+                                .await;
                         })
                         .detach();
                     }
@@ -792,7 +843,8 @@ impl AppState {
                     self.needs_auto_scroll = true;
                 }
                 if let Some(task_id) = run_task_id {
-                    task_db::insert_message(&self.db.conn, task_id, "assistant", &error_message).ok();
+                    task_db::insert_message(&self.db.conn, task_id, "assistant", &error_message)
+                        .ok();
                 }
             }
         }
@@ -844,7 +896,10 @@ impl AppState {
                     return;
                 }
                 self.summarize_job_id = None;
-                eprintln!("[CHAT-TITLE] summarize failed task_id={} error={}", task_id, error);
+                eprintln!(
+                    "[CHAT-TITLE] summarize failed task_id={} error={}",
+                    task_id, error
+                );
             }
         }
     }
@@ -862,10 +917,11 @@ impl AppState {
         let final_sender = sender.clone();
 
         gpui_tokio::Tokio::spawn(cx, async move {
-            let result = call_chat_api_stream(&base_url, &api_key, &model, &messages, move |delta| {
-                let _ = delta_sender.send(GeneralAiStreamEvent::Delta(delta));
-            })
-            .await;
+            let result =
+                call_chat_api_stream(&base_url, &api_key, &model, &messages, move |delta| {
+                    let _ = delta_sender.send(GeneralAiStreamEvent::Delta(delta));
+                })
+                .await;
 
             match result {
                 Ok(output) => {
@@ -878,34 +934,32 @@ impl AppState {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            loop {
-                let mut disconnected = false;
+        cx.spawn(async move |this, cx| loop {
+            let mut disconnected = false;
 
-                loop {
-                    match receiver.try_recv() {
-                        Ok(event) => {
-                            let _ = this.update(cx, |this, cx| {
-                                this.apply_general_ai_stream_event(run_id, event, cx);
-                                cx.notify();
-                            });
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_general_ai_stream_event(run_id, event, cx);
+                            cx.notify();
+                        });
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
                     }
                 }
-
-                if disconnected {
-                    break;
-                }
-
-                cx.background_executor()
-                    .timer(Duration::from_millis(60))
-                    .await;
             }
+
+            if disconnected {
+                break;
+            }
+
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
         })
         .detach();
     }
@@ -922,10 +976,19 @@ impl AppState {
                 prev_dash = true;
             }
         }
-        slug.trim_matches('-').to_string().chars().take(32).collect::<String>()
+        slug.trim_matches('-')
+            .to_string()
+            .chars()
+            .take(32)
+            .collect::<String>()
     }
 
-    fn get_task_dir_for_ids(&self, workspace_id: usize, task_id: usize, task_title: &str) -> PathBuf {
+    fn get_task_dir_for_ids(
+        &self,
+        workspace_id: usize,
+        task_id: usize,
+        task_title: &str,
+    ) -> PathBuf {
         let workspace_root = self
             .workspaces
             .iter()
@@ -957,7 +1020,12 @@ impl AppState {
         task_dir.join(".claude")
     }
 
-    fn ensure_task_storage_dir(&self, workspace_id: usize, task_id: usize, task_title: &str) -> PathBuf {
+    fn ensure_task_storage_dir(
+        &self,
+        workspace_id: usize,
+        task_id: usize,
+        task_title: &str,
+    ) -> PathBuf {
         let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
         let _ = std::fs::create_dir_all(&task_dir);
         let _ = std::fs::create_dir_all(Self::get_claude_meta_dir_for_task_dir(&task_dir));
@@ -965,7 +1033,12 @@ impl AppState {
     }
 
     fn load_artifacts_for_task_dir(task_dir: &std::path::Path) -> Vec<ArtifactEntry> {
-        fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<ArtifactEntry>, depth: usize) {
+        fn walk(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            out: &mut Vec<ArtifactEntry>,
+            depth: usize,
+        ) {
             if depth > 4 {
                 return;
             }
@@ -1035,7 +1108,12 @@ impl AppState {
         }
     }
 
-    fn load_claude_state_for_task(&self, workspace_id: usize, task_id: usize, task_title: &str) -> Option<ClaudeRunPanelState> {
+    fn load_claude_state_for_task(
+        &self,
+        workspace_id: usize,
+        task_id: usize,
+        task_title: &str,
+    ) -> Option<ClaudeRunPanelState> {
         let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
         let state_path = Self::get_claude_meta_dir_for_task_dir(&task_dir).join("run_state.json");
         let content = std::fs::read_to_string(state_path).ok()?;
@@ -1055,7 +1133,8 @@ impl AppState {
                     content: m.content,
                 })
                 .collect();
-            self.current_claude_run = self.load_claude_state_for_task(workspace_id, task_id, &title);
+            self.current_claude_run =
+                self.load_claude_state_for_task(workspace_id, task_id, &title);
         } else {
             self.messages.clear();
             self.current_claude_run = None;
@@ -1160,7 +1239,8 @@ impl AppState {
     }
 
     fn get_active_workspace(&self) -> Option<&Workspace> {
-        self.active_workspace_id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
+        self.active_workspace_id
+            .and_then(|id| self.workspaces.iter().find(|w| w.id == id))
     }
 
     fn get_active_task(&self) -> Option<&TaskItem> {
@@ -1204,11 +1284,20 @@ impl AppState {
         if let Ok(rows) = task_db::load_tasks(&self.db.conn, workspace_id) {
             self.workspaces[ws_index].tasks = rows
                 .into_iter()
-                .map(|t| TaskItem { id: t.id, title: t.title, is_draft: t.is_draft })
+                .map(|t| TaskItem {
+                    id: t.id,
+                    title: t.title,
+                    is_draft: t.is_draft,
+                })
                 .collect();
         }
 
-        if let Some(title) = self.workspaces[ws_index].tasks.iter().find(|t| t.id == draft_id).map(|t| t.title.clone()) {
+        if let Some(title) = self.workspaces[ws_index]
+            .tasks
+            .iter()
+            .find(|t| t.id == draft_id)
+            .map(|t| t.title.clone())
+        {
             let _ = self.ensure_task_storage_dir(workspace_id, draft_id, &title);
         }
         Some(draft_id)
@@ -1219,7 +1308,13 @@ impl AppState {
         let run_id = self.next_claude_run_id;
         self.sidebar_visible = true;
         self.request_in_flight = true;
-        self.request_status_text = Some(t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+        self.request_status_text = Some(
+            t(
+                self.current_lang,
+                Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
+            )
+            .to_string(),
+        );
         self.request_kind = Some(RequestKind::ClaudeCode);
         let lang = self.current_lang;
         self.current_claude_run = Some(ClaudeRunPanelState {
@@ -1235,7 +1330,11 @@ impl AppState {
             stderr_lines: vec![],
             events: vec![ClaudeRunEvent::info(
                 t(lang, Translations::RUN_QUEUED),
-                format!("{}: {}", t(lang, Translations::INSTRUCTION_SUBMITTED), instruction),
+                format!(
+                    "{}: {}",
+                    t(lang, Translations::INSTRUCTION_SUBMITTED),
+                    instruction
+                ),
             )],
             show_live_bubble: true,
             preview: Some(PreviewState {
@@ -1348,7 +1447,11 @@ impl AppState {
         let root = PathBuf::from(work_dir);
         if !root.exists() {
             return PreviewLaunchResult::Failed {
-                note: format!("{}: {}", t(lang, Translations::PREVIEW_DIR_MISSING), root.display()),
+                note: format!(
+                    "{}: {}",
+                    t(lang, Translations::PREVIEW_DIR_MISSING),
+                    root.display()
+                ),
             };
         }
 
@@ -1395,7 +1498,13 @@ impl AppState {
         let url = format!("http://127.0.0.1:{}/{}", port, relative_entry);
 
         let child = Command::new("python3")
-            .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
+            .args([
+                "-m",
+                "http.server",
+                &port.to_string(),
+                "--bind",
+                "127.0.0.1",
+            ])
             .current_dir(&serve_dir)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1407,7 +1516,11 @@ impl AppState {
                 PreviewLaunchResult::Ready {
                     url,
                     entry_file: entry.to_string_lossy().to_string(),
-                    note: format!("{}: {}", t(lang, Translations::SERVING_WORKSPACE_ROOT), serve_dir.display()),
+                    note: format!(
+                        "{}: {}",
+                        t(lang, Translations::SERVING_WORKSPACE_ROOT),
+                        serve_dir.display()
+                    ),
                 }
             }
             Err(error) => PreviewLaunchResult::Failed {
@@ -1492,7 +1605,8 @@ impl AppState {
                         options: options.clone(),
                         session_id: run.session_id.clone(),
                     });
-                    run.status_message = t(lang, Translations::CLAUDE_WAITING_FOR_ANSWER).to_string();
+                    run.status_message =
+                        t(lang, Translations::CLAUDE_WAITING_FOR_ANSWER).to_string();
                     self.request_in_flight = false;
                     self.request_status_text = None;
                     self.request_kind = None;
@@ -1501,7 +1615,12 @@ impl AppState {
                         if options.is_empty() {
                             prompt
                         } else {
-                            format!("{}\n{}: {}", prompt, t(lang, Translations::OPTIONS), options.join(", "))
+                            format!(
+                                "{}\n{}: {}",
+                                prompt,
+                                t(lang, Translations::OPTIONS),
+                                options.join(", ")
+                            )
                         },
                     ));
                 }
@@ -1518,10 +1637,19 @@ impl AppState {
                     run.show_live_bubble = false;
                     run.events.push(ClaudeRunEvent::success(
                         t(lang, Translations::RUN_COMPLETED),
-                        format!("{}: {}", t(lang, Translations::GENERATED_CHARACTERS), run.live_text.chars().count()),
+                        format!(
+                            "{}: {}",
+                            t(lang, Translations::GENERATED_CHARACTERS),
+                            run.live_text.chars().count()
+                        ),
                     ));
-                    run.artifacts = Self::load_artifacts_for_task_dir(&PathBuf::from(&run.work_dir));
-                    final_message = Some(format!("{}\n{}", t(lang, Translations::CLAUDE_CODE_TAG), run.live_text));
+                    run.artifacts =
+                        Self::load_artifacts_for_task_dir(&PathBuf::from(&run.work_dir));
+                    final_message = Some(format!(
+                        "{}\n{}",
+                        t(lang, Translations::CLAUDE_CODE_TAG),
+                        run.live_text
+                    ));
                     persist_task_id = run.task_id;
                     finished_work_dir = Some(run.work_dir.clone());
                 }
@@ -1532,7 +1660,10 @@ impl AppState {
                     self.request_status_text = None;
                     self.request_kind = None;
                     run.show_live_bubble = false;
-                    run.events.push(ClaudeRunEvent::error(t(lang, Translations::RUN_FAILED), error.clone()));
+                    run.events.push(ClaudeRunEvent::error(
+                        t(lang, Translations::RUN_FAILED),
+                        error.clone(),
+                    ));
                     let mut message = t(lang, Translations::CLAUDE_EXECUTION_ERROR).to_string();
                     message.push_str(&error);
                     if !run.live_text.trim().is_empty() {
@@ -1593,7 +1724,10 @@ impl AppState {
                             url: None,
                             note: note.clone(),
                         });
-                        run.events.push(ClaudeRunEvent::info(t(lang, Translations::PREVIEW_SKIPPED), note));
+                        run.events.push(ClaudeRunEvent::info(
+                            t(lang, Translations::PREVIEW_SKIPPED),
+                            note,
+                        ));
                     }
                     PreviewLaunchResult::Failed { note } => {
                         run.preview = Some(PreviewState {
@@ -1602,7 +1736,10 @@ impl AppState {
                             url: None,
                             note: note.clone(),
                         });
-                        run.events.push(ClaudeRunEvent::error(t(lang, Translations::PREVIEW_FAILED_EVENT), note));
+                        run.events.push(ClaudeRunEvent::error(
+                            t(lang, Translations::PREVIEW_FAILED_EVENT),
+                            note,
+                        ));
                     }
                 }
             }
@@ -1633,11 +1770,12 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let run_id = self.begin_claude_run(&instruction);
-        let project_dir = if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
-            self.ensure_task_storage_dir(workspace_id, task_id, &title)
-        } else {
-            std::path::PathBuf::from(self.get_work_dir())
-        };
+        let project_dir =
+            if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
+                self.ensure_task_storage_dir(workspace_id, task_id, &title)
+            } else {
+                std::path::PathBuf::from(self.get_work_dir())
+            };
 
         let (sender, receiver) = mpsc::channel::<ClaudeStreamEvent>();
         let worker_sender = sender.clone();
@@ -1675,34 +1813,32 @@ impl AppState {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            loop {
-                let mut disconnected = false;
+        cx.spawn(async move |this, cx| loop {
+            let mut disconnected = false;
 
-                loop {
-                    match receiver.try_recv() {
-                        Ok(event) => {
-                            let _ = this.update(cx, |this, cx| {
-                                this.apply_claude_run_event(run_id, event);
-                                cx.notify();
-                            });
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            disconnected = true;
-                            break;
-                        }
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_claude_run_event(run_id, event);
+                            cx.notify();
+                        });
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
                     }
                 }
-
-                if disconnected {
-                    break;
-                }
-
-                cx.background_executor()
-                    .timer(Duration::from_millis(60))
-                    .await;
             }
+
+            if disconnected {
+                break;
+            }
+
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
         })
         .detach();
     }
@@ -1724,13 +1860,19 @@ impl AppState {
         }
         self.request_in_flight = true;
         self.request_kind = Some(RequestKind::ClaudeCode);
-        self.request_status_text = Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string());
+        self.request_status_text =
+            Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string());
         self.persist_current_claude_state();
         self.spawn_claude_code_run(answer, session_id, cx);
     }
 
     // Action handlers for model config dialog
-    fn open_model_config_dialog(&mut self, _: &OpenModelConfigDialog, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_model_config_dialog(
+        &mut self,
+        _: &OpenModelConfigDialog,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editing_model_name = self.model_name.clone();
         self.editing_base_url = self.model_base_url.clone();
         self.editing_api_key = self.model_api_key.clone();
@@ -1765,7 +1907,12 @@ impl AppState {
         cx.notify();
     }
 
-    fn cancel_model_config(&mut self, _: &CancelModelConfig, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel_model_config(
+        &mut self,
+        _: &CancelModelConfig,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.show_model_config_dialog = false;
         cx.notify();
     }
@@ -1813,8 +1960,10 @@ impl AppState {
                 } else {
                     task.title.clone()
                 };
-                let json = task_db::export_messages_json(&self.db.conn, task_id).unwrap_or_default();
-                let md = task_db::export_messages_markdown(&self.db.conn, task_id, &md_title).unwrap_or_default();
+                let json =
+                    task_db::export_messages_json(&self.db.conn, task_id).unwrap_or_default();
+                let md = task_db::export_messages_markdown(&self.db.conn, task_id, &md_title)
+                    .unwrap_or_default();
                 self.exported_json = Some(json);
                 self.exported_md = Some(md);
                 self.show_export_dialog = true;
@@ -1822,7 +1971,6 @@ impl AppState {
             }
         }
     }
-
 }
 
 impl Render for AppState {
@@ -1860,7 +2008,11 @@ impl Render for AppState {
 }
 
 impl AppState {
-    fn render_main_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_main_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         match self.main_view {
             MainView::Chat => self.render_chat(window, cx).into_any_element(),
             MainView::SkillsMarket => skills_market::render_skills_market(&*self, window, cx),
@@ -1877,8 +2029,9 @@ impl AppState {
             .child(self.render_nav_header(cx))
             .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_nav_buttons(cx))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_task_list(cx))
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
+            .child(self.render_nav_footer_actions())
     }
 
     fn render_nav_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1895,31 +2048,31 @@ impl AppState {
             .items_center()
             .justify_between()
             .h(px(64.0))
-            .px_5()
+            .px_6()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_4()
                     .child(
                         div()
                             .text_size(px(24.0))
                             .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::NAV_ONE))
+                            .child(t(lang, Translations::NAV_ONE)),
                     )
                     .child(
                         div()
                             .px_2()
                             .py_1()
-                            .rounded_lg()
-                            .bg(SURFACE_ELEVATED())
+                            .rounded_md()
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
-                            .child("AI Assistant")
-                    )
+                            .child("AI Assistant"),
+                    ),
             )
             .child(
                 div()
@@ -1930,34 +2083,40 @@ impl AppState {
                         div()
                             .px_3()
                             .py_1()
-                            .rounded_lg()
-                            .bg(SURFACE_ELEVATED())
+                            .rounded_md()
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
                             .cursor_pointer()
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                this.toggle_theme(&ToggleTheme, _window, cx);
-                            }))
-                            .child(theme_label)
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    this.toggle_theme(&ToggleTheme, _window, cx);
+                                }),
+                            )
+                            .child(theme_label),
                     )
                     .child(
                         div()
                             .px_3()
                             .py_1()
-                            .rounded_lg()
-                            .bg(SURFACE_ELEVATED())
+                            .rounded_md()
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
                             .cursor_pointer()
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                this.toggle_lang(&ToggleLang, _window, cx);
-                            }))
-                            .child(lang.label())
-                    )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    this.toggle_lang(&ToggleLang, _window, cx);
+                                }),
+                            )
+                            .child(lang.label()),
+                    ),
             )
     }
 
@@ -1965,22 +2124,10 @@ impl AppState {
         let lang = self.current_lang;
         let skills_active = matches!(self.main_view, MainView::SkillsMarket);
         let models_active = self.show_model_config_dialog;
-        let mut nav = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_4()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(MUTED_TEXT())
-                    .font_weight(FontWeight::BOLD)
-                    .child("GLOBAL")
-            );
+        let mut nav = div().flex().flex_col().gap_1().px_4().py_3();
 
         nav = nav.child(self.make_nav_item(
             t(lang, Translations::NEW_WORKSPACE).to_string(),
-            t(lang, Translations::WORKSPACES).to_string(),
             "⌘N".to_string(),
             "workspace",
             false,
@@ -1988,7 +2135,6 @@ impl AppState {
         ));
         nav = nav.child(self.make_nav_item(
             t(lang, Translations::CAPABILITIES).to_string(),
-            t(lang, Translations::SKILLS).to_string(),
             "⌘K".to_string(),
             "capabilities",
             skills_active,
@@ -1996,21 +2142,10 @@ impl AppState {
         ));
         nav = nav.child(self.make_nav_item(
             t(lang, Translations::MODELS).to_string(),
-            t(lang, Translations::MODEL_CONFIG).to_string(),
             "⌘M".to_string(),
             "models",
             models_active,
             cx,
-        ));
-        nav = nav.child(self.make_placeholder_nav_item(
-            t(lang, Translations::SETTINGS).to_string(),
-            t(lang, Translations::PLACEHOLDER_ENTRY).to_string(),
-            "settings",
-        ));
-        nav = nav.child(self.make_placeholder_nav_item(
-            t(lang, Translations::SUPPORT).to_string(),
-            t(lang, Translations::PLACEHOLDER_ENTRY).to_string(),
-            "support",
         ));
 
         nav
@@ -2019,7 +2154,6 @@ impl AppState {
     fn make_nav_item(
         &mut self,
         title: String,
-        subtitle: String,
         shortcut: String,
         icon_key: &'static str,
         active: bool,
@@ -2031,109 +2165,118 @@ impl AppState {
 
         div()
             .flex()
-            .items_start()
+            .items_center()
             .gap_3()
-            .px_3()
-            .py_3()
-            .rounded_lg()
-            .bg(if active { SURFACE_ACCENT() } else { SURFACE_ELEVATED() })
-            .border_1()
-            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
+            .px_1()
+            .py_1()
             .cursor_pointer()
-            .hover(|this| this.bg(SURFACE_ACCENT()))
+            .hover(|this| this.opacity(0.92))
             .when(is_new_workspace, |this| {
-                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                    this.handle_new_workspace_click(cx);
-                }))
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.handle_new_workspace_click(cx);
+                    }),
+                )
             })
             .when(is_skills, |this| {
-                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                    this.open_skills_market(cx);
-                }))
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.open_skills_market(cx);
+                    }),
+                )
             })
             .when(is_model_config, |this| {
-                this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                    this.open_model_config_dialog(&OpenModelConfigDialog, _window, cx);
-                }))
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.open_model_config_dialog(&OpenModelConfigDialog, _window, cx);
+                    }),
+                )
             })
-            .child(
-                self.make_icon_slot(icon_key, active)
-            )
+            .child(self.make_icon_slot(icon_key, active))
             .child(
                 div()
                     .flex_1()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(if active { PRIMARY_TEXT() } else { PRIMARY_TEXT() })
-                            .font_weight(FontWeight::BOLD)
-                            .child(title)
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if active { SECONDARY_TEXT() } else { MUTED_TEXT() })
-                            .child(subtitle)
-                    )
+                    .overflow_hidden()
+                    .text_sm()
+                    .text_color(if active {
+                        PRIMARY_TEXT()
+                    } else {
+                        SECONDARY_TEXT()
+                    })
+                    .font_weight(FontWeight::BOLD)
+                    .text_ellipsis()
+                    .child(title),
             )
-            .child(div().text_xs().text_color(if active { SECONDARY_TEXT() } else { MUTED_TEXT() }).child(shortcut))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if active {
+                        TERTIARY_TEXT()
+                    } else {
+                        MUTED_TEXT()
+                    })
+                    .child(shortcut),
+            )
     }
 
-    fn make_placeholder_nav_item(&mut self, title: String, subtitle: String, icon_key: &'static str) -> impl IntoElement {
+    fn make_footer_action_item(
+        &mut self,
+        title: String,
+        icon_key: &'static str,
+    ) -> impl IntoElement {
         div()
             .flex()
-            .items_start()
+            .items_center()
             .gap_3()
-            .px_3()
-            .py_3()
-            .rounded_lg()
-            .bg(WORKSPACE_BG())
-            .border_1()
-            .border_color(BORDER_LIGHT())
-            .opacity(0.82)
+            .px_1()
+            .py_1()
+            .opacity(0.88)
             .child(self.make_icon_slot(icon_key, false))
             .child(
                 div()
                     .flex_1()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_sm().text_color(SECONDARY_TEXT()).child(title))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_xs().text_color(MUTED_TEXT()).child(subtitle))
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(CANVAS_BG())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child("SOON")
-                            )
-                    )
+                    .text_sm()
+                    .text_color(SECONDARY_TEXT())
+                    .child(title),
+            )
+    }
+
+    fn render_nav_footer_actions(&mut self) -> impl IntoElement {
+        let lang = self.current_lang;
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_4()
+            .py_4()
+            .child(
+                self.make_footer_action_item(
+                    t(lang, Translations::SETTINGS).to_string(),
+                    "settings",
+                ),
+            )
+            .child(
+                self.make_footer_action_item(t(lang, Translations::SUPPORT).to_string(), "support"),
             )
     }
 
     fn make_icon_slot(&mut self, icon_key: &'static str, active: bool) -> impl IntoElement {
         div()
-            .mt(px(1.0))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(if active { CANVAS_BG() } else { WORKSPACE_BG() })
-            .border_1()
-            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
+            .w(px(16.0))
+            .h(px(16.0))
+            .flex()
+            .items_center()
+            .justify_center()
             .child(render_icon_element(
                 icon_key,
-                if active { BRAND_BLUE() } else { SECONDARY_TEXT() },
+                if active {
+                    PRIMARY_TEXT()
+                } else {
+                    SECONDARY_TEXT()
+                },
                 14.0,
             ))
     }
@@ -2207,25 +2350,31 @@ impl AppState {
             .pb_4()
             .id("task-list")
             .overflow_scroll()
-            .gap_2()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                this.delete_confirm_workspace_id = None;
-            }));
-
-        result = result
-            .child(
-                div()
-                    .pt_2()
-                    .pb_1()
-                    .text_xs()
-                    .text_color(MUTED_TEXT())
-                    .font_weight(FontWeight::BOLD)
-                    .child(t(lang, Translations::WORKSPACES_HEADING))
+            .gap_3()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                    this.delete_confirm_workspace_id = None;
+                }),
             );
+
+        result = result.child(
+            div()
+                .pt_4()
+                .pb_1()
+                .text_xs()
+                .text_color(MUTED_TEXT())
+                .font_weight(FontWeight::BOLD)
+                .child(t(lang, Translations::WORKSPACES_HEADING)),
+        );
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
-            let ws_bg = if is_active_ws { SURFACE_ELEVATED() } else { WORKSPACE_BG() };
+            let ws_bg = if is_active_ws {
+                SURFACE_ELEVATED()
+            } else {
+                WORKSPACE_BG()
+            };
             let ws_id = workspace.id;
 
             let ws_row = div()
@@ -2233,23 +2382,33 @@ impl AppState {
                 .items_center()
                 .gap_2()
                 .px_3()
-                .py_3()
-                .rounded_lg()
+                .py_2()
+                .rounded_xl()
                 .bg(ws_bg)
                 .border_1()
-                .border_color(if is_active_ws { BRAND_BLUE() } else { BORDER_LIGHT() })
+                .border_color(if is_active_ws {
+                    BRAND_BLUE()
+                } else {
+                    BORDER_LIGHT()
+                })
                 .cursor_pointer()
-                .hover(|this| this.bg(SURFACE_ELEVATED()))
-                .on_mouse_move(cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
-                    this.hovered_workspace_id = Some(ws_id);
-                }))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                    this.active_workspace_id = Some(ws_id);
-                    if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
-                        ws.expanded = !ws.expanded;
-                        task_db::update_workspace_expanded(&this.db.conn, ws_id, ws.expanded).ok();
-                    }
-                }));
+                .hover(|this| this.bg(GHOST_SURFACE_BG()))
+                .on_mouse_move(
+                    cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
+                        this.hovered_workspace_id = Some(ws_id);
+                    }),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                        this.active_workspace_id = Some(ws_id);
+                        if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                            ws.expanded = !ws.expanded;
+                            task_db::update_workspace_expanded(&this.db.conn, ws_id, ws.expanded)
+                                .ok();
+                        }
+                    }),
+                );
 
             let expand_btn = div()
                 .text_sm()
@@ -2264,16 +2423,21 @@ impl AppState {
                 .px_2()
                 .py_1()
                 .rounded_md()
-                .bg(SURFACE_ELEVATED())
+                .bg(GHOST_SURFACE_BG())
+                .border_1()
+                .border_color(BORDER_LIGHT())
                 .cursor_pointer()
                 .id(format!("add-btn-{}", ws_id))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                    cx.stop_propagation();
-                    this.active_workspace_id = Some(ws_id);
-                    this.active_task_id = this.ensure_workspace_draft_task(ws_id);
-                    this.restore_task_context();
-                    cx.notify();
-                }));
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.active_workspace_id = Some(ws_id);
+                        this.active_task_id = this.ensure_workspace_draft_task(ws_id);
+                        this.restore_task_context();
+                        cx.notify();
+                    }),
+                );
 
             let ws_label = workspace.name.clone();
 
@@ -2282,12 +2446,22 @@ impl AppState {
                 .px_2()
                 .py_1()
                 .rounded_md()
-                .bg(SURFACE_ELEVATED())
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
-                    cx.stop_propagation();
-                    this.delete_confirm_workspace_id = Some(ws_id);
-                    this.popup_position = event.position;
-                }))
+                .bg(GHOST_SURFACE_BG())
+                .border_1()
+                .border_color(BORDER_LIGHT())
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(
+                        move |this,
+                              event: &gpui::MouseDownEvent,
+                              _window: &mut Window,
+                              cx: &mut Context<Self>| {
+                            cx.stop_propagation();
+                            this.delete_confirm_workspace_id = Some(ws_id);
+                            this.popup_position = event.position;
+                        },
+                    ),
+                )
                 .child(
                     svg()
                         .path("more.svg")
@@ -2296,25 +2470,34 @@ impl AppState {
                         .text_color(MUTED_TEXT()),
                 );
 
-            let action_div = div().ml_auto().flex().items_center().gap_2()
+            let action_div = div()
+                .ml_auto()
+                .flex()
+                .items_center()
+                .gap_2()
                 .child(more_btn)
                 .child(add_btn.child("+"));
 
             result = result.child(
-                ws_row.child(
-                    div()
-                        .w(px(2.0))
-                        .h(px(22.0))
-                        .rounded_full()
-                        .bg(if is_active_ws { BRAND_BLUE() } else { WORKSPACE_BG() })
-                ).child(
-                    if workspace.expanded {
+                ws_row
+                    .child(
+                        div()
+                            .w(px(2.0))
+                            .h(px(22.0))
+                            .rounded_full()
+                            .bg(if is_active_ws {
+                                BRAND_BLUE()
+                            } else {
+                                WORKSPACE_BG()
+                            }),
+                    )
+                    .child(if workspace.expanded {
                         expand_btn.child(
                             svg()
                                 .path("expand.svg")
                                 .size(px(16.0))
                                 .flex_none()
-                                .text_color(MUTED_TEXT())
+                                .text_color(MUTED_TEXT()),
                         )
                     } else {
                         expand_btn.child(
@@ -2322,17 +2505,21 @@ impl AppState {
                                 .path("fold.svg")
                                 .size(px(16.0))
                                 .flex_none()
-                                .text_color(MUTED_TEXT())
+                                .text_color(MUTED_TEXT()),
                         )
-                    }
-                ).child(
-                    svg()
-                        .path("folder.svg")
-                        .size(px(16.0))
-                        .flex_none()
-                        .text_color(if is_active_ws { BRAND_BLUE() } else { SECONDARY_TEXT() })
-                ).child(
-                    if is_active_ws {
+                    })
+                    .child(
+                        svg()
+                            .path("folder.svg")
+                            .size(px(16.0))
+                            .flex_none()
+                            .text_color(if is_active_ws {
+                                BRAND_BLUE()
+                            } else {
+                                SECONDARY_TEXT()
+                            }),
+                    )
+                    .child(if is_active_ws {
                         div()
                             .text_sm()
                             .ml_1()
@@ -2345,11 +2532,15 @@ impl AppState {
                             .ml_1()
                             .text_color(SECONDARY_TEXT())
                             .child(ws_label)
-                    }
-                ).child(
-                    div().ml_auto().flex().items_center().gap_3()
-                        .child(action_div)
-                )
+                    })
+                    .child(
+                        div()
+                            .ml_auto()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(action_div),
+                    ),
             );
 
             if workspace.expanded {
@@ -2359,10 +2550,11 @@ impl AppState {
                     .pl_3()
                     .border_l_1()
                     .border_color(BORDER_LIGHT())
-                    .gap_1();
+                    .gap_2();
 
                 for task in &workspace.tasks {
-                    let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);
+                    let is_active_task = active_task_id == Some(task.id)
+                        && active_workspace_id == Some(workspace.id);
 
                     let mut task_div = div()
                         .flex()
@@ -2371,12 +2563,20 @@ impl AppState {
                         .w_full()
                         .px_3()
                         .py_2()
-                        .rounded_lg()
+                        .rounded_xl()
                         .cursor_pointer()
-                        .bg(if is_active_task { ACTIVE_BG() } else { WORKSPACE_BG() })
+                        .bg(if is_active_task {
+                            ACTIVE_BG()
+                        } else {
+                            WORKSPACE_BG()
+                        })
                         .border_1()
-                        .border_color(if is_active_task { BRAND_BLUE() } else { BORDER_LIGHT() })
-                        .hover(|this| this.bg(SURFACE_ELEVATED()));
+                        .border_color(if is_active_task {
+                            BRAND_BLUE()
+                        } else {
+                            BORDER_LIGHT()
+                        })
+                        .hover(|this| this.bg(GHOST_SURFACE_BG()));
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
@@ -2387,76 +2587,119 @@ impl AppState {
                         task.title.trim().to_string()
                     };
 
-                    task_div = task_div
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                    task_div = task_div.on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                             this.active_workspace_id = Some(ws_id);
                             this.active_task_id = Some(task_id);
                             this.restore_task_context();
                             this.main_view = MainView::Chat;
                             cx.notify();
-                        }));
+                        }),
+                    );
 
                     tasks_container = tasks_container.child(
                         task_div
-                        .child(
-                            div()
-                                .w(px(2.0))
-                                .h(px(18.0))
-                                .rounded_full()
-                                .bg(if is_active_task { BRAND_BLUE() } else { WORKSPACE_BG() })
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(if is_active_task { BRAND_BLUE() } else { MUTED_TEXT() })
-                                .child("[task]")
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .overflow_hidden()
-                                .text_sm()
-                                .text_color(if is_active_task { PRIMARY_TEXT() } else { SECONDARY_TEXT() })
-                                .text_ellipsis()
-                                .child(title_display.clone())
-                        )
-                        .child(
-                            div()
-                                .ml_auto()
-                                .text_xs()
-                                .text_color(MUTED_TEXT())
-                                .cursor_pointer()
-                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == ws_id) {
-                                        let was_draft = ws.tasks.iter().find(|t| t.id == task_id).map(|t| t.is_draft).unwrap_or(false);
-                                        let was_active = this.active_task_id == Some(task_id);
-                                        ws.tasks.retain(|t| t.id != task_id);
-                                        task_db::delete_task(&this.db.conn, task_id).ok();
+                            .child(div().w(px(2.0)).h(px(18.0)).rounded_full().bg(
+                                if is_active_task {
+                                    BRAND_BLUE()
+                                } else {
+                                    WORKSPACE_BG()
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(if is_active_task {
+                                        GHOST_SURFACE_BG()
+                                    } else {
+                                        NAV_BG()
+                                    })
+                                    .text_xs()
+                                    .text_color(if is_active_task {
+                                        ACCENT_TEXT()
+                                    } else {
+                                        MUTED_TEXT()
+                                    })
+                                    .child("TASK"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_sm()
+                                    .text_color(if is_active_task {
+                                        PRIMARY_TEXT()
+                                    } else {
+                                        SECONDARY_TEXT()
+                                    })
+                                    .text_ellipsis()
+                                    .child(title_display.clone()),
+                            )
+                            .child(
+                                div()
+                                    .ml_auto()
+                                    .text_xs()
+                                    .text_color(MUTED_TEXT())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(ws) = this
+                                                    .workspaces
+                                                    .iter_mut()
+                                                    .find(|w| w.id == ws_id)
+                                                {
+                                                    let was_draft = ws
+                                                        .tasks
+                                                        .iter()
+                                                        .find(|t| t.id == task_id)
+                                                        .map(|t| t.is_draft)
+                                                        .unwrap_or(false);
+                                                    let was_active =
+                                                        this.active_task_id == Some(task_id);
+                                                    ws.tasks.retain(|t| t.id != task_id);
+                                                    task_db::delete_task(&this.db.conn, task_id)
+                                                        .ok();
 
-                                        if was_draft || was_active {
-                                            if let Ok(rows) = task_db::load_tasks(&this.db.conn, ws_id) {
-                                                ws.tasks = rows
-                                                    .into_iter()
-                                                    .map(|t| TaskItem { id: t.id, title: t.title, is_draft: t.is_draft })
-                                                    .collect();
-                                            }
-                                        }
+                                                    if was_draft || was_active {
+                                                        if let Ok(rows) = task_db::load_tasks(
+                                                            &this.db.conn,
+                                                            ws_id,
+                                                        ) {
+                                                            ws.tasks = rows
+                                                                .into_iter()
+                                                                .map(|t| TaskItem {
+                                                                    id: t.id,
+                                                                    title: t.title,
+                                                                    is_draft: t.is_draft,
+                                                                })
+                                                                .collect();
+                                                        }
+                                                    }
 
-                                        if was_active {
-                                            this.active_task_id = ws
-                                                .tasks
-                                                .iter()
-                                                .find(|t| t.is_draft)
-                                                .map(|t| t.id)
-                                                .or_else(|| ws.tasks.first().map(|t| t.id));
-                                            this.restore_task_context();
-                                        }
-                                        cx.notify();
-                                    }
-                                }))
-                                .child("×")
-                        )
+                                                    if was_active {
+                                                        this.active_task_id = ws
+                                                            .tasks
+                                                            .iter()
+                                                            .find(|t| t.is_draft)
+                                                            .map(|t| t.id)
+                                                            .or_else(|| {
+                                                                ws.tasks.first().map(|t| t.id)
+                                                            });
+                                                        this.restore_task_context();
+                                                    }
+                                                    cx.notify();
+                                                }
+                                            },
+                                        ),
+                                    )
+                                    .child("×"),
+                            ),
                     );
                 }
 
@@ -2493,20 +2736,34 @@ impl AppState {
             .child(self.render_chat_header(title, work_dir, sidebar_visible, terminal_visible, cx))
             .child(
                 div()
-                    .id("chat_container")
                     .flex_1()
-                    .w_full()
-                    .overflow_scroll()
-                    .track_scroll(&scroll_handle)
+                    .flex()
+                    .flex_col()
                     .px_6()
-                    .py_5()
-                    .child(self.render_chat_messages(&scroll_handle, window, cx))
+                    .pb_4()
+                    .child(
+                        div()
+                            .id("chat_container")
+                            .flex_1()
+                            .w_full()
+                            .overflow_scroll()
+                            .track_scroll(&scroll_handle)
+                            .pt_6()
+                            .pb_4()
+                            .child(self.render_chat_messages(&scroll_handle, window, cx)),
+                    )
+                    .child(self.render_composer(window, cx)),
             )
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
-            .child(self.render_composer(window, cx))
     }
 
-    fn render_chat_header(&mut self, title: String, work_dir: String, sidebar_visible: bool, terminal_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_header(
+        &mut self,
+        title: String,
+        work_dir: String,
+        sidebar_visible: bool,
+        terminal_visible: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let lang = self.current_lang;
         if title.contains('\n') || title.contains('\r') {
             eprintln!(
@@ -2517,95 +2774,59 @@ impl AppState {
         let title = normalize_single_line_label(&title);
         div()
             .flex()
-            .flex_col()
-            .gap_3()
+            .items_center()
+            .justify_between()
+            .h(px(64.0))
             .px_6()
-            .py_5()
-            .bg(CANVAS_BG())
+            .bg(HEADER_BG())
             .border_b_1()
             .border_color(BORDER_LIGHT())
             .child(
                 div()
                     .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_4()
+                    .items_center()
+                    .gap_5()
+                    .flex_1()
                     .child(
                         div()
-                            .flex_1()
-                            .flex_col()
+                            .flex()
+                            .items_center()
                             .gap_3()
+                            .overflow_hidden()
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .text_lg()
-                                            .text_color(PRIMARY_TEXT())
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_ellipsis()
-                                            .child(title)
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_lg()
-                                            .bg(SURFACE_ELEVATED())
-                                            .border_1()
-                                            .border_color(BORDER_LIGHT())
-                                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
-                                    )
+                                    .text_size(px(20.0))
+                                    .text_color(PRIMARY_TEXT())
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_ellipsis()
+                                    .child(title),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(self.make_header_tab(t(lang, Translations::EXPLORER), true))
-                                    .child(self.make_placeholder_header_tab(t(lang, Translations::WORKFLOWS)))
-                                    .child(self.make_placeholder_header_tab(t(lang, Translations::API)))
-                            )
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(GHOST_SURFACE_BG())
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .child(render_icon_element(
+                                        "assistant",
+                                        SECONDARY_TEXT(),
+                                        14.0,
+                                    )),
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap_1()
+                            .child(self.make_header_tab(t(lang, Translations::EXPLORER), true))
                             .child(
-                                div()
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_lg()
-                                    .bg(SURFACE_ELEVATED())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
-                                    .text_xs()
-                                    .text_color(TERTIARY_TEXT())
-                                    .child(format!("[path] {}", work_dir))
+                                self.make_placeholder_header_tab(t(lang, Translations::WORKFLOWS)),
                             )
-                            .child(self.make_chat_header_button("folder", false, None, None, cx))
-                            .child(self.make_chat_header_button("share", false, None, None, cx))
-                            .child(self.make_chat_header_button("terminal", terminal_visible, Some("terminal"), None, cx))
-                            .child(self.make_chat_header_button("run-panel", sidebar_visible, Some("sidebar"), None, cx))
-                            .child(
-                                div()
-                                    .size(px(34.0))
-                                    .rounded_full()
-                                    .bg(SURFACE_ACCENT())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_xs()
-                                    .text_color(PRIMARY_TEXT())
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("U")
-                            )
-                    )
+                            .child(self.make_placeholder_header_tab(t(lang, Translations::API))),
+                    ),
             )
             .child(
                 div()
@@ -2617,72 +2838,103 @@ impl AppState {
                             .id("export-btn")
                             .px_3()
                             .py_2()
-                            .rounded_lg()
-                            .bg(SURFACE_ELEVATED())
+                            .rounded_xl()
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .cursor_pointer()
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                this.export_chat(&ExportChat, _window, cx);
-                            }))
-                            .child(t(lang, Translations::EXPORT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    this.export_chat(&ExportChat, _window, cx);
+                                }),
+                            )
+                            .child(t(lang, Translations::EXPORT)),
                     )
                     .child(
                         div()
                             .px_3()
                             .py_2()
-                            .rounded_lg()
-                            .bg(WORKSPACE_BG())
+                            .rounded_xl()
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .text_xs()
-                            .text_color(MUTED_TEXT())
-                            .child(format!("{} · SOON", t(lang, Translations::PLACEHOLDER_ENTRY)))
+                            .text_color(TERTIARY_TEXT())
+                            .child(format!("[path] {}", work_dir)),
                     )
+                    .child(self.make_chat_header_button("folder", false, None, None, cx))
+                    .child(self.make_chat_header_button("share", false, None, None, cx))
+                    .child(self.make_chat_header_button(
+                        "terminal",
+                        terminal_visible,
+                        Some("terminal"),
+                        None,
+                        cx,
+                    ))
+                    .child(self.make_chat_header_button(
+                        "run-panel",
+                        sidebar_visible,
+                        Some("sidebar"),
+                        None,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .size(px(34.0))
+                            .rounded_full()
+                            .bg(AVATAR_BG())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(gpui::white())
+                            .font_weight(FontWeight::BOLD)
+                            .child("U"),
+                    ),
             )
     }
 
     fn make_header_tab(&mut self, label: &'static str, active: bool) -> impl IntoElement {
-        if active {
-            div()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(SURFACE_ELEVATED())
-                .border_1()
-                .border_color(BRAND_BLUE())
-                .text_xs()
-                .text_color(PRIMARY_TEXT())
-                .font_weight(FontWeight::BOLD)
-                .child(label)
-        } else {
-            div()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(CANVAS_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
-                .text_xs()
-                .text_color(MUTED_TEXT())
-                .child(label)
-        }
+        div()
+            .px_3()
+            .py_2()
+            .rounded_xl()
+            .bg(if active {
+                GHOST_SURFACE_BG()
+            } else {
+                HEADER_BG()
+            })
+            .border_1()
+            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
+            .text_xs()
+            .text_color(if active {
+                ACCENT_TEXT()
+            } else {
+                SECONDARY_TEXT()
+            })
+            .font_weight(if active {
+                FontWeight::BOLD
+            } else {
+                FontWeight::BOLD
+            })
+            .child(label)
     }
 
     fn make_placeholder_header_tab(&mut self, label: &'static str) -> impl IntoElement {
         div()
             .px_3()
             .py_2()
-            .rounded_lg()
-            .bg(CANVAS_BG())
+            .rounded_xl()
+            .bg(HEADER_BG())
             .border_1()
             .border_color(BORDER_LIGHT())
             .text_xs()
             .text_color(MUTED_TEXT())
-            .opacity(0.82)
-            .child(format!("{label} · SOON"))
+            .opacity(0.88)
+            .child(label)
     }
 
     fn make_chat_header_button(
@@ -2694,29 +2946,46 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .bg(if active { SURFACE_ACCENT() } else { SURFACE_ELEVATED() })
+            .size(px(34.0))
+            .rounded_xl()
+            .bg(if active {
+                SURFACE_ACCENT()
+            } else {
+                GHOST_SURFACE_BG()
+            })
             .border_1()
             .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
+            .flex()
+            .items_center()
+            .justify_center()
             .cursor_pointer()
             .text_xs()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                match action {
-                    Some("terminal") => this.terminal_visible = !this.terminal_visible,
-                    Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
-                    _ => {}
-                }
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(
+                    move |this, _: &gpui::MouseDownEvent, _window, _cx| match action {
+                        Some("terminal") => this.terminal_visible = !this.terminal_visible,
+                        Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
+                        _ => {}
+                    },
+                ),
+            )
             .child(render_icon_element(
                 icon_key,
-                if active { PRIMARY_TEXT() } else { SECONDARY_TEXT() },
+                if active {
+                    PRIMARY_TEXT()
+                } else {
+                    SECONDARY_TEXT()
+                },
                 14.0,
             ))
     }
 
-    fn render_model_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_model_config_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let lang = self.current_lang;
         let app = &mut *cx;
 
@@ -2755,9 +3024,12 @@ impl AppState {
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                this.cancel_model_config(&CancelModelConfig, _window, cx);
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.cancel_model_config(&CancelModelConfig, _window, cx);
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -2770,20 +3042,28 @@ impl AppState {
                     .border_1()
                     .border_color(BORDER_LIGHT())
                     .shadow_md()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
                     .child(
                         div()
                             .text_base()
                             .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::MODEL_SERVICE_CONFIG))
+                            .child(t(lang, Translations::MODEL_SERVICE_CONFIG)),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::MODEL_NAME)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child(t(lang, Translations::MODEL_NAME)),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -2796,14 +3076,19 @@ impl AppState {
                                     .bg(CANVAS_BG())
                                     .track_focus(&model_name_focus)
                                     .child(model_name_editor.clone()),
-                            )
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::BASE_URL)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child(t(lang, Translations::BASE_URL)),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -2816,14 +3101,19 @@ impl AppState {
                                     .bg(CANVAS_BG())
                                     .track_focus(&base_url_focus)
                                     .child(base_url_editor.clone()),
-                            )
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::API_KEY)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child(t(lang, Translations::API_KEY)),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -2836,7 +3126,7 @@ impl AppState {
                                     .bg(CANVAS_BG())
                                     .track_focus(&api_key_focus)
                                     .child(api_key_editor.clone()),
-                            )
+                            ),
                     )
                     .child(
                         div()
@@ -2855,10 +3145,24 @@ impl AppState {
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        this.cancel_model_config(&CancelModelConfig, _window, cx);
-                                    }))
-                                    .child(div().text_sm().text_color(PRIMARY_TEXT()).child(t(lang, Translations::CANCEL)))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.cancel_model_config(
+                                                    &CancelModelConfig,
+                                                    _window,
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(PRIMARY_TEXT())
+                                            .child(t(lang, Translations::CANCEL)),
+                                    ),
                             )
                             .child(
                                 div()
@@ -2870,21 +3174,44 @@ impl AppState {
                                     .rounded_lg()
                                     .bg(BRAND_BLUE())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if let Some(editor) = weak_model_name.upgrade() {
-                                            this.editing_model_name = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        if let Some(editor) = weak_base_url.upgrade() {
-                                            this.editing_base_url = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        if let Some(editor) = weak_api_key.upgrade() {
-                                            this.editing_api_key = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        this.save_model_config(&SaveModelConfig, _window, cx);
-                                    }))
-                                    .child(div().text_sm().text_color(gpui::white()).child(t(lang, Translations::SAVE)))
-                            )
-                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                if let Some(editor) = weak_model_name.upgrade() {
+                                                    this.editing_model_name = editor
+                                                        .read_with(cx, |editor, cx| editor.text(cx))
+                                                        .trim()
+                                                        .to_string();
+                                                }
+                                                if let Some(editor) = weak_base_url.upgrade() {
+                                                    this.editing_base_url = editor
+                                                        .read_with(cx, |editor, cx| editor.text(cx))
+                                                        .trim()
+                                                        .to_string();
+                                                }
+                                                if let Some(editor) = weak_api_key.upgrade() {
+                                                    this.editing_api_key = editor
+                                                        .read_with(cx, |editor, cx| editor.text(cx))
+                                                        .trim()
+                                                        .to_string();
+                                                }
+                                                this.save_model_config(
+                                                    &SaveModelConfig,
+                                                    _window,
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(gpui::white())
+                                            .child(t(lang, Translations::SAVE)),
+                                    ),
+                            ),
+                    ),
             )
     }
 
@@ -2896,9 +3223,12 @@ impl AppState {
             .absolute()
             .left(pos.x)
             .top(pos.y)
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
-                this.delete_confirm_workspace_id = None;
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
+                    this.delete_confirm_workspace_id = None;
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -2911,25 +3241,9 @@ impl AppState {
                     .border_1()
                     .border_color(BORDER_LIGHT())
                     .shadow_md()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .text_color(PRIMARY_TEXT())
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|this| this.bg(ACTIVE_BG()))
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                cx.stop_propagation();
-                                this.active_workspace_id = Some(ws_id);
-                                this.active_task_id = this.ensure_workspace_draft_task(ws_id);
-                                this.delete_confirm_workspace_id = None;
-                                this.restore_task_context();
-                                cx.notify();
-                            }))
-                            .child(t(lang, Translations::NEW_TASK))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
                     )
                     .child(
                         div()
@@ -2940,21 +3254,46 @@ impl AppState {
                             .rounded_md()
                             .cursor_pointer()
                             .hover(|this| this.bg(ACTIVE_BG()))
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                cx.stop_propagation();
-                                this.workspaces.retain(|w| w.id != ws_id);
-                                task_db::delete_workspace(&this.db.conn, ws_id).ok();
-                                if this.active_workspace_id == Some(ws_id) {
-                                    this.active_workspace_id = None;
-                                }
-                                if this.active_task_id.is_some() {
-                                    this.active_task_id = None;
-                                }
-                                this.delete_confirm_workspace_id = None;
-                                cx.notify();
-                            }))
-                            .child(t(lang, Translations::DELETE_WORKSPACE))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.active_workspace_id = Some(ws_id);
+                                    this.active_task_id = this.ensure_workspace_draft_task(ws_id);
+                                    this.delete_confirm_workspace_id = None;
+                                    this.restore_task_context();
+                                    cx.notify();
+                                }),
+                            )
+                            .child(t(lang, Translations::NEW_TASK)),
                     )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_sm()
+                            .text_color(PRIMARY_TEXT())
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(ACTIVE_BG()))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.workspaces.retain(|w| w.id != ws_id);
+                                    task_db::delete_workspace(&this.db.conn, ws_id).ok();
+                                    if this.active_workspace_id == Some(ws_id) {
+                                        this.active_workspace_id = None;
+                                    }
+                                    if this.active_task_id.is_some() {
+                                        this.active_task_id = None;
+                                    }
+                                    this.delete_confirm_workspace_id = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(t(lang, Translations::DELETE_WORKSPACE)),
+                    ),
             )
     }
 
@@ -2970,12 +3309,15 @@ impl AppState {
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                this.show_export_dialog = false;
-                this.exported_json = None;
-                this.exported_md = None;
-                cx.notify();
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.show_export_dialog = false;
+                    this.exported_json = None;
+                    this.exported_md = None;
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -2989,13 +3331,16 @@ impl AppState {
                     .border_1()
                     .border_color(BORDER_LIGHT())
                     .shadow_md()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
                     .child(
                         div()
                             .text_base()
                             .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::EXPORT))
+                            .child(t(lang, Translations::EXPORT)),
                     )
                     .child(
                         div()
@@ -3013,7 +3358,11 @@ impl AppState {
                                     .overflow_hidden()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT())
-                                    .child(format!("{}:\n{}", t(lang, Translations::JSON), json_content))
+                                    .child(format!(
+                                        "{}:\n{}",
+                                        t(lang, Translations::JSON),
+                                        json_content
+                                    )),
                             )
                             .child(
                                 div()
@@ -3027,8 +3376,12 @@ impl AppState {
                                     .overflow_hidden()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT())
-                                    .child(format!("{}:\n{}", t(lang, Translations::MARKDOWN), md_content))
-                            )
+                                    .child(format!(
+                                        "{}:\n{}",
+                                        t(lang, Translations::MARKDOWN),
+                                        md_content
+                                    )),
+                            ),
                     )
                     .child(
                         div()
@@ -3047,21 +3400,36 @@ impl AppState {
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if let Some(json) = this.exported_json.clone() {
-                                            if let Some(path) = rfd::FileDialog::new()
-                                                .set_title(t(this.current_lang, Translations::EXPORT_JSON_TITLE))
-                                                .add_filter(t(this.current_lang, Translations::JSON), &["json"])
-                                                .save_file() {
-                                                std::fs::write(&path, json).ok();
-                                            }
-                                        }
-                                        this.show_export_dialog = false;
-                                        this.exported_json = None;
-                                        this.exported_md = None;
-                                        cx.notify();
-                                    }))
-                                    .child(t(lang, Translations::SAVE_JSON))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                if let Some(json) = this.exported_json.clone() {
+                                                    if let Some(path) = rfd::FileDialog::new()
+                                                        .set_title(t(
+                                                            this.current_lang,
+                                                            Translations::EXPORT_JSON_TITLE,
+                                                        ))
+                                                        .add_filter(
+                                                            t(
+                                                                this.current_lang,
+                                                                Translations::JSON,
+                                                            ),
+                                                            &["json"],
+                                                        )
+                                                        .save_file()
+                                                    {
+                                                        std::fs::write(&path, json).ok();
+                                                    }
+                                                }
+                                                this.show_export_dialog = false;
+                                                this.exported_json = None;
+                                                this.exported_md = None;
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
+                                    .child(t(lang, Translations::SAVE_JSON)),
                             )
                             .child(
                                 div()
@@ -3075,21 +3443,36 @@ impl AppState {
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if let Some(md) = this.exported_md.clone() {
-                                            if let Some(path) = rfd::FileDialog::new()
-                                                .set_title(t(this.current_lang, Translations::EXPORT_MARKDOWN_TITLE))
-                                                .add_filter(t(this.current_lang, Translations::MARKDOWN), &["md"])
-                                                .save_file() {
-                                                std::fs::write(&path, md).ok();
-                                            }
-                                        }
-                                        this.show_export_dialog = false;
-                                        this.exported_json = None;
-                                        this.exported_md = None;
-                                        cx.notify();
-                                    }))
-                                    .child(t(lang, Translations::SAVE_MARKDOWN))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                if let Some(md) = this.exported_md.clone() {
+                                                    if let Some(path) = rfd::FileDialog::new()
+                                                        .set_title(t(
+                                                            this.current_lang,
+                                                            Translations::EXPORT_MARKDOWN_TITLE,
+                                                        ))
+                                                        .add_filter(
+                                                            t(
+                                                                this.current_lang,
+                                                                Translations::MARKDOWN,
+                                                            ),
+                                                            &["md"],
+                                                        )
+                                                        .save_file()
+                                                    {
+                                                        std::fs::write(&path, md).ok();
+                                                    }
+                                                }
+                                                this.show_export_dialog = false;
+                                                this.exported_json = None;
+                                                this.exported_md = None;
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
+                                    .child(t(lang, Translations::SAVE_MARKDOWN)),
                             )
                             .child(
                                 div()
@@ -3101,27 +3484,37 @@ impl AppState {
                                     .rounded_lg()
                                     .bg(BRAND_BLUE())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
-                                        this.show_export_dialog = false;
-                                        this.exported_json = None;
-                                        this.exported_md = None;
-                                    }))
-                                    .child(t(lang, Translations::CANCEL))
-                            )
-                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                                                this.show_export_dialog = false;
+                                                this.exported_json = None;
+                                                this.exported_md = None;
+                                            },
+                                        ),
+                                    )
+                                    .child(t(lang, Translations::CANCEL)),
+                            ),
+                    ),
             )
     }
 
-    fn render_chat_messages(&mut self, scroll_handle: &ScrollHandle, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_messages(
+        &mut self,
+        scroll_handle: &ScrollHandle,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let messages = self.messages.clone();
         let live_run = self
             .current_claude_run
             .as_ref()
             .filter(|run| run.task_id == self.active_task_id && run.show_live_bubble)
             .cloned();
-        let general_ai_live_run_id = self
-            .general_ai_run_id
-            .filter(|_| self.general_ai_show_live_bubble && self.general_ai_task_id == self.active_task_id);
+        let general_ai_live_run_id = self.general_ai_run_id.filter(|_| {
+            self.general_ai_show_live_bubble && self.general_ai_task_id == self.active_task_id
+        });
         let general_ai_pending = self.request_in_flight
             && matches!(self.request_kind, Some(RequestKind::GeneralAi))
             && live_run.is_none()
@@ -3139,7 +3532,7 @@ impl AppState {
 
         let mut message_list = div()
             .flex_col()
-            .gap_6()
+            .gap_7()
             .w_full()
             .children(messages.iter().enumerate().map(|(msg_index, msg)| {
                 let is_user_msg = is_user(&msg.role);
@@ -3149,7 +3542,6 @@ impl AppState {
                     ASSISTANT_BUBBLE_BG()
                 };
                 let text_color = if is_user_msg { gpui::white() } else { PRIMARY_TEXT() };
-                let avatar_icon = if is_user_msg { "YOU" } else { "ONE" };
                 let role_label = if is_user_msg { t(lang, Translations::YOU) } else { "ONE AI" };
 
                 // Parse content for think tags
@@ -3161,18 +3553,20 @@ impl AppState {
                         .flex()
                         .justify_end()
                         .w_full()
-                        .mb_3()
+                        .mb_4()
                         .child(
                             div()
                                 .flex_col()
                                 .items_end()
                                 .gap_2()
-                                .p_5()
+                                .px_5()
+                                .py_4()
                                 .rounded_xl()
                                 .bg(bubble_bg)
                                 .border_1()
                                 .border_color(BRAND_BLUE())
-                                .max_w(px(720.0))
+                                .shadow_md()
+                                .max_w(px(680.0))
                                 .min_w(px(35.0))
                                 .child(
                                     div()
@@ -3187,30 +3581,31 @@ impl AppState {
                     div()
                         .flex_col()
                         .items_start()
-                        .gap_1()
+                        .gap_2()
                         .w_full()
-                        .mb_3()
+                        .mb_4()
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap_3()
                                 .child(
                                     div()
-                                        .px_2()
-                                        .py_1()
+                                        .size(px(28.0))
                                         .rounded_md()
-                                        .bg(SURFACE_ELEVATED())
+                                        .bg(GHOST_SURFACE_BG())
                                         .border_1()
                                         .border_color(BORDER_LIGHT())
-                                        .text_xs()
-                                        .text_color(SECONDARY_TEXT())
-                                        .child(avatar_icon)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0))
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(SECONDARY_TEXT())
+                                        .font_weight(FontWeight::BOLD)
                                         .child(role_label)
                                 )
                         )
@@ -3218,12 +3613,14 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_start()
-                                .p_5()
+                                .gap_3()
+                                .p_6()
                                 .rounded_xl()
-                                .bg(bubble_bg)
+                                .bg(SURFACE_PANEL())
                                 .border_1()
                                 .border_color(BORDER_LIGHT())
-                                .max_w(px(760.0))
+                                .shadow_md()
+                                .max_w(px(820.0))
                                 .min_w(px(35.0))
                                 .w_full()
                                 .children({
@@ -3333,7 +3730,11 @@ impl AppState {
         message_list
     }
 
-    fn render_general_ai_live_message(&mut self, run_id: u64, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_general_ai_live_message(
+        &mut self,
+        run_id: u64,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let lang = self.current_lang;
         let status_text = self
             .request_status_text
@@ -3391,24 +3792,30 @@ impl AppState {
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
                                     .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        let next = !this.think_collapsed.get(&key).copied().unwrap_or(false);
-                                        this.think_collapsed.insert(key.clone(), next);
-                                        cx.notify();
-                                    }))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                let next = !this
+                                                    .think_collapsed
+                                                    .get(&key)
+                                                    .copied()
+                                                    .unwrap_or(false);
+                                                this.think_collapsed.insert(key.clone(), next);
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
                                     .child(
                                         svg()
                                             .path(icon_path)
                                             .size(px(14.0))
                                             .flex_none()
-                                            .text_color(MUTED_TEXT())
+                                            .text_color(MUTED_TEXT()),
                                     )
                                     .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .child(header_text)
-                                    )
+                                        div().text_xs().text_color(MUTED_TEXT()).child(header_text),
+                                    ),
                             )
                             .when(!collapsed, |this| {
                                 this.child(
@@ -3418,7 +3825,7 @@ impl AppState {
                                         .text_xs()
                                         .text_color(TERTIARY_TEXT())
                                         .whitespace_normal()
-                                        .child(text.clone())
+                                        .child(text.clone()),
                                 )
                             });
                         rendered_parts.push(el.into_any_element());
@@ -3430,13 +3837,14 @@ impl AppState {
         let mut content = div()
             .flex_col()
             .items_start()
-            .gap_2()
-            .p_5()
+            .gap_3()
+            .p_6()
             .rounded_xl()
-            .bg(ASSISTANT_BUBBLE_BG())
+            .bg(SURFACE_PANEL())
             .border_1()
             .border_color(BORDER_LIGHT())
-            .max_w(px(760.0))
+            .shadow_md()
+            .max_w(px(820.0))
             .min_w(px(35.0))
             .w_full();
         if waiting {
@@ -3455,14 +3863,14 @@ impl AppState {
                             .border_color(BORDER_LIGHT())
                             .text_xs()
                             .text_color(BRAND_BLUE())
-                            .child("LIVE")
+                            .child("LIVE"),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(TERTIARY_TEXT())
-                            .child(status_text)
-                    )
+                            .child(status_text),
+                    ),
             );
         } else {
             content = content.children(rendered_parts);
@@ -3471,30 +3879,42 @@ impl AppState {
         div()
             .flex_col()
             .items_start()
-            .gap_1()
+            .gap_2()
             .w_full()
-            .mb_3()
+            .mb_4()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
-                            .px_2()
-                            .py_1()
+                            .size(px(28.0))
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED())
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
-                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0)),
                     )
-                    .child(div().text_xs().text_color(SECONDARY_TEXT()).child("ONE AI"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child("ONE AI"),
+                    ),
             )
             .child(content)
     }
 
-    fn render_claude_live_message(&mut self, run: &ClaudeRunPanelState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_claude_live_message(
+        &mut self,
+        run: &ClaudeRunPanelState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let lang = self.current_lang;
         let preview = if run.live_text.trim().is_empty() {
             run.status_message.clone()
@@ -3508,28 +3928,31 @@ impl AppState {
         div()
             .flex_col()
             .items_start()
-            .gap_1()
+            .gap_2()
             .w_full()
-            .mb_3()
+            .mb_4()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
-                            .px_2()
-                            .py_1()
+                            .size(px(28.0))
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED())
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
-                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0))
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
                             .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
                     )
             )
@@ -3537,13 +3960,14 @@ impl AppState {
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_2()
-                    .p_5()
+                    .gap_3()
+                    .p_6()
                     .rounded_xl()
-                    .bg(ASSISTANT_BUBBLE_BG())
+                    .bg(SURFACE_PANEL())
                     .border_1()
                     .border_color(BORDER_LIGHT())
-                    .max_w(px(760.0))
+                    .shadow_md()
+                    .max_w(px(820.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
@@ -3676,40 +4100,44 @@ impl AppState {
             .items_start()
             .gap_2()
             .w_full()
-            .mb_3()
+            .mb_4()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
-                            .px_2()
-                            .py_1()
+                            .size(px(28.0))
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED())
+                            .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
-                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0)),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
-                            .child("ONE AI")
-                    )
+                            .font_weight(FontWeight::BOLD)
+                            .child("ONE AI"),
+                    ),
             )
             .child(
                 div()
                     .flex_col()
                     .items_start()
                     .gap_3()
-                    .p_5()
+                    .p_6()
                     .rounded_xl()
-                    .bg(ASSISTANT_BUBBLE_BG())
+                    .bg(SURFACE_PANEL())
                     .border_1()
                     .border_color(BORDER_LIGHT())
-                    .max_w(px(760.0))
+                    .shadow_md()
+                    .max_w(px(820.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
@@ -3727,15 +4155,15 @@ impl AppState {
                                     .border_color(BORDER_LIGHT())
                                     .text_xs()
                                     .text_color(BRAND_BLUE())
-                                    .child("WAIT")
+                                    .child("WAIT"),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(TERTIARY_TEXT())
-                                    .child(status_text)
-                            )
-                    )
+                                    .child(status_text),
+                            ),
+                    ),
             )
     }
 
@@ -3757,7 +4185,12 @@ impl AppState {
 
         let request_in_flight = self.request_in_flight;
         let send_bg = if request_in_flight {
-            Hsla { h: 0.0, s: 0.0, l: 0.78, a: 1.0 }
+            Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.78,
+                a: 1.0,
+            }
         } else {
             BRAND_BLUE()
         };
@@ -3771,179 +4204,203 @@ impl AppState {
             .flex()
             .flex_col()
             .gap_3()
-            .px_6()
-            .py_5()
-            .bg(CANVAS_BG())
+            .pt_2()
+            .pb_3()
             .child(
                 div()
-                    .flex()
-                    .items_end()
+                    .flex_col()
                     .gap_3()
                     .px_3()
                     .py_3()
-                    .rounded_full()
-                    .bg(INPUT_BG())
+                    .rounded_xl()
+                    .bg(FLOATING_PANEL_BG())
                     .border_1()
                     .border_color(BORDER_LIGHT())
                     .shadow_md()
                     .child(
                         div()
-                            .px_2()
-                            .py_2()
-                            .child(render_icon_element("add", MUTED_TEXT(), 14.0))
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .px_2()
-                            .pb_1()
-                            .track_focus(&composer_focus)
-                            .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
-                                if this.request_in_flight {
-                                    return;
-                                }
-                                if let Some(editor) = weak_composer_for_action.upgrade() {
-                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                    if !text.is_empty() {
-                                        let user_message = text.clone();
-                                        let is_first_message = this.messages.is_empty();
-                                        if is_first_message {
-                                            this.pending_summarize = true;
-                                        }
-
-                                        let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                        eprintln!("[ROUTER] Decision: {:?}", decision);
-
-                                        match decision {
-                                            agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                                eprintln!("[ROUTER] Routing to Claude Code");
-                                                this.messages.push(ChatMessage {
-                                                    role: "user".to_string(),
-                                                    content: user_message.clone(),
-                                                });
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                }
-                                                this.request_in_flight = true;
-                                                this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                                this.request_kind = Some(RequestKind::ClaudeCode);
-                                                this.needs_auto_scroll = true;
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-                                                cx.notify();
-                                                this.spawn_claude_code_run(instruction, session_id, cx);
-                                            }
-                                            _ => {
-                                                this.messages.push(ChatMessage {
-                                                    role: "user".to_string(),
-                                                    content: user_message.clone(),
-                                                });
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                }
-                                                this.needs_auto_scroll = true;
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-                                                cx.notify();
-                                                this.spawn_general_ai_run(cx);
-                                            }
-                                        }
-                                    }
-                                }
-                            }))
-                            .child(composer_editor)
-                    )
-                    .child(div().px_2().py_2().child(render_icon_element("mic", MUTED_TEXT(), 14.0)))
-                    .child(
-                        div()
-                            .px_5()
+                            .flex()
+                            .items_end()
+                            .gap_3()
+                            .px_3()
                             .py_3()
-                            .rounded_full()
-                            .bg(send_bg)
-                            .cursor_pointer()
-                            .text_color(gpui::white())
-                            .text_base()
-                            .font_weight(FontWeight::BOLD)
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                if this.request_in_flight {
-                                    return;
-                                }
-                                if let Some(editor) = weak_composer.upgrade() {
-                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                    if !text.is_empty() {
-                                        let user_message = text.clone();
-                                        let is_first_message = this.messages.is_empty();
-                                        if is_first_message {
-                                            this.pending_summarize = true;
+                            .rounded_xl()
+                            .bg(INPUT_BG())
+                            .border_1()
+                            .border_color(BORDER_LIGHT())
+                            .child(
+                                div()
+                                    .size(px(34.0))
+                                    .rounded_xl()
+                                    .bg(GHOST_SURFACE_BG())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(render_icon_element("add", MUTED_TEXT(), 14.0))
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px_2()
+                                    .pb_1()
+                                    .track_focus(&composer_focus)
+                                    .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                                        if this.request_in_flight {
+                                            return;
                                         }
-
-                                        let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                        eprintln!("[ROUTER] Decision: {:?}", decision);
-
-                                        match decision {
-                                            agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                                eprintln!("[ROUTER] Routing to Claude Code");
-                                                this.messages.push(ChatMessage {
-                                                    role: "user".to_string(),
-                                                    content: user_message.clone(),
-                                                });
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                        if let Some(editor) = weak_composer_for_action.upgrade() {
+                                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                            if !text.is_empty() {
+                                                let user_message = text.clone();
+                                                let is_first_message = this.messages.is_empty();
+                                                if is_first_message {
+                                                    this.pending_summarize = true;
                                                 }
-                                                this.request_in_flight = true;
-                                                this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                                this.request_kind = Some(RequestKind::ClaudeCode);
-                                                this.needs_auto_scroll = true;
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-                                                cx.notify();
-                                                this.spawn_claude_code_run(instruction, session_id, cx);
-                                            }
-                                            _ => {
-                                                this.messages.push(ChatMessage {
-                                                    role: "user".to_string(),
-                                                    content: user_message.clone(),
-                                                });
-                                                if let Some(task_id) = this.active_task_id {
-                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+
+                                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                                eprintln!("[ROUTER] Decision: {:?}", decision);
+
+                                                match decision {
+                                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                                        eprintln!("[ROUTER] Routing to Claude Code");
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.request_in_flight = true;
+                                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                                                        this.request_kind = Some(RequestKind::ClaudeCode);
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_claude_code_run(instruction, session_id, cx);
+                                                    }
+                                                    _ => {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_general_ai_run(cx);
+                                                    }
                                                 }
-                                                this.needs_auto_scroll = true;
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-                                                cx.notify();
-                                                this.spawn_general_ai_run(cx);
                                             }
                                         }
-                                    }
-                                }
-                            }))
-                            .child(send_label)
+                                    }))
+                                    .child(composer_editor)
+                            )
+                            .child(
+                                div()
+                                    .size(px(34.0))
+                                    .rounded_xl()
+                                    .bg(GHOST_SURFACE_BG())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(render_icon_element("mic", MUTED_TEXT(), 14.0))
+                            )
+                            .child(
+                                div()
+                                    .px_5()
+                                    .py_3()
+                                    .rounded_xl()
+                                    .bg(send_bg)
+                                    .cursor_pointer()
+                                    .text_color(gpui::white())
+                                    .text_base()
+                                    .font_weight(FontWeight::BOLD)
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        if this.request_in_flight {
+                                            return;
+                                        }
+                                        if let Some(editor) = weak_composer.upgrade() {
+                                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                            if !text.is_empty() {
+                                                let user_message = text.clone();
+                                                let is_first_message = this.messages.is_empty();
+                                                if is_first_message {
+                                                    this.pending_summarize = true;
+                                                }
+
+                                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                                eprintln!("[ROUTER] Decision: {:?}", decision);
+
+                                                match decision {
+                                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                                        eprintln!("[ROUTER] Routing to Claude Code");
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.request_in_flight = true;
+                                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                                                        this.request_kind = Some(RequestKind::ClaudeCode);
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_claude_code_run(instruction, session_id, cx);
+                                                    }
+                                                    _ => {
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_general_ai_run(cx);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }))
+                                    .child(send_label)
+                            )
                     )
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(MUTED_TEXT())
-                            .child(format!("{} · {}", self.model_name, t(lang, Translations::EXPLORER)))
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
-                            .child(if request_in_flight {
-                                self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::SENDING).to_string())
-                            } else {
-                                format!("{} Active", self.model_name)
-                            })
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(MUTED_TEXT())
+                                    .child(format!("{} · {}", self.model_name, t(lang, Translations::EXPLORER)))
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
+                                    .child(if request_in_flight {
+                                        self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::SENDING).to_string())
+                                    } else {
+                                        format!("{} Active", self.model_name)
+                                    })
+                            )
                     )
             )
     }
@@ -3979,8 +4436,8 @@ impl AppState {
                             .text_sm()
                             .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::CLAUDE_CODE_RUN))
-                    )
+                            .child(t(lang, Translations::CLAUDE_CODE_RUN)),
+                    ),
             );
 
         if let Some(run) = run {
@@ -4003,18 +4460,26 @@ impl AppState {
                 .map(|preview| preview.status.color())
                 .unwrap_or(MUTED_TEXT());
             let pending_question = run.pending_question.clone();
-            let question_editor = window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
-                let mut editor = Editor::single_line(window, cx);
-                editor.set_placeholder_text(t(lang, Translations::ANSWER_CLAUDE_QUESTION), window, cx);
-                editor
-            });
+            let question_editor =
+                window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
+                    let mut editor = Editor::single_line(window, cx);
+                    editor.set_placeholder_text(
+                        t(lang, Translations::ANSWER_CLAUDE_QUESTION),
+                        window,
+                        cx,
+                    );
+                    editor
+                });
             let question_focus = question_editor.read(cx).focus_handle(cx);
             let weak_question_editor = question_editor.downgrade();
 
             let mut timeline = div().flex().flex_col().gap_2();
             for event in run.events.iter().rev() {
-                let detail_block =
-                    render_formatted_content(&event.formatted_detail, SECONDARY_TEXT(), PRIMARY_TEXT());
+                let detail_block = render_formatted_content(
+                    &event.formatted_detail,
+                    SECONDARY_TEXT(),
+                    PRIMARY_TEXT(),
+                );
                 timeline = timeline.child(
                     div()
                         .flex_col()
@@ -4029,9 +4494,9 @@ impl AppState {
                                 .text_xs()
                                 .text_color(event.tone.color())
                                 .font_weight(FontWeight::BOLD)
-                                .child(event.title.clone())
+                                .child(event.title.clone()),
                         )
-                        .child(detail_block)
+                        .child(detail_block),
                 );
             }
 
@@ -4487,7 +4952,7 @@ impl AppState {
                                     .text_sm()
                                     .text_color(PRIMARY_TEXT())
                                     .font_weight(FontWeight::BOLD)
-                                    .child(t(lang, Translations::NO_CLAUDE_RUN_YET))
+                                    .child(t(lang, Translations::NO_CLAUDE_RUN_YET)),
                             )
                             .child(
                                 div()
@@ -4495,9 +4960,9 @@ impl AppState {
                                     .text_color(MUTED_TEXT())
                                     .text_center()
                                     .whitespace_normal()
-                                    .child(t(lang, Translations::CLAUDE_PANEL_HINT))
-                            )
-                    )
+                                    .child(t(lang, Translations::CLAUDE_PANEL_HINT)),
+                            ),
+                    ),
             );
         }
 
@@ -4511,33 +4976,55 @@ impl AppState {
             .h_full()
             .cursor_col_resize()
             .bg(BORDER_LIGHT())
-            .on_drag(DraggedResizer, |_, _, _, cx| {
-                cx.new(|_| DraggedResizer)
-            })
-            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedResizer>, _window, _cx| {
-                if let (Some(initial_x), Some(initial_width)) = (this.terminal_resize_initial_mouse_x, this.terminal_resize_initial_width) {
-                    let current_x: f32 = e.event.position.x.into();
-                    let delta = initial_x - current_x;
-                    let new_width = initial_width + delta;
-                    eprintln!("drag_move: initial_x={}, current_x={}, delta={}, new_width={}", initial_x, current_x, delta, new_width);
-                    if new_width >= 200.0 && new_width <= 800.0 {
-                        this.terminal_width = new_width;
+            .on_drag(DraggedResizer, |_, _, _, cx| cx.new(|_| DraggedResizer))
+            .on_drag_move(
+                cx.listener(|this, e: &DragMoveEvent<DraggedResizer>, _window, _cx| {
+                    if let (Some(initial_x), Some(initial_width)) = (
+                        this.terminal_resize_initial_mouse_x,
+                        this.terminal_resize_initial_width,
+                    ) {
+                        let current_x: f32 = e.event.position.x.into();
+                        let delta = initial_x - current_x;
+                        let new_width = initial_width + delta;
+                        eprintln!(
+                            "drag_move: initial_x={}, current_x={}, delta={}, new_width={}",
+                            initial_x, current_x, delta, new_width
+                        );
+                        if new_width >= 200.0 && new_width <= 800.0 {
+                            this.terminal_width = new_width;
+                        }
                     }
-                }
-            }))
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _window, _cx| {
-                let initial_mouse_x: f32 = event.position.x.into();
-                this.terminal_resize_initial_mouse_x = Some(initial_mouse_x);
-                this.terminal_resize_initial_width = Some(this.terminal_width);
-                eprintln!("on_mouse_down: initial_mouse_x={}, initial_width={}", initial_mouse_x, this.terminal_width);
-            }))
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _window, _cx| {
+                    let initial_mouse_x: f32 = event.position.x.into();
+                    this.terminal_resize_initial_mouse_x = Some(initial_mouse_x);
+                    this.terminal_resize_initial_width = Some(this.terminal_width);
+                    eprintln!(
+                        "on_mouse_down: initial_mouse_x={}, initial_width={}",
+                        initial_mouse_x, this.terminal_width
+                    );
+                }),
+            )
     }
 
     fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let terminal_bg = WORKSPACE_BG();
         let terminal_text = PRIMARY_TEXT();
-        let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.45, a: 1.0 };
-        let error_color = Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 };
+        let prompt_color = Hsla {
+            h: 0.35,
+            s: 0.8,
+            l: 0.45,
+            a: 1.0,
+        };
+        let error_color = Hsla {
+            h: 0.0,
+            s: 0.8,
+            l: 0.45,
+            a: 1.0,
+        };
         let width = self.terminal_width;
         let lang = self.current_lang;
 
@@ -4578,19 +5065,28 @@ impl AppState {
                             .border_color(BORDER_LIGHT())
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
-                            .child("TTY")
+                            .child("TTY"),
                     )
-                    .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::TERMINAL)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(MUTED_TEXT())
+                            .child(t(lang, Translations::TERMINAL)),
+                    )
                     .child(
                         div()
                             .text_xs()
                             .text_color(TERTIARY_TEXT())
                             .ml_auto()
-                            .child(format!("{} | {}", work_dir, match &self.sandbox_backend {
-                                Backend::Docker(_) => "docker",
-                                Backend::Pty(_) => "pty",
-                            }))
-                    )
+                            .child(format!(
+                                "{} | {}",
+                                work_dir,
+                                match &self.sandbox_backend {
+                                    Backend::Docker(_) => "docker",
+                                    Backend::Pty(_) => "pty",
+                                }
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -4620,16 +5116,21 @@ impl AppState {
                                     .flex()
                                     .gap_2()
                                     .child(div().text_sm().text_color(prompt_color).child("➜"))
-                                    .child(div().text_sm().text_color(terminal_text).child(cmd.clone()))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(terminal_text)
+                                            .child(cmd.clone()),
+                                    )
                             }))
                             .child(
                                 div()
                                     .text_sm()
                                     .text_color(if is_error { error_color } else { terminal_text })
-                                    .child(output)
+                                    .child(output),
                             )
                             .into_any_element()
-                    }))
+                    })),
             )
             .child(
                 div()
@@ -4652,7 +5153,10 @@ impl AppState {
                             .track_focus(&terminal_focus)
                             .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
                                 if let Some(editor) = weak_terminal.upgrade() {
-                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                    let text = editor
+                                        .read_with(cx, |editor, cx| editor.text(cx))
+                                        .trim()
+                                        .to_string();
                                     if !text.is_empty() {
                                         let task_id = this.active_task_id.unwrap_or(0);
                                         let sandbox_backend = this.sandbox_backend.clone();
@@ -4666,12 +5170,20 @@ impl AppState {
                                         cx.spawn(async move |this, cx| {
                                             // Execute command and capture result
                                             let cmd_for_output = text.clone();
-                                            let exec_result = gpui_tokio::Tokio::spawn(cx, async move {
-                                                match &sandbox_backend {
-                                                    Backend::Docker(b) => b.exec_command(task_id, vec![&text]).await,
-                                                    Backend::Pty(b) => b.exec_command(task_id, vec![&text]).await,
-                                                }
-                                            }).await;
+                                            let exec_result =
+                                                gpui_tokio::Tokio::spawn(cx, async move {
+                                                    match &sandbox_backend {
+                                                        Backend::Docker(b) => {
+                                                            b.exec_command(task_id, vec![&text])
+                                                                .await
+                                                        }
+                                                        Backend::Pty(b) => {
+                                                            b.exec_command(task_id, vec![&text])
+                                                                .await
+                                                        }
+                                                    }
+                                                })
+                                                .await;
 
                                             let output = match exec_result {
                                                 Ok(Ok(out)) => out,
@@ -4687,12 +5199,14 @@ impl AppState {
                                                 });
                                                 cx.notify();
                                             });
-                                        }).detach();
+                                        })
+                                        .detach();
                                     }
                                 }
                             }))
-                            .child(terminal_editor)
-                    ))
+                            .child(terminal_editor),
+                    ),
+            )
     }
 }
 
@@ -4707,41 +5221,48 @@ fn main() {
     // Load app icon
     let icon_path = std::path::Path::new("assets/logo.png");
     let icon_image = if icon_path.exists() {
-        image::open(icon_path).ok().map(|img| img.to_rgba8()).map(|rgba| {
-            let (width, height) = rgba.dimensions();
-            Arc::new(image::RgbaImage::from_raw(width, height, rgba.into_raw()).unwrap())
-        })
+        image::open(icon_path)
+            .ok()
+            .map(|img| img.to_rgba8())
+            .map(|rgba| {
+                let (width, height) = rgba.dimensions();
+                Arc::new(image::RgbaImage::from_raw(width, height, rgba.into_raw()).unwrap())
+            })
     } else {
         eprintln!("[App] Icon not found at assets/logo.png");
         None
     };
 
-    application().with_assets(assets::Assets).run(move |cx: &mut App| {
-        settings::init(cx);
-        theme_settings::init(theme::LoadThemes::JustBase, cx);
-        editor::init(cx);
-        gpui_tokio::init(cx);
+    application()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            settings::init(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            gpui_tokio::init(cx);
 
-        // Load default keymap so Editor actions like Delete, Backspace work
-        cx.bind_keys(
-            KeymapFile::load_asset_allow_partial_failure(
-                DEFAULT_KEYMAP_PATH,
+            // Load default keymap so Editor actions like Delete, Backspace work
+            cx.bind_keys(
+                KeymapFile::load_asset_allow_partial_failure(DEFAULT_KEYMAP_PATH, cx)
+                    .expect("failed to load default keymap"),
+            );
+
+            let bounds = Bounds::centered(
+                None,
+                size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)),
                 cx,
+            );
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    is_resizable: true,
+                    window_min_size: Some(size(px(800.0), px(600.0))),
+                    icon: icon_image.clone(),
+                    ..Default::default()
+                },
+                move |window, cx| cx.new(|cx| AppState::new(window, cx, config.clone())),
             )
-            .expect("failed to load default keymap"),
-        );
-
-        let bounds = Bounds::centered(None, size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                is_resizable: true,
-                window_min_size: Some(size(px(800.0), px(600.0))),
-                icon: icon_image.clone(),
-                ..Default::default()
-            },
-            move |window, cx| cx.new(|cx| AppState::new(window, cx, config.clone())),
-        ).unwrap();
-        cx.activate(true);
-    });
+            .unwrap();
+            cx.activate(true);
+        });
 }

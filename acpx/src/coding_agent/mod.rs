@@ -13,13 +13,13 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
 use crate::agent::Agent;
-use crate::protocol::AgentCapabilities;
 use crate::error::AcpError;
+use crate::protocol::AgentCapabilities;
 use crate::protocol::{
-    SessionCancelParams, SessionCancelResult, SessionCloseParams, SessionCloseResult,
-    SessionInfo, SessionListResult, SessionLoadParams, SessionNewParams, SessionNewResult,
-    SessionPromptParams, SessionPromptResult, SessionResumeParams, SessionSetModeParams,
-    SessionSetModeResult, StopReason,
+    SessionCancelParams, SessionCancelResult, SessionCloseParams, SessionCloseResult, SessionInfo,
+    SessionListResult, SessionLoadParams, SessionNewParams, SessionNewResult, SessionPromptParams,
+    SessionPromptResult, SessionResumeParams, SessionSetModeParams, SessionSetModeResult,
+    StopReason,
 };
 use crate::session::SessionManager;
 
@@ -79,7 +79,10 @@ impl ClaudeCodeAgent {
 
     async fn get_session(&self, acp_session_id: &str) -> Option<ClaudeSession> {
         let sessions = self.sessions.read().await;
-        sessions.iter().find(|s| s.acp_session_id == acp_session_id).cloned()
+        sessions
+            .iter()
+            .find(|s| s.acp_session_id == acp_session_id)
+            .cloned()
     }
 
     async fn save_session(&self, session: ClaudeSession) {
@@ -91,7 +94,9 @@ impl ClaudeCodeAgent {
 
     async fn remove_session(&self, acp_session_id: &str) -> Option<ClaudeSession> {
         let mut sessions = self.sessions.write().await;
-        let idx = sessions.iter().position(|s| s.acp_session_id == acp_session_id)?;
+        let idx = sessions
+            .iter()
+            .position(|s| s.acp_session_id == acp_session_id)?;
         Some(sessions.remove(idx))
     }
 }
@@ -133,7 +138,10 @@ impl Agent for ClaudeCodeAgent {
 
     async fn session_new(&self, params: SessionNewParams) -> Result<SessionNewResult, AcpError> {
         // Create session in session manager
-        let session = self.session_manager.create_session(&PathBuf::from(&params.cwd)).await?;
+        let session = self
+            .session_manager
+            .create_session(&PathBuf::from(&params.cwd))
+            .await?;
 
         // Prepare Claude session data
         let mut claude_session = ClaudeSession {
@@ -145,7 +153,11 @@ impl Agent for ClaudeCodeAgent {
         };
 
         // Execute session creation with Claude CLI
-        match self.cli.session_new(&params.cwd, params.mcp_servers.as_slice()).await {
+        match self
+            .cli
+            .session_new(&params.cwd, params.mcp_servers.as_slice())
+            .await
+        {
             Ok((_session_id, agent_session_id)) => {
                 let agent_session_id = agent_session_id.clone();
                 claude_session.claude_session_id = Some(agent_session_id.clone());
@@ -164,13 +176,20 @@ impl Agent for ClaudeCodeAgent {
         }
     }
 
-    async fn session_prompt(&self, params: SessionPromptParams) -> Result<SessionPromptResult, AcpError> {
+    async fn session_prompt(
+        &self,
+        params: SessionPromptParams,
+    ) -> Result<SessionPromptResult, AcpError> {
         // Get session info
-        let session = self.get_session(&params.session_id).await
+        let session = self
+            .get_session(&params.session_id)
+            .await
             .ok_or_else(|| AcpError::SessionNotFound(params.session_id.clone()))?;
 
         // Extract text from content blocks
-        let instruction = params.content.iter()
+        let instruction = params
+            .content
+            .iter()
             .filter_map(|b| match b {
                 crate::protocol::ContentBlock::Text { text } => Some(text.clone()),
                 _ => None,
@@ -179,7 +198,9 @@ impl Agent for ClaudeCodeAgent {
             .join("\n");
 
         if instruction.is_empty() {
-            return Err(AcpError::InvalidParams("No text content in prompt".to_string()));
+            return Err(AcpError::InvalidParams(
+                "No text content in prompt".to_string(),
+            ));
         }
 
         // Execute prompt with Claude CLI
@@ -196,13 +217,20 @@ impl Agent for ClaudeCodeAgent {
         })
     }
 
-    async fn session_cancel(&self, params: SessionCancelParams) -> Result<SessionCancelResult, AcpError> {
+    async fn session_cancel(
+        &self,
+        params: SessionCancelParams,
+    ) -> Result<SessionCancelResult, AcpError> {
         // Update session state
-        self.session_manager.cancel_session(&params.session_id).await?;
+        self.session_manager
+            .cancel_session(&params.session_id)
+            .await?;
 
         // Execute cancel with Claude CLI
         if let Some(session) = self.get_session(&params.session_id).await {
-            self.cli.session_cancel(session.claude_session_id.as_deref()).ok();
+            self.cli
+                .session_cancel(session.claude_session_id.as_deref())
+                .ok();
         }
 
         Ok(SessionCancelResult {
@@ -213,10 +241,10 @@ impl Agent for ClaudeCodeAgent {
 
     async fn session_load(&self, params: SessionLoadParams) -> Result<SessionNewResult, AcpError> {
         // Create session with specific ID
-        let session = self.session_manager.create_session_with_id(
-            &params.session_id,
-            &PathBuf::from(&params.cwd),
-        ).await?;
+        let session = self
+            .session_manager
+            .create_session_with_id(&params.session_id, &PathBuf::from(&params.cwd))
+            .await?;
 
         let mut claude_session = ClaudeSession {
             acp_session_id: session.id.clone(),
@@ -246,29 +274,41 @@ impl Agent for ClaudeCodeAgent {
         }
     }
 
-    async fn session_resume(&self, params: SessionResumeParams) -> Result<SessionNewResult, AcpError> {
+    async fn session_resume(
+        &self,
+        params: SessionResumeParams,
+    ) -> Result<SessionNewResult, AcpError> {
         // Similar to session_load but for resume
         self.session_load(SessionLoadParams {
             session_id: params.session_id,
             cwd: params.cwd,
             additional_directories: params.additional_directories,
             mcp_servers: params.mcp_servers,
-        }).await
+        })
+        .await
     }
 
-    async fn session_close(&self, params: SessionCloseParams) -> Result<SessionCloseResult, AcpError> {
+    async fn session_close(
+        &self,
+        params: SessionCloseParams,
+    ) -> Result<SessionCloseResult, AcpError> {
         // Remove session
         self.remove_session(&params.session_id).await;
 
         // Update session manager
-        self.session_manager.close_session(&params.session_id).await?;
+        self.session_manager
+            .close_session(&params.session_id)
+            .await?;
 
         Ok(SessionCloseResult {
             session_id: params.session_id,
         })
     }
 
-    async fn session_set_mode(&self, params: SessionSetModeParams) -> Result<SessionSetModeResult, AcpError> {
+    async fn session_set_mode(
+        &self,
+        params: SessionSetModeParams,
+    ) -> Result<SessionSetModeResult, AcpError> {
         // Update mode in session
         if let Some(mut session) = self.get_session(&params.session_id).await {
             session.mode = Some(params.mode.clone());
@@ -283,12 +323,15 @@ impl Agent for ClaudeCodeAgent {
 
     async fn session_list(&self) -> Result<SessionListResult, AcpError> {
         let sessions = self.sessions.read().await;
-        let infos: Vec<SessionInfo> = sessions.iter().map(|s| SessionInfo {
-            session_id: s.acp_session_id.clone(),
-            cwd: s.cwd.to_string_lossy().to_string(),
-            created_at: s.created_at.to_rfc3339(),
-            last_used_at: s.created_at.to_rfc3339(), // TODO: track last used
-        }).collect();
+        let infos: Vec<SessionInfo> = sessions
+            .iter()
+            .map(|s| SessionInfo {
+                session_id: s.acp_session_id.clone(),
+                cwd: s.cwd.to_string_lossy().to_string(),
+                created_at: s.created_at.to_rfc3339(),
+                last_used_at: s.created_at.to_rfc3339(), // TODO: track last used
+            })
+            .collect();
 
         Ok(SessionListResult { sessions: infos })
     }

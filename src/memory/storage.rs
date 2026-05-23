@@ -64,7 +64,12 @@ pub fn save_task_memory_async(
         if let Err(e) = save_task_memory(&workspace_name, &memory) {
             eprintln!("[Memory L2] save messages failed: {}", e);
         }
-        upsert_task_chunks(&workspace_name, task_id, &memory.task_title, &memory.messages);
+        upsert_task_chunks(
+            &workspace_name,
+            task_id,
+            &memory.task_title,
+            &memory.messages,
+        );
     });
 }
 

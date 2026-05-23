@@ -6,21 +6,36 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
 use super::{Agent, AgentConfig, AgentInstance, AgentStatus};
 
 #[derive(Debug, Clone)]
 pub enum ClaudeStreamEvent {
-    Started { command: String, workdir: String },
+    Started {
+        command: String,
+        workdir: String,
+    },
     AssistantText(String),
-    Progress { label: String, detail: String },
+    Progress {
+        label: String,
+        detail: String,
+    },
     Stderr(String),
-    Session { session_id: String },
-    AskUserQuestion { prompt: String, options: Vec<String> },
-    Finished { result: String },
-    Failed { error: String },
+    Session {
+        session_id: String,
+    },
+    AskUserQuestion {
+        prompt: String,
+        options: Vec<String>,
+    },
+    Finished {
+        result: String,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 pub struct ClaudeCodeAgent {
@@ -29,8 +44,7 @@ pub struct ClaudeCodeAgent {
 
 impl ClaudeCodeAgent {
     pub fn new() -> Self {
-        let binary_path = which::which("claude")
-            .unwrap_or_else(|_| PathBuf::from("claude"));
+        let binary_path = which::which("claude").unwrap_or_else(|_| PathBuf::from("claude"));
         Self { binary_path }
     }
 
@@ -107,7 +121,8 @@ impl ClaudeCodeAgent {
                     for item in items {
                         match item.get("type").and_then(|value| value.as_str()) {
                             Some("text") => {
-                                if let Some(text) = item.get("text").and_then(|value| value.as_str())
+                                if let Some(text) =
+                                    item.get("text").and_then(|value| value.as_str())
                                 {
                                     if !text.trim().is_empty() {
                                         text_parts.push(text.to_string());
@@ -185,17 +200,20 @@ impl ClaudeCodeAgent {
         session_id: Option<&str>,
         sender: Sender<ClaudeStreamEvent>,
     ) -> Result<String> {
-        std::fs::create_dir_all(project_dir)
-            .with_context(|| format!("Failed to create Claude workdir: {}", project_dir.display()))?;
+        std::fs::create_dir_all(project_dir).with_context(|| {
+            format!("Failed to create Claude workdir: {}", project_dir.display())
+        })?;
 
         let binary_path = Self::check_installation().unwrap_or_else(|| PathBuf::from("claude"));
         let mut cmd = Command::new(&binary_path);
         cmd.args(&[
             "-p",
             instruction,
-            "--output-format", "stream-json",
+            "--output-format",
+            "stream-json",
             "--verbose",
-            "--permission-mode", "bypassPermissions",
+            "--permission-mode",
+            "bypassPermissions",
         ])
         .current_dir(project_dir)
         .stdout(Stdio::piped())
@@ -302,14 +320,14 @@ impl Agent for ClaudeCodeAgent {
     }
 
     async fn spawn(&self, config: AgentConfig) -> Result<AgentInstance> {
-        let task_id = config.session_id
+        let task_id = config
+            .session_id
             .as_ref()
             .and_then(|s| s.split('_').last()?.parse().ok())
             .unwrap_or(0);
 
         let project_dir = Self::get_project_dir(task_id);
-        std::fs::create_dir_all(&project_dir)
-            .context("Failed to create project directory")?;
+        std::fs::create_dir_all(&project_dir).context("Failed to create project directory")?;
 
         let instance = AgentInstance {
             id: 0,
@@ -328,12 +346,16 @@ impl Agent for ClaudeCodeAgent {
     async fn send_message(&self, instance: &mut AgentInstance, msg: &str) -> Result<String> {
         instance.status = AgentStatus::Running;
 
-        let project_dir = instance.session_state.get("project_dir")
+        let project_dir = instance
+            .session_state
+            .get("project_dir")
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
 
-        let session_id = instance.session_state.get("session_id")
+        let session_id = instance
+            .session_state
+            .get("session_id")
             .and_then(|v| v.as_str());
 
         let (sender, _receiver) = std::sync::mpsc::channel();

@@ -1,18 +1,13 @@
 //! Checkbox widget implementation.
 
 use gpui::{
-    actions, App, Context, CursorStyle, FocusHandle, Focusable, InteractiveElement,
-    MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, Styled, Window, px,
+    actions, px, App, Context, CursorStyle, FocusHandle, Focusable, InteractiveElement,
+    MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, Styled, Window,
 };
 
 use crate::traits::state::ComponentState;
 
-actions!(
-    checkbox,
-    [
-        Toggle,
-    ]
-);
+actions!(checkbox, [Toggle,]);
 
 pub struct Checkbox {
     label: gpui::SharedString,
@@ -139,15 +134,13 @@ impl Render for Checkbox {
                     .rounded_sm()
                     .border(px(1.0))
                     .border_color(gpui::hsla(0., 0., 0.6, 1.))
-                    .child(
-                        if self.indeterminate {
-                            gpui::div().w_1().h_0p5().bg(mark_color)
-                        } else if self.checked {
-                            gpui::div().w_full().h_0p5().bg(mark_color)
-                        } else {
-                            gpui::div()
-                        },
-                    ),
+                    .child(if self.indeterminate {
+                        gpui::div().w_1().h_0p5().bg(mark_color)
+                    } else if self.checked {
+                        gpui::div().w_full().h_0p5().bg(mark_color)
+                    } else {
+                        gpui::div()
+                    }),
             )
             .child(
                 gpui::div()

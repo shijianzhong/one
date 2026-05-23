@@ -1,9 +1,6 @@
 use anyhow::Result;
+use sqlez::{connection::Connection, statement::Statement};
 use std::path::PathBuf;
-use sqlez::{
-    connection::Connection,
-    statement::Statement,
-};
 
 pub struct Database {
     pub conn: Connection,
@@ -16,38 +13,52 @@ impl Database {
         let conn_ref = &conn;
 
         // Create tables
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS workspaces (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS workspaces (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             path TEXT NOT NULL,
             expanded INTEGER DEFAULT 0,
             default_task_id INTEGER
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
         ensure_workspace_default_task_column(conn_ref)?;
 
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS tasks (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY,
             workspace_id INTEGER NOT NULL,
             title TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'todo',
             is_draft INTEGER DEFAULT 0,
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
         ensure_task_draft_column(conn_ref)?;
 
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS messages (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY,
             task_id INTEGER NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (task_id) REFERENCES tasks(id)
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
         // Agent tables
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS agents (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             agent_type TEXT NOT NULL,
@@ -57,9 +68,13 @@ impl Database {
             memory_threshold INTEGER DEFAULT 3,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS agent_instances (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS agent_instances (
             id INTEGER PRIMARY KEY,
             agent_id INTEGER NOT NULL,
             task_id INTEGER,
@@ -68,9 +83,13 @@ impl Database {
             last_active_at TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(id),
             FOREIGN KEY (task_id) REFERENCES tasks(id)
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS agent_conversations (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS agent_conversations (
             id INTEGER PRIMARY KEY,
             agent_instance_id INTEGER NOT NULL,
             user_query TEXT NOT NULL,
@@ -78,16 +97,22 @@ impl Database {
             context_snapshot TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_instance_id) REFERENCES agent_instances(id)
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
-        let _ = (conn_ref.exec("CREATE TABLE IF NOT EXISTS agent_capabilities (
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS agent_capabilities (
             id INTEGER PRIMARY KEY,
             agent_id INTEGER NOT NULL,
             capability_type TEXT NOT NULL,
             prompt_template TEXT,
             tools_json TEXT,
             FOREIGN KEY (agent_id) REFERENCES agents(id)
-        )").unwrap())();
+        )",
+            )
+            .unwrap())();
 
         Ok(Self { conn })
     }
@@ -104,7 +129,9 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
 
 fn ensure_workspace_default_task_column(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "workspaces", "default_task_id")? {
-        let _ = (conn.exec("ALTER TABLE workspaces ADD COLUMN default_task_id INTEGER").unwrap())();
+        let _ = (conn
+            .exec("ALTER TABLE workspaces ADD COLUMN default_task_id INTEGER")
+            .unwrap())();
     }
 
     Ok(())
@@ -112,7 +139,9 @@ fn ensure_workspace_default_task_column(conn: &Connection) -> Result<()> {
 
 fn ensure_task_draft_column(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "tasks", "is_draft")? {
-        let _ = (conn.exec("ALTER TABLE tasks ADD COLUMN is_draft INTEGER DEFAULT 0").unwrap())();
+        let _ = (conn
+            .exec("ALTER TABLE tasks ADD COLUMN is_draft INTEGER DEFAULT 0")
+            .unwrap())();
     }
 
     // At most one draft per workspace; do not auto-create drafts here.
@@ -135,7 +164,8 @@ fn ensure_task_draft_column(conn: &Connection) -> Result<()> {
 
         if draft_ids.len() > 1 {
             for id in draft_ids.into_iter().skip(1) {
-                let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE id = ?")?;
+                let mut stmt =
+                    Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE id = ?")?;
                 stmt.with_bindings(&id)?;
                 stmt.exec()?;
             }
@@ -181,18 +211,30 @@ pub fn load_workspaces(conn: &Connection) -> Result<Vec<WorkspaceRow>> {
         let name = s.column_text(1)?.to_string();
         let path = s.column_text(2)?.to_string();
         let expanded = s.column_int64(3)? != 0;
-        Ok(WorkspaceRow { id, name, path, expanded })
+        Ok(WorkspaceRow {
+            id,
+            name,
+            path,
+            expanded,
+        })
     })
 }
 
 pub fn load_tasks(conn: &Connection, workspace_id: usize) -> Result<Vec<TaskRow>> {
-    let mut stmt = Statement::prepare(conn, "SELECT id, title, is_draft FROM tasks WHERE workspace_id = ? ORDER BY id")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, title, is_draft FROM tasks WHERE workspace_id = ? ORDER BY id",
+    )?;
     stmt.with_bindings(&workspace_id)?;
     stmt.map(|s| {
         let id = s.column_int64(0)? as usize;
         let title = s.column_text(1)?.to_string();
         let is_draft = s.column_int64(2).unwrap_or(0) != 0;
-        Ok(TaskRow { id, title, is_draft })
+        Ok(TaskRow {
+            id,
+            title,
+            is_draft,
+        })
     })
 }
 
@@ -210,7 +252,8 @@ pub fn ensure_draft_task(conn: &Connection, workspace_id: usize) -> Result<usize
         return Ok(id);
     }
 
-    let mut stmt = Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE workspace_id = ?")?;
+    let mut stmt =
+        Statement::prepare(conn, "UPDATE tasks SET is_draft = 0 WHERE workspace_id = ?")?;
     stmt.with_bindings(&workspace_id)?;
     stmt.exec()?;
 
@@ -222,7 +265,10 @@ pub fn ensure_draft_task(conn: &Connection, workspace_id: usize) -> Result<usize
 }
 
 pub fn insert_workspace(conn: &Connection, name: &str, path: &str) -> Result<usize> {
-    let mut stmt = Statement::prepare(conn, "INSERT INTO workspaces (name, path, expanded) VALUES (?, ?, 0)")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO workspaces (name, path, expanded) VALUES (?, ?, 0)",
+    )?;
     stmt.with_bindings(&(name, path))?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
@@ -231,7 +277,10 @@ pub fn insert_workspace(conn: &Connection, name: &str, path: &str) -> Result<usi
 }
 
 pub fn insert_task(conn: &Connection, workspace_id: usize, title: &str) -> Result<usize> {
-    let mut stmt = Statement::prepare(conn, "INSERT INTO tasks (workspace_id, title, status) VALUES (?, ?, 'todo')")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO tasks (workspace_id, title, status) VALUES (?, ?, 'todo')",
+    )?;
     stmt.with_bindings(&(workspace_id, title))?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
@@ -262,7 +311,10 @@ pub fn delete_workspace(conn: &Connection, workspace_id: usize) -> Result<()> {
     // Get all task IDs for this workspace
     let mut stmt = Statement::prepare(conn, "SELECT id FROM tasks WHERE workspace_id = ?")?;
     stmt.with_bindings(&workspace_id)?;
-    let task_ids: Vec<usize> = stmt.map(|s| s.column_int64(0).map(|v| v as usize))?.into_iter().collect();
+    let task_ids: Vec<usize> = stmt
+        .map(|s| s.column_int64(0).map(|v| v as usize))?
+        .into_iter()
+        .collect();
 
     // Delete messages for all tasks in the workspace
     for task_id in task_ids {
@@ -282,7 +334,11 @@ pub fn delete_workspace(conn: &Connection, workspace_id: usize) -> Result<()> {
     Ok(())
 }
 
-pub fn update_workspace_expanded(conn: &Connection, workspace_id: usize, expanded: bool) -> Result<()> {
+pub fn update_workspace_expanded(
+    conn: &Connection,
+    workspace_id: usize,
+    expanded: bool,
+) -> Result<()> {
     let mut stmt = Statement::prepare(conn, "UPDATE workspaces SET expanded = ? WHERE id = ?")?;
     let expanded_i64 = expanded as i64;
     stmt.with_bindings(&(expanded_i64, workspace_id))?;
@@ -292,7 +348,10 @@ pub fn update_workspace_expanded(conn: &Connection, workspace_id: usize, expande
 
 // Message functions
 pub fn load_messages(conn: &Connection, task_id: usize) -> Result<Vec<MessageRow>> {
-    let mut stmt = Statement::prepare(conn, "SELECT role, content FROM messages WHERE task_id = ? ORDER BY created_at ASC")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT role, content FROM messages WHERE task_id = ? ORDER BY created_at ASC",
+    )?;
     stmt.with_bindings(&task_id)?;
     stmt.map(|s| {
         let role = s.column_text(0)?.to_string();
@@ -301,8 +360,16 @@ pub fn load_messages(conn: &Connection, task_id: usize) -> Result<Vec<MessageRow
     })
 }
 
-pub fn insert_message(conn: &Connection, task_id: usize, role: &str, content: &str) -> Result<usize> {
-    let mut stmt = Statement::prepare(conn, "INSERT INTO messages (task_id, role, content) VALUES (?, ?, ?)")?;
+pub fn insert_message(
+    conn: &Connection,
+    task_id: usize,
+    role: &str,
+    content: &str,
+) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO messages (task_id, role, content) VALUES (?, ?, ?)",
+    )?;
     stmt.with_bindings(&(task_id, role, content))?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
@@ -331,9 +398,11 @@ pub fn export_messages_json(conn: &Connection, task_id: usize) -> Result<String>
     let messages = load_messages(conn, task_id)?;
     let mut json_str = String::from("[\n");
     for (i, msg) in messages.iter().enumerate() {
-        json_str.push_str(&format!("  {{\"role\": \"{}\", \"content\": \"{}\"}}",
+        json_str.push_str(&format!(
+            "  {{\"role\": \"{}\", \"content\": \"{}\"}}",
             msg.role.replace("\"", "\\\""),
-            msg.content.replace("\"", "\\\"").replace("\n", "\\n")));
+            msg.content.replace("\"", "\\\"").replace("\n", "\\n")
+        ));
         if i < messages.len() - 1 {
             json_str.push(',');
         }
@@ -344,13 +413,21 @@ pub fn export_messages_json(conn: &Connection, task_id: usize) -> Result<String>
 }
 
 // Export messages to Markdown format
-pub fn export_messages_markdown(conn: &Connection, task_id: usize, task_title: &str) -> Result<String> {
+pub fn export_messages_markdown(
+    conn: &Connection,
+    task_id: usize,
+    task_title: &str,
+) -> Result<String> {
     let messages = load_messages(conn, task_id)?;
     let mut md = String::new();
     md.push_str(&format!("# {}\n\n", task_title));
     md.push_str("*Exported from ONE*\n\n");
     for msg in messages.iter() {
-        let role_label = if msg.role == "user" { "**You**" } else { "**Assistant**" };
+        let role_label = if msg.role == "user" {
+            "**You**"
+        } else {
+            "**Assistant**"
+        };
         md.push_str(&format!("## {}\n\n{}\n\n---\n\n", role_label, msg.content));
     }
     Ok(md)
@@ -402,7 +479,15 @@ pub fn load_agents(conn: &Connection) -> Result<Vec<AgentRow>> {
         let capabilities_json = s.column_text(4)?.to_string().into();
         let config_json = s.column_text(5)?.to_string().into();
         let memory_threshold = s.column_int64(6)?;
-        Ok(AgentRow { id, name, agent_type, description, capabilities_json, config_json, memory_threshold })
+        Ok(AgentRow {
+            id,
+            name,
+            agent_type,
+            description,
+            capabilities_json,
+            config_json,
+            memory_threshold,
+        })
     })
 }
 
@@ -418,15 +503,36 @@ pub fn load_agent_by_id(conn: &Connection, agent_id: usize) -> Result<Option<Age
         let capabilities_json = s.column_text(4)?.to_string().into();
         let config_json = s.column_text(5)?.to_string().into();
         let memory_threshold = s.column_int64(6)?;
-        Ok(AgentRow { id, name, agent_type, description, capabilities_json, config_json, memory_threshold })
+        Ok(AgentRow {
+            id,
+            name,
+            agent_type,
+            description,
+            capabilities_json,
+            config_json,
+            memory_threshold,
+        })
     })?;
     Ok(result.into_iter().next())
 }
 
 #[allow(dead_code)]
-pub fn insert_agent(conn: &Connection, name: &str, agent_type: &str, description: Option<&str>, capabilities_json: Option<&str>, config_json: Option<&str>) -> Result<usize> {
+pub fn insert_agent(
+    conn: &Connection,
+    name: &str,
+    agent_type: &str,
+    description: Option<&str>,
+    capabilities_json: Option<&str>,
+    config_json: Option<&str>,
+) -> Result<usize> {
     let mut stmt = Statement::prepare(conn, "INSERT INTO agents (name, agent_type, description, capabilities_json, config_json) VALUES (?, ?, ?, ?, ?)")?;
-    stmt.with_bindings(&(name, agent_type, description, capabilities_json, config_json))?;
+    stmt.with_bindings(&(
+        name,
+        agent_type,
+        description,
+        capabilities_json,
+        config_json,
+    ))?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
     let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
@@ -434,7 +540,14 @@ pub fn insert_agent(conn: &Connection, name: &str, agent_type: &str, description
 }
 
 #[allow(dead_code)]
-pub fn update_agent(conn: &Connection, agent_id: usize, name: &str, description: Option<&str>, capabilities_json: Option<&str>, config_json: Option<&str>) -> Result<()> {
+pub fn update_agent(
+    conn: &Connection,
+    agent_id: usize,
+    name: &str,
+    description: Option<&str>,
+    capabilities_json: Option<&str>,
+    config_json: Option<&str>,
+) -> Result<()> {
     let mut stmt = Statement::prepare(conn, "UPDATE agents SET name = ?, description = ?, capabilities_json = ?, config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")?;
     stmt.with_bindings(&(name, description, capabilities_json, config_json, agent_id))?;
     stmt.exec()?;
@@ -469,12 +582,22 @@ pub fn load_agent_instances(conn: &Connection) -> Result<Vec<AgentInstanceRow>> 
         let status = s.column_text(3)?.to_string();
         let session_state_json = s.column_text(4)?.to_string().into();
         let last_active_at = s.column_text(5)?.to_string().into();
-        Ok(AgentInstanceRow { id, agent_id, task_id: if task_id == 0 { None } else { Some(task_id) }, status, session_state_json, last_active_at })
+        Ok(AgentInstanceRow {
+            id,
+            agent_id,
+            task_id: if task_id == 0 { None } else { Some(task_id) },
+            status,
+            session_state_json,
+            last_active_at,
+        })
     })
 }
 
 #[allow(dead_code)]
-pub fn load_agent_instance_by_task(conn: &Connection, task_id: usize) -> Result<Option<AgentInstanceRow>> {
+pub fn load_agent_instance_by_task(
+    conn: &Connection,
+    task_id: usize,
+) -> Result<Option<AgentInstanceRow>> {
     let mut stmt = Statement::prepare(conn, "SELECT id, agent_id, task_id, status, session_state_json, last_active_at FROM agent_instances WHERE task_id = ?")?;
     stmt.with_bindings(&task_id)?;
     let result = stmt.map(|s| {
@@ -484,14 +607,29 @@ pub fn load_agent_instance_by_task(conn: &Connection, task_id: usize) -> Result<
         let status = s.column_text(3)?.to_string();
         let session_state_json = s.column_text(4)?.to_string().into();
         let last_active_at = s.column_text(5)?.to_string().into();
-        Ok(AgentInstanceRow { id, agent_id, task_id: if task_id == 0 { None } else { Some(task_id) }, status, session_state_json, last_active_at })
+        Ok(AgentInstanceRow {
+            id,
+            agent_id,
+            task_id: if task_id == 0 { None } else { Some(task_id) },
+            status,
+            session_state_json,
+            last_active_at,
+        })
     })?;
     Ok(result.into_iter().next())
 }
 
 #[allow(dead_code)]
-pub fn insert_agent_instance(conn: &Connection, agent_id: usize, task_id: Option<usize>, status: &str) -> Result<usize> {
-    let mut stmt = Statement::prepare(conn, "INSERT INTO agent_instances (agent_id, task_id, status) VALUES (?, ?, ?)")?;
+pub fn insert_agent_instance(
+    conn: &Connection,
+    agent_id: usize,
+    task_id: Option<usize>,
+    status: &str,
+) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO agent_instances (agent_id, task_id, status) VALUES (?, ?, ?)",
+    )?;
     let task_id_val = task_id.unwrap_or(0);
     stmt.with_bindings(&(agent_id, task_id_val, status))?;
     stmt.exec()?;
@@ -501,15 +639,26 @@ pub fn insert_agent_instance(conn: &Connection, agent_id: usize, task_id: Option
 }
 
 #[allow(dead_code)]
-pub fn update_agent_instance_status(conn: &Connection, instance_id: usize, status: &str) -> Result<()> {
-    let mut stmt = Statement::prepare(conn, "UPDATE agent_instances SET status = ?, last_active_at = CURRENT_TIMESTAMP WHERE id = ?")?;
+pub fn update_agent_instance_status(
+    conn: &Connection,
+    instance_id: usize,
+    status: &str,
+) -> Result<()> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE agent_instances SET status = ?, last_active_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )?;
     stmt.with_bindings(&(status, instance_id))?;
     stmt.exec()?;
     Ok(())
 }
 
 #[allow(dead_code)]
-pub fn update_agent_instance_session(conn: &Connection, instance_id: usize, session_state_json: &str) -> Result<()> {
+pub fn update_agent_instance_session(
+    conn: &Connection,
+    instance_id: usize,
+    session_state_json: &str,
+) -> Result<()> {
     let mut stmt = Statement::prepare(conn, "UPDATE agent_instances SET session_state_json = ?, last_active_at = CURRENT_TIMESTAMP WHERE id = ?")?;
     stmt.with_bindings(&(session_state_json, instance_id))?;
     stmt.exec()?;
@@ -518,7 +667,10 @@ pub fn update_agent_instance_session(conn: &Connection, instance_id: usize, sess
 
 #[allow(dead_code)]
 pub fn delete_agent_instance(conn: &Connection, instance_id: usize) -> Result<()> {
-    let mut stmt = Statement::prepare(conn, "DELETE FROM agent_conversations WHERE agent_instance_id = ?")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "DELETE FROM agent_conversations WHERE agent_instance_id = ?",
+    )?;
     stmt.with_bindings(&instance_id)?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "DELETE FROM agent_instances WHERE id = ?")?;
@@ -529,7 +681,10 @@ pub fn delete_agent_instance(conn: &Connection, instance_id: usize) -> Result<()
 
 // Agent capabilities
 #[allow(dead_code)]
-pub fn load_agent_capabilities(conn: &Connection, agent_id: usize) -> Result<Vec<AgentCapabilityRow>> {
+pub fn load_agent_capabilities(
+    conn: &Connection,
+    agent_id: usize,
+) -> Result<Vec<AgentCapabilityRow>> {
     let mut stmt = Statement::prepare(conn, "SELECT id, agent_id, capability_type, prompt_template, tools_json FROM agent_capabilities WHERE agent_id = ?")?;
     stmt.with_bindings(&agent_id)?;
     stmt.map(|s| {
@@ -538,12 +693,24 @@ pub fn load_agent_capabilities(conn: &Connection, agent_id: usize) -> Result<Vec
         let capability_type = s.column_text(2)?.to_string();
         let prompt_template = s.column_text(3)?.to_string().into();
         let tools_json = s.column_text(4)?.to_string().into();
-        Ok(AgentCapabilityRow { id, agent_id, capability_type, prompt_template, tools_json })
+        Ok(AgentCapabilityRow {
+            id,
+            agent_id,
+            capability_type,
+            prompt_template,
+            tools_json,
+        })
     })
 }
 
 #[allow(dead_code)]
-pub fn insert_agent_capability(conn: &Connection, agent_id: usize, capability_type: &str, prompt_template: Option<&str>, tools_json: Option<&str>) -> Result<usize> {
+pub fn insert_agent_capability(
+    conn: &Connection,
+    agent_id: usize,
+    capability_type: &str,
+    prompt_template: Option<&str>,
+    tools_json: Option<&str>,
+) -> Result<usize> {
     let mut stmt = Statement::prepare(conn, "INSERT INTO agent_capabilities (agent_id, capability_type, prompt_template, tools_json) VALUES (?, ?, ?, ?)")?;
     stmt.with_bindings(&(agent_id, capability_type, prompt_template, tools_json))?;
     stmt.exec()?;
@@ -554,9 +721,20 @@ pub fn insert_agent_capability(conn: &Connection, agent_id: usize, capability_ty
 
 // Agent conversations (for cross-session memory)
 #[allow(dead_code)]
-pub fn insert_agent_conversation(conn: &Connection, agent_instance_id: usize, user_query: &str, agent_response: Option<&str>, context_snapshot: Option<&str>) -> Result<usize> {
+pub fn insert_agent_conversation(
+    conn: &Connection,
+    agent_instance_id: usize,
+    user_query: &str,
+    agent_response: Option<&str>,
+    context_snapshot: Option<&str>,
+) -> Result<usize> {
     let mut stmt = Statement::prepare(conn, "INSERT INTO agent_conversations (agent_instance_id, user_query, agent_response, context_snapshot) VALUES (?, ?, ?, ?)")?;
-    stmt.with_bindings(&(agent_instance_id, user_query, agent_response, context_snapshot))?;
+    stmt.with_bindings(&(
+        agent_instance_id,
+        user_query,
+        agent_response,
+        context_snapshot,
+    ))?;
     stmt.exec()?;
     let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
     let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
@@ -564,7 +742,10 @@ pub fn insert_agent_conversation(conn: &Connection, agent_instance_id: usize, us
 }
 
 #[allow(dead_code)]
-pub fn load_agent_conversations(conn: &Connection, agent_instance_id: usize) -> Result<Vec<(usize, String, String, Option<String>)>> {
+pub fn load_agent_conversations(
+    conn: &Connection,
+    agent_instance_id: usize,
+) -> Result<Vec<(usize, String, String, Option<String>)>> {
     let mut stmt = Statement::prepare(conn, "SELECT id, user_query, agent_response, context_snapshot FROM agent_conversations WHERE agent_instance_id = ? ORDER BY created_at ASC")?;
     stmt.with_bindings(&agent_instance_id)?;
     stmt.map(|s| {

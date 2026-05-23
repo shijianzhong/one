@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::memory::types::{ChatMessage, MemoryChunk};
 use crate::memory::storage::get_workspace_memory_dir;
+use crate::memory::types::{ChatMessage, MemoryChunk};
 use std::collections::HashMap;
 use std::fs;
 
@@ -69,7 +69,8 @@ pub fn tfidf_search(query: &str, chunks: &[MemoryChunk], top_k: usize) -> Vec<us
     let n = chunks.len() as f64;
     let mut df: HashMap<String, usize> = HashMap::new();
     for chunk in chunks.iter() {
-        let toks: std::collections::HashSet<String> = tokenize(&chunk.content).into_iter().collect();
+        let toks: std::collections::HashSet<String> =
+            tokenize(&chunk.content).into_iter().collect();
         for t in toks {
             *df.entry(t).or_insert(0) += 1;
         }

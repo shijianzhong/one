@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use crate::memory::types::{ChatMessage, MemoryChunk, MemorySnapshot};
-use crate::memory::storage::{load_task_snapshot, save_task_snapshot};
 use crate::memory::search::load_l3_chunks_internal;
 use crate::memory::search::tfidf_search;
+use crate::memory::storage::{load_task_snapshot, save_task_snapshot};
+use crate::memory::types::{ChatMessage, MemoryChunk, MemorySnapshot};
 use crate::services::api::call_chat_api_sync;
 use serde::Deserialize;
 
@@ -17,19 +17,31 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
         if !snap.key_facts.is_empty() {
             parts.push(format!(
                 "## Key Facts\n{}",
-                snap.key_facts.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+                snap.key_facts
+                    .iter()
+                    .map(|f| format!("- {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ));
         }
         if !snap.open_loops.is_empty() {
             parts.push(format!(
                 "## Open Questions\n{}",
-                snap.open_loops.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+                snap.open_loops
+                    .iter()
+                    .map(|f| format!("- {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ));
         }
         if !snap.preferences.is_empty() {
             parts.push(format!(
                 "## User Preferences\n{}",
-                snap.preferences.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+                snap.preferences
+                    .iter()
+                    .map(|f| format!("- {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ));
         }
     }
@@ -47,7 +59,11 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
                     section.push(format!(
                         "[Task: {}] {}: {}",
                         hit.task_title,
-                        if hit.role == "assistant" { "Assistant" } else { "User" },
+                        if hit.role == "assistant" {
+                            "Assistant"
+                        } else {
+                            "User"
+                        },
                         preview
                     ));
                 }
@@ -65,11 +81,17 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
 fn build_snapshot_prompt(messages: &[ChatMessage]) -> String {
     let history: String = messages
         .iter()
-        .map(|m| format!(
-            "{}: {}",
-            if m.role == "user" { "User" } else { "Assistant" },
-            m.content
-        ))
+        .map(|m| {
+            format!(
+                "{}: {}",
+                if m.role == "user" {
+                    "User"
+                } else {
+                    "Assistant"
+                },
+                m.content
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!(

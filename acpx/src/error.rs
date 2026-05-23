@@ -42,8 +42,15 @@ impl fmt::Display for AcpError {
             AcpError::MethodNotFound(msg) => write!(f, "Method not found: {}", msg),
             AcpError::InvalidParams(msg) => write!(f, "Invalid params: {}", msg),
             AcpError::InternalError(msg) => write!(f, "Internal error: {}", msg),
-            AcpError::ExecutionTimeout { session_id, timeout_ms } => {
-                write!(f, "Execution timeout for session {} after {}ms", session_id, timeout_ms)
+            AcpError::ExecutionTimeout {
+                session_id,
+                timeout_ms,
+            } => {
+                write!(
+                    f,
+                    "Execution timeout for session {} after {}ms",
+                    session_id, timeout_ms
+                )
             }
             AcpError::SessionNotFound(id) => write!(f, "Session not found: {}", id),
             AcpError::TaskCancelled(id) => write!(f, "Task cancelled: {}", id),
@@ -130,7 +137,10 @@ impl AcpError {
     }
 
     /// Convert to JSON-RPC error response
-    pub fn to_error_response(&self, id: Option<crate::protocol::Id>) -> crate::protocol::ErrorResponse {
+    pub fn to_error_response(
+        &self,
+        id: Option<crate::protocol::Id>,
+    ) -> crate::protocol::ErrorResponse {
         crate::protocol::ErrorResponse {
             jsonrpc: crate::protocol::JSONRPC_VERSION.to_string(),
             error: crate::protocol::Error {

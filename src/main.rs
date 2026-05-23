@@ -2397,12 +2397,7 @@ impl AppState {
                     }),
                 );
 
-            let expand_btn = div()
-                .text_sm()
-                .text_color(MUTED_TEXT())
-                .px_1()
-                .py_1()
-                .size(px(16.0));
+            let expand_btn = div().size(px(16.0)).flex().items_center().justify_center();
 
             let add_btn = div()
                 .text_sm()
@@ -2461,17 +2456,6 @@ impl AppState {
 
             result = result.child(
                 ws_row
-                    .child(
-                        div()
-                            .w(px(1.0))
-                            .h(px(18.0))
-                            .rounded_full()
-                            .bg(if is_active_ws {
-                                BRAND_BLUE()
-                            } else {
-                                BORDER_LIGHT()
-                            }),
-                    )
                     .child(
                         svg()
                             .path("folder.svg")

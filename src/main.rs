@@ -1,8 +1,9 @@
 use dirs;
 use gpui::{
-    div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, DragMoveEvent, Focusable,
-    Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, ScrollHandle,
-    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, DragMoveEvent,
+    Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render,
+    ScrollHandle, StatefulInteractiveElement, Styled, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -93,6 +94,15 @@ gpui::actions!(
 const NAV_WIDTH: f32 = 280.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
+const TITLEBAR_HEIGHT: f32 = 44.0;
+
+fn titlebar_leading_inset() -> f32 {
+    if cfg!(target_os = "macos") {
+        86.0
+    } else {
+        16.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MainView {
@@ -204,6 +214,7 @@ struct AppState {
     general_ai_task_id: Option<usize>,
     general_ai_live_text: String,
     general_ai_show_live_bubble: bool,
+    titlebar_should_move: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1242,6 +1253,7 @@ impl AppState {
             general_ai_task_id: None,
             general_ai_live_text: String::new(),
             general_ai_show_live_bubble: false,
+            titlebar_should_move: false,
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -2002,20 +2014,34 @@ impl Render for AppState {
             None
         };
         div()
-            .flex()
+            .flex_col()
             .size_full()
             .bg(CARD_BG())
-            .child(self.render_nav(cx))
-            .child(div().w(px(1.0)).bg(BORDER_LIGHT()))
-            .child(self.render_main_content(window, cx))
-            .when_some(sidebar, |this, sidebar| {
-                this.child(div().w(px(1.0)).bg(BORDER_LIGHT()))
-                    .child(sidebar)
-            })
-            .when(self.terminal_visible, |this| {
-                this.child(self.render_terminal_resizer(cx))
-                    .child(self.render_terminal(window, cx))
-            })
+            .child(self.render_window_titlebar(window, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(self.render_nav(cx))
+                    .child(div().w(px(1.0)).bg(BORDER_LIGHT()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_main_content(window, cx)),
+                    )
+                    .when_some(sidebar, |this, sidebar| {
+                        this.child(div().w(px(1.0)).bg(BORDER_LIGHT()))
+                            .child(div().h_full().child(sidebar))
+                    })
+                    .when(self.terminal_visible, |this| {
+                        this.child(self.render_terminal_resizer(cx))
+                            .child(self.render_terminal(window, cx))
+                    }),
+            )
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(window, cx))
             })
@@ -2047,15 +2073,19 @@ impl AppState {
             .w(px(NAV_WIDTH))
             .h_full()
             .bg(NAV_BG())
-            .child(self.render_nav_header(cx))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
-            .child(self.render_nav_buttons(cx))
-            .child(self.render_task_list(cx))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
-            .child(self.render_nav_footer_actions())
+            .overflow_hidden()
+            .child(div().flex_none().child(self.render_nav_buttons(cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(self.render_task_list(cx)),
+            )
+            .child(div().flex_none().h(px(1.0)).bg(BORDER_LIGHT()))
+            .child(div().flex_none().child(self.render_nav_footer_actions()))
     }
 
-    fn render_nav_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_titlebar_leading(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let theme_mode = get_theme_mode();
         let theme_label = match (lang, theme_mode) {
@@ -2068,32 +2098,17 @@ impl AppState {
             .flex()
             .items_center()
             .justify_between()
-            .h(px(64.0))
-            .px_6()
+            .h_full()
+            .pl(px(titlebar_leading_inset()))
+            .pr_4()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_4()
-                    .child(
-                        div()
-                            .text_size(px(24.0))
-                            .text_color(PRIMARY_TEXT())
-                            .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::NAV_ONE)),
-                    )
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .text_xs()
-                            .text_color(SECONDARY_TEXT())
-                            .child("AI Assistant"),
-                    ),
+                div().flex().items_center().gap_3().child(
+                    div()
+                        .text_size(px(20.0))
+                        .text_color(PRIMARY_TEXT())
+                        .font_weight(FontWeight::BOLD)
+                        .child(t(lang, Translations::NAV_ONE)),
+                ),
             )
             .child(
                 div()
@@ -2102,7 +2117,7 @@ impl AppState {
                     .gap_2()
                     .child(
                         div()
-                            .px_3()
+                            .px_2()
                             .py_1()
                             .rounded_md()
                             .bg(GHOST_SURFACE_BG())
@@ -2121,7 +2136,7 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .px_3()
+                            .px_2()
                             .py_1()
                             .rounded_md()
                             .bg(GHOST_SURFACE_BG())
@@ -2138,6 +2153,94 @@ impl AppState {
                             )
                             .child(lang.label()),
                     ),
+            )
+    }
+
+    fn render_window_titlebar(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let header_content = match self.main_view {
+            MainView::Chat => {
+                let lang = self.current_lang;
+                let title = if let Some(task) = self.get_active_task() {
+                    if task.title.trim().is_empty() {
+                        t(lang, Translations::NEW_TASK).to_string()
+                    } else {
+                        task.title.clone()
+                    }
+                } else {
+                    t(lang, Translations::NO_TASK_SELECTED).to_string()
+                };
+                self.render_chat_header(
+                    title,
+                    self.get_work_dir(),
+                    self.sidebar_visible,
+                    self.terminal_visible,
+                    cx,
+                )
+                .into_any_element()
+            }
+            MainView::SkillsMarket => {
+                let lang = self.current_lang;
+                div()
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .px_8()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(PRIMARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child(t(lang, Translations::CAPABILITIES)),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        div()
+            .flex()
+            .flex_none()
+            .h(px(TITLEBAR_HEIGHT))
+            .border_b_1()
+            .border_color(BORDER_LIGHT())
+            .on_mouse_down_out(cx.listener(|this, _ev, _window, _cx| {
+                this.titlebar_should_move = false;
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _ev, _window, _cx| {
+                    this.titlebar_should_move = false;
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _ev, _window, _cx| {
+                    this.titlebar_should_move = true;
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, _ev, window, _cx| {
+                if this.titlebar_should_move {
+                    this.titlebar_should_move = false;
+                    window.start_window_move();
+                }
+            }))
+            .child(
+                div()
+                    .w(px(NAV_WIDTH))
+                    .h_full()
+                    .bg(NAV_BG())
+                    .child(self.render_titlebar_leading(cx)),
+            )
+            .child(div().w(px(1.0)).bg(BORDER_LIGHT()))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .bg(HEADER_BG())
+                    .child(header_content),
             )
     }
 
@@ -2272,7 +2375,7 @@ impl AppState {
             .flex_col()
             .gap_1()
             .px_4()
-            .py_4()
+            .py_3()
             .child(
                 self.make_footer_action_item(
                     t(lang, Translations::SETTINGS).to_string(),
@@ -2366,9 +2469,9 @@ impl AppState {
         let mut result = div()
             .flex()
             .flex_col()
-            .flex_1()
+            .h_full()
             .px_4()
-            .pb_4()
+            .pb_3()
             .id("task-list")
             .overflow_scroll()
             .gap_3()
@@ -2682,19 +2785,6 @@ impl AppState {
     }
 
     fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let lang = self.current_lang;
-        let title = if let Some(task) = self.get_active_task() {
-            if task.title.trim().is_empty() {
-                t(lang, Translations::NEW_TASK).to_string()
-            } else {
-                task.title.clone()
-            }
-        } else {
-            t(lang, Translations::NO_TASK_SELECTED).to_string()
-        };
-        let work_dir = self.get_work_dir();
-        let sidebar_visible = self.sidebar_visible;
-        let terminal_visible = self.terminal_visible;
         let scroll_handle = self.chat_scroll_handle.clone();
 
         div()
@@ -2704,7 +2794,6 @@ impl AppState {
             .h_full()
             .min_w(px(350.0))
             .bg(CANVAS_BG())
-            .child(self.render_chat_header(title, work_dir, sidebar_visible, terminal_visible, cx))
             .child(
                 div()
                     .flex_1()
@@ -2752,14 +2841,10 @@ impl AppState {
         let title = normalize_single_line_label(&title);
         div()
             .flex()
-            .flex_none()
             .items_center()
             .justify_between()
-            .h(px(64.0))
+            .h_full()
             .px_8()
-            .bg(HEADER_BG())
-            .border_b_1()
-            .border_color(BORDER_LIGHT())
             .child(
                 div()
                     .flex()
@@ -4143,28 +4228,28 @@ impl AppState {
         div()
             .flex()
             .justify_center()
-            .pt_3()
-            .pb_5()
+            .pt_5()
+            .pb_10()
             .child(
                 div()
                     .flex_col()
                     .w_full()
                     .max_w(px(940.0))
-                    .gap_3()
-                    .px_4()
-                    .py_4()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
                     .rounded_xl()
                     .bg(FLOATING_PANEL_BG())
                     .border_1()
-                    .border_color(BORDER_LIGHT())
+                    .border_color(GHOST_SURFACE_BG())
                     .child(
                         div()
                             .flex()
                             .items_end()
                             .gap_2()
                             .px_3()
-                            .py_3()
-                            .rounded_xl()
+                            .py_2()
+                            .rounded_lg()
                             .bg(INPUT_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
@@ -4172,6 +4257,7 @@ impl AppState {
                                 div()
                                     .size(px(30.0))
                                     .rounded_full()
+                                    .bg(GHOST_SURFACE_BG())
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -4244,6 +4330,7 @@ impl AppState {
                                 div()
                                     .size(px(30.0))
                                     .rounded_full()
+                                    .bg(GHOST_SURFACE_BG())
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -4251,9 +4338,9 @@ impl AppState {
                             )
                             .child(
                                 div()
-                                    .px_4()
+                                    .px_3()
                                     .py_2()
-                                    .rounded_xl()
+                                    .rounded_lg()
                                     .bg(send_bg)
                                     .cursor_pointer()
                                     .text_color(gpui::white())
@@ -4322,7 +4409,7 @@ impl AppState {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .px_1()
+                            .px_2()
                             .child(
                                 div()
                                     .text_xs()
@@ -5192,6 +5279,15 @@ fn main() {
             );
             cx.open_window(
                 WindowOptions {
+                    titlebar: Some(TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: if cfg!(target_os = "macos") {
+                            Some(point(px(12.0), px(12.0)))
+                        } else {
+                            None
+                        },
+                    }),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     is_resizable: true,
                     window_min_size: Some(size(px(800.0), px(600.0))),

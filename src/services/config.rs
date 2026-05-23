@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::i18n::Lang;
+use crate::ui_theme::ThemeMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -9,6 +10,8 @@ pub struct Config {
     pub model_api_key: String,
     pub model_name: String,
     pub lang: Lang,
+    #[serde(default)]
+    pub theme_mode: ThemeMode,
 }
 
 impl Default for Config {
@@ -18,6 +21,7 @@ impl Default for Config {
             model_api_key: "".to_string(),
             model_name: "gpt-4".to_string(),
             lang: Lang::Zh,
+            theme_mode: ThemeMode::Dark,
         }
     }
 }

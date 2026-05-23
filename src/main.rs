@@ -25,6 +25,7 @@ use theme_settings;
 use gpui::FontWeight;
 
 mod i18n;
+pub(crate) mod ui_theme;
 mod memory;
 mod assets;
 mod sandbox;
@@ -42,6 +43,13 @@ use agents::claude_code::ClaudeStreamEvent;
 use agents::router::AgentRouter;
 use skills_market::SkillsMarketState;
 
+pub(crate) use ui_theme::{
+    ThemeMode, get_theme_mode, set_theme_mode,
+    NAV_BG, CARD_BG, PRIMARY_TEXT, SECONDARY_TEXT, TERTIARY_TEXT, MUTED_TEXT, BRAND_BLUE, BORDER_LIGHT,
+    ACTIVE_BG, WORKSPACE_BG, CANVAS_BG, SURFACE_ELEVATED, SURFACE_ACCENT, SURFACE_PANEL, USER_BUBBLE_BG,
+    ASSISTANT_BUBBLE_BG, INPUT_BG,
+};
+
 struct DraggedResizer;
 
 impl Render for DraggedResizer {
@@ -58,27 +66,10 @@ gpui::actions!(
         CancelModelConfig,
         SendMessage,
         ToggleLang,
+        ToggleTheme,
         ExportChat,
     ]
 );
-
-const NAV_BG: Hsla = Hsla { h: 0.61, s: 0.42, l: 0.08, a: 1.0 };
-const CARD_BG: Hsla = Hsla { h: 0.61, s: 0.31, l: 0.12, a: 1.0 };
-const PRIMARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.78, l: 0.93, a: 1.0 };
-const SECONDARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.26, l: 0.76, a: 1.0 };
-const TERTIARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.16, l: 0.61, a: 1.0 };
-const MUTED_TEXT: Hsla = Hsla { h: 0.61, s: 0.14, l: 0.50, a: 1.0 };
-const BRAND_BLUE: Hsla = Hsla { h: 0.61, s: 0.83, l: 0.54, a: 1.0 };
-const BORDER_LIGHT: Hsla = Hsla { h: 0.61, s: 0.22, l: 0.24, a: 1.0 };
-const ACTIVE_BG: Hsla = Hsla { h: 0.61, s: 0.39, l: 0.19, a: 1.0 };
-const WORKSPACE_BG: Hsla = Hsla { h: 0.61, s: 0.34, l: 0.10, a: 1.0 };
-const CANVAS_BG: Hsla = Hsla { h: 0.61, s: 0.33, l: 0.10, a: 1.0 };
-const SURFACE_ELEVATED: Hsla = Hsla { h: 0.61, s: 0.27, l: 0.15, a: 1.0 };
-const SURFACE_ACCENT: Hsla = Hsla { h: 0.61, s: 0.55, l: 0.18, a: 1.0 };
-const SURFACE_PANEL: Hsla = Hsla { h: 0.61, s: 0.24, l: 0.13, a: 1.0 };
-const USER_BUBBLE_BG: Hsla = Hsla { h: 0.61, s: 0.76, l: 0.52, a: 1.0 };
-const ASSISTANT_BUBBLE_BG: Hsla = Hsla { h: 0.61, s: 0.24, l: 0.14, a: 1.0 };
-const INPUT_BG: Hsla = Hsla { h: 0.61, s: 0.25, l: 0.17, a: 1.0 };
 
 const NAV_WIDTH: f32 = 280.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
@@ -164,6 +155,7 @@ struct AppState {
     model_api_key: String,
     model_name: String,
     current_lang: Lang,
+    theme_mode: ThemeMode,
     editing_model_name: String,
     editing_base_url: String,
     editing_api_key: String,
@@ -246,7 +238,7 @@ impl ClaudeRunStatus {
 
     fn color(&self) -> Hsla {
         match self {
-            Self::Running => BRAND_BLUE,
+            Self::Running => BRAND_BLUE(),
             Self::Completed => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
             Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
         }
@@ -263,7 +255,7 @@ enum ClaudeRunTone {
 impl ClaudeRunTone {
     fn color(&self) -> Hsla {
         match self {
-            Self::Info => SECONDARY_TEXT,
+            Self::Info => SECONDARY_TEXT(),
             Self::Success => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
             Self::Error => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
         }
@@ -356,7 +348,7 @@ impl PreviewStatus {
 
     fn color(&self) -> Hsla {
         match self {
-            Self::Idle => MUTED_TEXT,
+            Self::Idle => MUTED_TEXT(),
             Self::Ready => Hsla { h: 0.36, s: 0.65, l: 0.42, a: 1.0 },
             Self::Failed => Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 },
         }
@@ -449,7 +441,7 @@ fn render_formatted_content(
             .rounded_md()
             .bg(Hsla { h: 0.0, s: 0.0, l: 0.98, a: 1.0 })
             .border_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .child(
                 div()
                     .text_xs()
@@ -464,7 +456,7 @@ fn render_formatted_content(
             .rounded_md()
             .bg(Hsla { h: 0.62, s: 0.15, l: 0.97, a: 1.0 })
             .border_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .child(
                 div()
                     .text_xs()
@@ -1071,6 +1063,8 @@ impl AppState {
     }
     fn new(_window: &mut Window, _cx: &mut Context<Self>, config: Config) -> Self {
         let db = task_db::Database::new().expect("Failed to initialize database");
+        let theme_mode = config.theme_mode;
+        set_theme_mode(theme_mode);
 
         // Load workspaces and tasks from database
         let workspaces = {
@@ -1120,6 +1114,7 @@ impl AppState {
             model_api_key: config.model_api_key,
             model_name: config.model_name,
             current_lang: config.lang,
+            theme_mode,
             editing_model_name: "gpt-4".to_string(),
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
@@ -1761,6 +1756,7 @@ impl AppState {
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
             lang: self.current_lang,
+            theme_mode: self.theme_mode,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save config: {}", e);
@@ -1781,9 +1777,29 @@ impl AppState {
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
             lang: self.current_lang,
+            theme_mode: self.theme_mode,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save lang config: {}", e);
+        }
+        cx.notify();
+    }
+
+    fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
+        self.theme_mode = match self.theme_mode {
+            ThemeMode::Dark => ThemeMode::Light,
+            ThemeMode::Light => ThemeMode::Dark,
+        };
+        set_theme_mode(self.theme_mode);
+        let config = Config {
+            model_base_url: self.model_base_url.clone(),
+            model_api_key: self.model_api_key.clone(),
+            model_name: self.model_name.clone(),
+            lang: self.current_lang,
+            theme_mode: self.theme_mode,
+        };
+        if let Err(e) = save_config(&config) {
+            eprintln!("Failed to save theme config: {}", e);
         }
         cx.notify();
     }
@@ -1819,12 +1835,12 @@ impl Render for AppState {
         div()
             .flex()
             .size_full()
-            .bg(CARD_BG)
+            .bg(CARD_BG())
             .child(self.render_nav(cx))
-            .child(div().w(px(1.0)).bg(BORDER_LIGHT))
+            .child(div().w(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_main_content(window, cx))
             .when_some(sidebar, |this, sidebar| {
-                this.child(div().w(px(1.0)).bg(BORDER_LIGHT))
+                this.child(div().w(px(1.0)).bg(BORDER_LIGHT()))
                     .child(sidebar)
             })
             .when(self.terminal_visible, |this| {
@@ -1857,16 +1873,23 @@ impl AppState {
             .flex_col()
             .w(px(NAV_WIDTH))
             .h_full()
-            .bg(NAV_BG)
+            .bg(NAV_BG())
             .child(self.render_nav_header(cx))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_nav_buttons(cx))
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_task_list(cx))
     }
 
     fn render_nav_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
+        let theme_mode = get_theme_mode();
+        let theme_label = match (lang, theme_mode) {
+            (Lang::Zh, ThemeMode::Dark) => "深色",
+            (Lang::Zh, ThemeMode::Light) => "浅色",
+            (Lang::En, ThemeMode::Dark) => "Dark",
+            (Lang::En, ThemeMode::Light) => "Light",
+        };
         div()
             .flex()
             .items_center()
@@ -1881,7 +1904,7 @@ impl AppState {
                     .child(
                         div()
                             .text_size(px(24.0))
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(t(lang, Translations::NAV_ONE))
                     )
@@ -1890,29 +1913,51 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_lg()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .text_xs()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .child("AI Assistant")
                     )
             )
             .child(
                 div()
-                    .px_3()
-                    .py_1()
-                    .rounded_lg()
-                    .bg(SURFACE_ELEVATED)
-                    .border_1()
-                    .border_color(BORDER_LIGHT)
-                    .text_xs()
-                    .text_color(SECONDARY_TEXT)
-                    .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                        this.toggle_lang(&ToggleLang, _window, cx);
-                    }))
-                    .child(lang.label())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(SURFACE_ELEVATED())
+                            .border_1()
+                            .border_color(BORDER_LIGHT())
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .cursor_pointer()
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                this.toggle_theme(&ToggleTheme, _window, cx);
+                            }))
+                            .child(theme_label)
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(SURFACE_ELEVATED())
+                            .border_1()
+                            .border_color(BORDER_LIGHT())
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .cursor_pointer()
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                this.toggle_lang(&ToggleLang, _window, cx);
+                            }))
+                            .child(lang.label())
+                    )
             )
     }
 
@@ -1928,7 +1973,7 @@ impl AppState {
             .child(
                 div()
                     .text_xs()
-                    .text_color(MUTED_TEXT)
+                    .text_color(MUTED_TEXT())
                     .font_weight(FontWeight::BOLD)
                     .child("GLOBAL")
             );
@@ -1991,11 +2036,11 @@ impl AppState {
             .px_3()
             .py_3()
             .rounded_lg()
-            .bg(if active { SURFACE_ACCENT } else { SURFACE_ELEVATED })
+            .bg(if active { SURFACE_ACCENT() } else { SURFACE_ELEVATED() })
             .border_1()
-            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
+            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
             .cursor_pointer()
-            .hover(|this| this.bg(SURFACE_ACCENT))
+            .hover(|this| this.bg(SURFACE_ACCENT()))
             .when(is_new_workspace, |this| {
                 this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                     this.handle_new_workspace_click(cx);
@@ -2022,18 +2067,18 @@ impl AppState {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(if active { PRIMARY_TEXT } else { PRIMARY_TEXT })
+                            .text_color(if active { PRIMARY_TEXT() } else { PRIMARY_TEXT() })
                             .font_weight(FontWeight::BOLD)
                             .child(title)
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(if active { SECONDARY_TEXT } else { MUTED_TEXT })
+                            .text_color(if active { SECONDARY_TEXT() } else { MUTED_TEXT() })
                             .child(subtitle)
                     )
             )
-            .child(div().text_xs().text_color(if active { SECONDARY_TEXT } else { MUTED_TEXT }).child(shortcut))
+            .child(div().text_xs().text_color(if active { SECONDARY_TEXT() } else { MUTED_TEXT() }).child(shortcut))
     }
 
     fn make_placeholder_nav_item(&mut self, title: String, subtitle: String, icon_key: &'static str) -> impl IntoElement {
@@ -2044,9 +2089,9 @@ impl AppState {
             .px_3()
             .py_3()
             .rounded_lg()
-            .bg(WORKSPACE_BG)
+            .bg(WORKSPACE_BG())
             .border_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .opacity(0.82)
             .child(self.make_icon_slot(icon_key, false))
             .child(
@@ -2054,23 +2099,23 @@ impl AppState {
                     .flex_1()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_sm().text_color(SECONDARY_TEXT).child(title))
+                    .child(div().text_sm().text_color(SECONDARY_TEXT()).child(title))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(subtitle))
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(subtitle))
                             .child(
                                 div()
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(CANVAS_BG)
+                                    .bg(CANVAS_BG())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .text_xs()
-                                    .text_color(MUTED_TEXT)
+                                    .text_color(MUTED_TEXT())
                                     .child("SOON")
                             )
                     )
@@ -2083,12 +2128,12 @@ impl AppState {
             .px_2()
             .py_1()
             .rounded_md()
-            .bg(if active { CANVAS_BG } else { WORKSPACE_BG })
+            .bg(if active { CANVAS_BG() } else { WORKSPACE_BG() })
             .border_1()
-            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
+            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
             .child(render_icon_element(
                 icon_key,
-                if active { BRAND_BLUE } else { SECONDARY_TEXT },
+                if active { BRAND_BLUE() } else { SECONDARY_TEXT() },
                 14.0,
             ))
     }
@@ -2173,14 +2218,14 @@ impl AppState {
                     .pt_2()
                     .pb_1()
                     .text_xs()
-                    .text_color(MUTED_TEXT)
+                    .text_color(MUTED_TEXT())
                     .font_weight(FontWeight::BOLD)
                     .child(t(lang, Translations::WORKSPACES_HEADING))
             );
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
-            let ws_bg = if is_active_ws { SURFACE_ELEVATED } else { WORKSPACE_BG };
+            let ws_bg = if is_active_ws { SURFACE_ELEVATED() } else { WORKSPACE_BG() };
             let ws_id = workspace.id;
 
             let ws_row = div()
@@ -2192,9 +2237,9 @@ impl AppState {
                 .rounded_lg()
                 .bg(ws_bg)
                 .border_1()
-                .border_color(if is_active_ws { BRAND_BLUE } else { BORDER_LIGHT })
+                .border_color(if is_active_ws { BRAND_BLUE() } else { BORDER_LIGHT() })
                 .cursor_pointer()
-                .hover(|this| this.bg(SURFACE_ELEVATED))
+                .hover(|this| this.bg(SURFACE_ELEVATED()))
                 .on_mouse_move(cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
                     this.hovered_workspace_id = Some(ws_id);
                 }))
@@ -2208,18 +2253,18 @@ impl AppState {
 
             let expand_btn = div()
                 .text_sm()
-                .text_color(MUTED_TEXT)
+                .text_color(MUTED_TEXT())
                 .px_1()
                 .py_1()
                 .size(px(16.0));
 
             let add_btn = div()
                 .text_sm()
-                .text_color(SECONDARY_TEXT)
+                .text_color(SECONDARY_TEXT())
                 .px_2()
                 .py_1()
                 .rounded_md()
-                .bg(SURFACE_ELEVATED)
+                .bg(SURFACE_ELEVATED())
                 .cursor_pointer()
                 .id(format!("add-btn-{}", ws_id))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -2237,7 +2282,7 @@ impl AppState {
                 .px_2()
                 .py_1()
                 .rounded_md()
-                .bg(SURFACE_ELEVATED)
+                .bg(SURFACE_ELEVATED())
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
                     cx.stop_propagation();
                     this.delete_confirm_workspace_id = Some(ws_id);
@@ -2248,7 +2293,7 @@ impl AppState {
                         .path("more.svg")
                         .size(px(16.0))
                         .flex_none()
-                        .text_color(MUTED_TEXT),
+                        .text_color(MUTED_TEXT()),
                 );
 
             let action_div = div().ml_auto().flex().items_center().gap_2()
@@ -2261,7 +2306,7 @@ impl AppState {
                         .w(px(2.0))
                         .h(px(22.0))
                         .rounded_full()
-                        .bg(if is_active_ws { BRAND_BLUE } else { WORKSPACE_BG })
+                        .bg(if is_active_ws { BRAND_BLUE() } else { WORKSPACE_BG() })
                 ).child(
                     if workspace.expanded {
                         expand_btn.child(
@@ -2269,7 +2314,7 @@ impl AppState {
                                 .path("expand.svg")
                                 .size(px(16.0))
                                 .flex_none()
-                                .text_color(MUTED_TEXT)
+                                .text_color(MUTED_TEXT())
                         )
                     } else {
                         expand_btn.child(
@@ -2277,7 +2322,7 @@ impl AppState {
                                 .path("fold.svg")
                                 .size(px(16.0))
                                 .flex_none()
-                                .text_color(MUTED_TEXT)
+                                .text_color(MUTED_TEXT())
                         )
                     }
                 ).child(
@@ -2285,20 +2330,20 @@ impl AppState {
                         .path("folder.svg")
                         .size(px(16.0))
                         .flex_none()
-                        .text_color(if is_active_ws { BRAND_BLUE } else { SECONDARY_TEXT })
+                        .text_color(if is_active_ws { BRAND_BLUE() } else { SECONDARY_TEXT() })
                 ).child(
                     if is_active_ws {
                         div()
                             .text_sm()
                             .ml_1()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(ws_label)
                     } else {
                         div()
                             .text_sm()
                             .ml_1()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .child(ws_label)
                     }
                 ).child(
@@ -2313,7 +2358,7 @@ impl AppState {
                     .ml_4()
                     .pl_3()
                     .border_l_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .gap_1();
 
                 for task in &workspace.tasks {
@@ -2328,10 +2373,10 @@ impl AppState {
                         .py_2()
                         .rounded_lg()
                         .cursor_pointer()
-                        .bg(if is_active_task { ACTIVE_BG } else { WORKSPACE_BG })
+                        .bg(if is_active_task { ACTIVE_BG() } else { WORKSPACE_BG() })
                         .border_1()
-                        .border_color(if is_active_task { BRAND_BLUE } else { BORDER_LIGHT })
-                        .hover(|this| this.bg(SURFACE_ELEVATED));
+                        .border_color(if is_active_task { BRAND_BLUE() } else { BORDER_LIGHT() })
+                        .hover(|this| this.bg(SURFACE_ELEVATED()));
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
@@ -2358,12 +2403,12 @@ impl AppState {
                                 .w(px(2.0))
                                 .h(px(18.0))
                                 .rounded_full()
-                                .bg(if is_active_task { BRAND_BLUE } else { WORKSPACE_BG })
+                                .bg(if is_active_task { BRAND_BLUE() } else { WORKSPACE_BG() })
                         )
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(if is_active_task { BRAND_BLUE } else { MUTED_TEXT })
+                                .text_color(if is_active_task { BRAND_BLUE() } else { MUTED_TEXT() })
                                 .child("[task]")
                         )
                         .child(
@@ -2371,7 +2416,7 @@ impl AppState {
                                 .flex_1()
                                 .overflow_hidden()
                                 .text_sm()
-                                .text_color(if is_active_task { PRIMARY_TEXT } else { SECONDARY_TEXT })
+                                .text_color(if is_active_task { PRIMARY_TEXT() } else { SECONDARY_TEXT() })
                                 .text_ellipsis()
                                 .child(title_display.clone())
                         )
@@ -2379,7 +2424,7 @@ impl AppState {
                             div()
                                 .ml_auto()
                                 .text_xs()
-                                .text_color(MUTED_TEXT)
+                                .text_color(MUTED_TEXT())
                                 .cursor_pointer()
                                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                     cx.stop_propagation();
@@ -2444,7 +2489,7 @@ impl AppState {
             .flex_1()
             .h_full()
             .min_w(px(350.0))
-            .bg(CANVAS_BG)
+            .bg(CANVAS_BG())
             .child(self.render_chat_header(title, work_dir, sidebar_visible, terminal_visible, cx))
             .child(
                 div()
@@ -2457,7 +2502,7 @@ impl AppState {
                     .py_5()
                     .child(self.render_chat_messages(&scroll_handle, window, cx))
             )
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(self.render_composer(window, cx))
     }
 
@@ -2476,9 +2521,9 @@ impl AppState {
             .gap_3()
             .px_6()
             .py_5()
-            .bg(CANVAS_BG)
+            .bg(CANVAS_BG())
             .border_b_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .child(
                 div()
                     .flex()
@@ -2498,7 +2543,7 @@ impl AppState {
                                     .child(
                                         div()
                                             .text_lg()
-                                            .text_color(PRIMARY_TEXT)
+                                            .text_color(PRIMARY_TEXT())
                                             .font_weight(FontWeight::BOLD)
                                             .text_ellipsis()
                                             .child(title)
@@ -2508,10 +2553,10 @@ impl AppState {
                                             .px_2()
                                             .py_1()
                                             .rounded_lg()
-                                            .bg(SURFACE_ELEVATED)
+                                            .bg(SURFACE_ELEVATED())
                                             .border_1()
-                                            .border_color(BORDER_LIGHT)
-                                    .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                                            .border_color(BORDER_LIGHT())
+                                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
                                     )
                             )
                             .child(
@@ -2534,11 +2579,11 @@ impl AppState {
                                     .px_3()
                                     .py_2()
                                     .rounded_lg()
-                                    .bg(SURFACE_ELEVATED)
+                                    .bg(SURFACE_ELEVATED())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .text_xs()
-                                    .text_color(TERTIARY_TEXT)
+                                    .text_color(TERTIARY_TEXT())
                                     .child(format!("[path] {}", work_dir))
                             )
                             .child(self.make_chat_header_button("folder", false, None, None, cx))
@@ -2549,14 +2594,14 @@ impl AppState {
                                 div()
                                     .size(px(34.0))
                                     .rounded_full()
-                                    .bg(SURFACE_ACCENT)
+                                    .bg(SURFACE_ACCENT())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_xs()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .font_weight(FontWeight::BOLD)
                                     .child("U")
                             )
@@ -2573,12 +2618,12 @@ impl AppState {
                             .px_3()
                             .py_2()
                             .rounded_lg()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                 this.export_chat(&ExportChat, _window, cx);
                             }))
@@ -2589,11 +2634,11 @@ impl AppState {
                             .px_3()
                             .py_2()
                             .rounded_lg()
-                            .bg(WORKSPACE_BG)
+                            .bg(WORKSPACE_BG())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .text_xs()
-                            .text_color(MUTED_TEXT)
+                            .text_color(MUTED_TEXT())
                             .child(format!("{} · SOON", t(lang, Translations::PLACEHOLDER_ENTRY)))
                     )
             )
@@ -2605,11 +2650,11 @@ impl AppState {
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .bg(SURFACE_ELEVATED)
+                .bg(SURFACE_ELEVATED())
                 .border_1()
-                .border_color(BRAND_BLUE)
+                .border_color(BRAND_BLUE())
                 .text_xs()
-                .text_color(PRIMARY_TEXT)
+                .text_color(PRIMARY_TEXT())
                 .font_weight(FontWeight::BOLD)
                 .child(label)
         } else {
@@ -2617,11 +2662,11 @@ impl AppState {
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .bg(CANVAS_BG)
+                .bg(CANVAS_BG())
                 .border_1()
-                .border_color(BORDER_LIGHT)
+                .border_color(BORDER_LIGHT())
                 .text_xs()
-                .text_color(MUTED_TEXT)
+                .text_color(MUTED_TEXT())
                 .child(label)
         }
     }
@@ -2631,11 +2676,11 @@ impl AppState {
             .px_3()
             .py_2()
             .rounded_lg()
-            .bg(CANVAS_BG)
+            .bg(CANVAS_BG())
             .border_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .text_xs()
-            .text_color(MUTED_TEXT)
+            .text_color(MUTED_TEXT())
             .opacity(0.82)
             .child(format!("{label} · SOON"))
     }
@@ -2652,9 +2697,9 @@ impl AppState {
             .px_3()
             .py_2()
             .rounded_lg()
-            .bg(if active { SURFACE_ACCENT } else { SURFACE_ELEVATED })
+            .bg(if active { SURFACE_ACCENT() } else { SURFACE_ELEVATED() })
             .border_1()
-            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
+            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
             .cursor_pointer()
             .text_xs()
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
@@ -2666,7 +2711,7 @@ impl AppState {
             }))
             .child(render_icon_element(
                 icon_key,
-                if active { PRIMARY_TEXT } else { SECONDARY_TEXT },
+                if active { PRIMARY_TEXT() } else { SECONDARY_TEXT() },
                 14.0,
             ))
     }
@@ -2720,16 +2765,16 @@ impl AppState {
                     .gap_4()
                     .w(px(400.0))
                     .p_5()
-                    .bg(SURFACE_PANEL)
+                    .bg(SURFACE_PANEL())
                     .rounded_xl()
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .shadow_md()
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
                     .child(
                         div()
                             .text_base()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(t(lang, Translations::MODEL_SERVICE_CONFIG))
                     )
@@ -2738,7 +2783,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::MODEL_NAME)))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::MODEL_NAME)))
                             .child(
                                 div()
                                     .flex()
@@ -2747,8 +2792,8 @@ impl AppState {
                                     .px_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .track_focus(&model_name_focus)
                                     .child(model_name_editor.clone()),
                             )
@@ -2758,7 +2803,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::BASE_URL)))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::BASE_URL)))
                             .child(
                                 div()
                                     .flex()
@@ -2767,8 +2812,8 @@ impl AppState {
                                     .px_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .track_focus(&base_url_focus)
                                     .child(base_url_editor.clone()),
                             )
@@ -2778,7 +2823,7 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::API_KEY)))
+                            .child(div().text_sm().text_color(SECONDARY_TEXT()).child(t(lang, Translations::API_KEY)))
                             .child(
                                 div()
                                     .flex()
@@ -2787,8 +2832,8 @@ impl AppState {
                                     .px_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .track_focus(&api_key_focus)
                                     .child(api_key_editor.clone()),
                             )
@@ -2807,13 +2852,13 @@ impl AppState {
                                     .justify_center()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         this.cancel_model_config(&CancelModelConfig, _window, cx);
                                     }))
-                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child(t(lang, Translations::CANCEL)))
+                                    .child(div().text_sm().text_color(PRIMARY_TEXT()).child(t(lang, Translations::CANCEL)))
                             )
                             .child(
                                 div()
@@ -2823,7 +2868,7 @@ impl AppState {
                                     .items_center()
                                     .justify_center()
                                     .rounded_lg()
-                                    .bg(BRAND_BLUE)
+                                    .bg(BRAND_BLUE())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(editor) = weak_model_name.upgrade() {
@@ -2861,10 +2906,10 @@ impl AppState {
                     .gap_2()
                     .w(px(180.0))
                     .p_3()
-                    .bg(SURFACE_PANEL)
+                    .bg(SURFACE_PANEL())
                     .rounded_xl()
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .shadow_md()
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
                     .child(
@@ -2872,10 +2917,10 @@ impl AppState {
                             .px_3()
                             .py_2()
                             .text_sm()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .rounded_md()
                             .cursor_pointer()
-                            .hover(|this| this.bg(ACTIVE_BG))
+                            .hover(|this| this.bg(ACTIVE_BG()))
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                 cx.stop_propagation();
                                 this.active_workspace_id = Some(ws_id);
@@ -2891,10 +2936,10 @@ impl AppState {
                             .px_3()
                             .py_2()
                             .text_sm()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .rounded_md()
                             .cursor_pointer()
-                            .hover(|this| this.bg(ACTIVE_BG))
+                            .hover(|this| this.bg(ACTIVE_BG()))
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                 cx.stop_propagation();
                                 this.workspaces.retain(|w| w.id != ws_id);
@@ -2939,16 +2984,16 @@ impl AppState {
                     .w(px(500.0))
                     .h(px(400.0))
                     .p_5()
-                    .bg(SURFACE_PANEL)
+                    .bg(SURFACE_PANEL())
                     .rounded_xl()
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .shadow_md()
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
                     .child(
                         div()
                             .text_base()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(t(lang, Translations::EXPORT))
                     )
@@ -2962,12 +3007,12 @@ impl AppState {
                                     .h(px(200.0))
                                     .p_3()
                                     .rounded_lg()
-                                    .bg(CANVAS_BG)
+                                    .bg(CANVAS_BG())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .overflow_hidden()
                                     .text_xs()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .child(format!("{}:\n{}", t(lang, Translations::JSON), json_content))
                             )
                             .child(
@@ -2976,12 +3021,12 @@ impl AppState {
                                     .h(px(200.0))
                                     .p_3()
                                     .rounded_lg()
-                                    .bg(CANVAS_BG)
+                                    .bg(CANVAS_BG())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .overflow_hidden()
                                     .text_xs()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .child(format!("{}:\n{}", t(lang, Translations::MARKDOWN), md_content))
                             )
                     )
@@ -2999,8 +3044,8 @@ impl AppState {
                                     .justify_center()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(json) = this.exported_json.clone() {
@@ -3027,8 +3072,8 @@ impl AppState {
                                     .justify_center()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(CANVAS_BG)
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(md) = this.exported_md.clone() {
@@ -3054,7 +3099,7 @@ impl AppState {
                                     .items_center()
                                     .justify_center()
                                     .rounded_lg()
-                                    .bg(BRAND_BLUE)
+                                    .bg(BRAND_BLUE())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
                                         this.show_export_dialog = false;
@@ -3099,11 +3144,11 @@ impl AppState {
             .children(messages.iter().enumerate().map(|(msg_index, msg)| {
                 let is_user_msg = is_user(&msg.role);
                 let bubble_bg = if is_user_msg {
-                    USER_BUBBLE_BG
+                    USER_BUBBLE_BG()
                 } else {
-                    ASSISTANT_BUBBLE_BG
+                    ASSISTANT_BUBBLE_BG()
                 };
-                let text_color = if is_user_msg { gpui::white() } else { PRIMARY_TEXT };
+                let text_color = if is_user_msg { gpui::white() } else { PRIMARY_TEXT() };
                 let avatar_icon = if is_user_msg { "YOU" } else { "ONE" };
                 let role_label = if is_user_msg { t(lang, Translations::YOU) } else { "ONE AI" };
 
@@ -3126,7 +3171,7 @@ impl AppState {
                                 .rounded_xl()
                                 .bg(bubble_bg)
                                 .border_1()
-                                .border_color(BRAND_BLUE)
+                                .border_color(BRAND_BLUE())
                                 .max_w(px(720.0))
                                 .min_w(px(35.0))
                                 .child(
@@ -3155,17 +3200,17 @@ impl AppState {
                                         .px_2()
                                         .py_1()
                                         .rounded_md()
-                                        .bg(SURFACE_ELEVATED)
+                                        .bg(SURFACE_ELEVATED())
                                         .border_1()
-                                        .border_color(BORDER_LIGHT)
+                                        .border_color(BORDER_LIGHT())
                                         .text_xs()
-                                        .text_color(SECONDARY_TEXT)
+                                        .text_color(SECONDARY_TEXT())
                                         .child(avatar_icon)
                                 )
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(SECONDARY_TEXT)
+                                        .text_color(SECONDARY_TEXT())
                                         .child(role_label)
                                 )
                         )
@@ -3177,7 +3222,7 @@ impl AppState {
                                 .rounded_xl()
                                 .bg(bubble_bg)
                                 .border_1()
-                                .border_color(BORDER_LIGHT)
+                                .border_color(BORDER_LIGHT())
                                 .max_w(px(760.0))
                                 .min_w(px(35.0))
                                 .w_full()
@@ -3227,9 +3272,9 @@ impl AppState {
                                                             .px_2()
                                                             .py_1()
                                                             .rounded_md()
-                                                            .bg(SURFACE_ELEVATED)
+                                                            .bg(SURFACE_ELEVATED())
                                                             .border_1()
-                                                            .border_color(BORDER_LIGHT)
+                                                            .border_color(BORDER_LIGHT())
                                                             .cursor_pointer()
                                                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                                 let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
@@ -3241,12 +3286,12 @@ impl AppState {
                                                                     .path(icon_path)
                                                                     .size(px(14.0))
                                                                     .flex_none()
-                                                                    .text_color(MUTED_TEXT)
+                                                                    .text_color(MUTED_TEXT())
                                                             )
                                                             .child(
                                                                 div()
                                                                     .text_xs()
-                                                                    .text_color(MUTED_TEXT)
+                                                                    .text_color(MUTED_TEXT())
                                                                     .child(header_text)
                                                             )
                                                     )
@@ -3256,7 +3301,7 @@ impl AppState {
                                                                 .pl_3()
                                                                 .pr_2()
                                                                 .text_xs()
-                                                                .text_color(TERTIARY_TEXT)
+                                                                .text_color(TERTIARY_TEXT())
                                                                 .whitespace_normal()
                                                                 .child(text.clone())
                                                         )
@@ -3311,7 +3356,7 @@ impl AppState {
                         prev_was_think = false;
                         let el = div()
                             .text_base()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .whitespace_normal()
                             .child(text.clone());
                         let el = if add_top_padding { el.pt_1() } else { el };
@@ -3342,9 +3387,9 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(SURFACE_ELEVATED)
+                                    .bg(SURFACE_ELEVATED())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                         let next = !this.think_collapsed.get(&key).copied().unwrap_or(false);
@@ -3356,12 +3401,12 @@ impl AppState {
                                             .path(icon_path)
                                             .size(px(14.0))
                                             .flex_none()
-                                            .text_color(MUTED_TEXT)
+                                            .text_color(MUTED_TEXT())
                                     )
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(MUTED_TEXT)
+                                            .text_color(MUTED_TEXT())
                                             .child(header_text)
                                     )
                             )
@@ -3371,7 +3416,7 @@ impl AppState {
                                         .pl_3()
                                         .pr_2()
                                         .text_xs()
-                                        .text_color(TERTIARY_TEXT)
+                                        .text_color(TERTIARY_TEXT())
                                         .whitespace_normal()
                                         .child(text.clone())
                                 )
@@ -3388,9 +3433,9 @@ impl AppState {
             .gap_2()
             .p_5()
             .rounded_xl()
-            .bg(ASSISTANT_BUBBLE_BG)
+            .bg(ASSISTANT_BUBBLE_BG())
             .border_1()
-            .border_color(BORDER_LIGHT)
+            .border_color(BORDER_LIGHT())
             .max_w(px(760.0))
             .min_w(px(35.0))
             .w_full();
@@ -3405,17 +3450,17 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .text_xs()
-                            .text_color(BRAND_BLUE)
+                            .text_color(BRAND_BLUE())
                             .child("LIVE")
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(TERTIARY_TEXT)
+                            .text_color(TERTIARY_TEXT())
                             .child(status_text)
                     )
             );
@@ -3439,12 +3484,12 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                            .border_color(BORDER_LIGHT())
+                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
                     )
-                    .child(div().text_xs().text_color(SECONDARY_TEXT).child("ONE AI"))
+                    .child(div().text_xs().text_color(SECONDARY_TEXT()).child("ONE AI"))
             )
             .child(content)
     }
@@ -3476,15 +3521,15 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                            .border_color(BORDER_LIGHT())
+                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
                     )
             )
@@ -3495,9 +3540,9 @@ impl AppState {
                     .gap_2()
                     .p_5()
                     .rounded_xl()
-                    .bg(ASSISTANT_BUBBLE_BG)
+                    .bg(ASSISTANT_BUBBLE_BG())
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .max_w(px(760.0))
                     .min_w(px(35.0))
                     .w_full()
@@ -3511,17 +3556,17 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(SURFACE_ELEVATED)
+                                    .bg(SURFACE_ELEVATED())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .text_xs()
-                                    .text_color(BRAND_BLUE)
+                                    .text_color(BRAND_BLUE())
                                     .child("LIVE")
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(TERTIARY_TEXT)
+                                    .text_color(TERTIARY_TEXT())
                                     .child(run.status_message.clone())
                             )
                     )
@@ -3539,7 +3584,7 @@ impl AppState {
                                             prev_was_think = false;
                                             let el = div()
                                                 .text_base()
-                                                .text_color(PRIMARY_TEXT)
+                                                .text_color(PRIMARY_TEXT())
                                                 .whitespace_normal()
                                                 .child(text.clone());
                                             let el = if add_top_padding { el.pt_1() } else { el };
@@ -3575,9 +3620,9 @@ impl AppState {
                                                         .px_2()
                                                         .py_1()
                                                         .rounded_md()
-                                                        .bg(SURFACE_ELEVATED)
+                                                        .bg(SURFACE_ELEVATED())
                                                         .border_1()
-                                                        .border_color(BORDER_LIGHT)
+                                                        .border_color(BORDER_LIGHT())
                                                         .cursor_pointer()
                                                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                             let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
@@ -3589,12 +3634,12 @@ impl AppState {
                                                                 .path(icon_path)
                                                                 .size(px(14.0))
                                                                 .flex_none()
-                                                                .text_color(MUTED_TEXT)
+                                                                .text_color(MUTED_TEXT())
                                                         )
                                                         .child(
                                                             div()
                                                                 .text_xs()
-                                                                .text_color(MUTED_TEXT)
+                                                                .text_color(MUTED_TEXT())
                                                                 .child(header_text)
                                                         )
                                                 )
@@ -3604,7 +3649,7 @@ impl AppState {
                                                             .pl_3()
                                                             .pr_2()
                                                             .text_xs()
-                                                            .text_color(TERTIARY_TEXT)
+                                                            .text_color(TERTIARY_TEXT())
                                                             .whitespace_normal()
                                                             .child(text.clone())
                                                     )
@@ -3642,15 +3687,15 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED)
+                            .bg(SURFACE_ELEVATED())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                            .border_color(BORDER_LIGHT())
+                            .child(render_icon_element("assistant", SECONDARY_TEXT(), 14.0))
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .child("ONE AI")
                     )
             )
@@ -3661,9 +3706,9 @@ impl AppState {
                     .gap_3()
                     .p_5()
                     .rounded_xl()
-                    .bg(ASSISTANT_BUBBLE_BG)
+                    .bg(ASSISTANT_BUBBLE_BG())
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .max_w(px(760.0))
                     .min_w(px(35.0))
                     .w_full()
@@ -3677,17 +3722,17 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(SURFACE_ELEVATED)
+                                    .bg(SURFACE_ELEVATED())
                                     .border_1()
-                                    .border_color(BORDER_LIGHT)
+                                    .border_color(BORDER_LIGHT())
                                     .text_xs()
-                                    .text_color(BRAND_BLUE)
+                                    .text_color(BRAND_BLUE())
                                     .child("WAIT")
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(TERTIARY_TEXT)
+                                    .text_color(TERTIARY_TEXT())
                                     .child(status_text)
                             )
                     )
@@ -3714,7 +3759,7 @@ impl AppState {
         let send_bg = if request_in_flight {
             Hsla { h: 0.0, s: 0.0, l: 0.78, a: 1.0 }
         } else {
-            BRAND_BLUE
+            BRAND_BLUE()
         };
         let send_label = if request_in_flight {
             t(lang, Translations::SENDING)
@@ -3728,7 +3773,7 @@ impl AppState {
             .gap_3()
             .px_6()
             .py_5()
-            .bg(CANVAS_BG)
+            .bg(CANVAS_BG())
             .child(
                 div()
                     .flex()
@@ -3737,15 +3782,15 @@ impl AppState {
                     .px_3()
                     .py_3()
                     .rounded_full()
-                    .bg(INPUT_BG)
+                    .bg(INPUT_BG())
                     .border_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .shadow_md()
                     .child(
                         div()
                             .px_2()
                             .py_2()
-                            .child(render_icon_element("add", MUTED_TEXT, 14.0))
+                            .child(render_icon_element("add", MUTED_TEXT(), 14.0))
                     )
                     .child(
                         div()
@@ -3810,7 +3855,7 @@ impl AppState {
                             }))
                             .child(composer_editor)
                     )
-                    .child(div().px_2().py_2().child(render_icon_element("mic", MUTED_TEXT, 14.0)))
+                    .child(div().px_2().py_2().child(render_icon_element("mic", MUTED_TEXT(), 14.0)))
                     .child(
                         div()
                             .px_5()
@@ -3887,13 +3932,13 @@ impl AppState {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(MUTED_TEXT)
+                            .text_color(MUTED_TEXT())
                             .child(format!("{} · {}", self.model_name, t(lang, Translations::EXPLORER)))
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(if request_in_flight { BRAND_BLUE } else { SECONDARY_TEXT })
+                            .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
                             .child(if request_in_flight {
                                 self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::SENDING).to_string())
                             } else {
@@ -3904,7 +3949,7 @@ impl AppState {
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar_bg = WORKSPACE_BG;
+        let sidebar_bg = WORKSPACE_BG();
         let lang = self.current_lang;
         let run = self
             .current_claude_run
@@ -3918,7 +3963,7 @@ impl AppState {
             .w(px(340.0))
             .h_full()
             .bg(sidebar_bg)
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT))
+            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(
                 div()
                     .flex()
@@ -3926,13 +3971,13 @@ impl AppState {
                     .justify_between()
                     .h(px(56.0))
                     .px_4()
-                    .bg(SURFACE_ELEVATED)
+                    .bg(SURFACE_ELEVATED())
                     .border_b_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .child(
                         div()
                             .text_sm()
-                            .text_color(PRIMARY_TEXT)
+                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(t(lang, Translations::CLAUDE_CODE_RUN))
                     )
@@ -3956,7 +4001,7 @@ impl AppState {
             let preview_color = preview
                 .as_ref()
                 .map(|preview| preview.status.color())
-                .unwrap_or(MUTED_TEXT);
+                .unwrap_or(MUTED_TEXT());
             let pending_question = run.pending_question.clone();
             let question_editor = window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
                 let mut editor = Editor::single_line(window, cx);
@@ -3969,16 +4014,16 @@ impl AppState {
             let mut timeline = div().flex().flex_col().gap_2();
             for event in run.events.iter().rev() {
                 let detail_block =
-                    render_formatted_content(&event.formatted_detail, SECONDARY_TEXT, PRIMARY_TEXT);
+                    render_formatted_content(&event.formatted_detail, SECONDARY_TEXT(), PRIMARY_TEXT());
                 timeline = timeline.child(
                     div()
                         .flex_col()
                         .gap_1()
                         .p_3()
                         .rounded_lg()
-                        .bg(SURFACE_ELEVATED)
+                        .bg(SURFACE_ELEVATED())
                         .border_1()
-                        .border_color(BORDER_LIGHT)
+                        .border_color(BORDER_LIGHT())
                         .child(
                             div()
                                 .text_xs()
@@ -4017,9 +4062,9 @@ impl AppState {
                             .gap_3()
                             .p_4()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .child(
                                 div()
                                     .flex()
@@ -4030,11 +4075,11 @@ impl AppState {
                                             .px_2()
                                             .py_1()
                                             .rounded_md()
-                                            .bg(CANVAS_BG)
+                                            .bg(CANVAS_BG())
                                             .border_1()
-                                            .border_color(BORDER_LIGHT)
+                                            .border_color(BORDER_LIGHT())
                                             .text_xs()
-                                            .text_color(SECONDARY_TEXT)
+                                            .text_color(SECONDARY_TEXT())
                                             .child("RUN")
                                     )
                                     .child(
@@ -4050,14 +4095,14 @@ impl AppState {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(MUTED_TEXT)
+                                            .text_color(MUTED_TEXT())
                                             .child(run.status_message.clone())
                                     )
                             )
                             .child(
                                 div()
                                     .text_sm()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .font_weight(FontWeight::BOLD)
                                     .whitespace_normal()
                                     .child(run.instruction.clone())
@@ -4065,7 +4110,7 @@ impl AppState {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(MUTED_TEXT)
+                                    .text_color(MUTED_TEXT())
                                     .whitespace_normal()
                                     .child(format!("{}: {}", t(lang, Translations::WORKDIR), run.work_dir))
                             )
@@ -4076,14 +4121,14 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::PROGRESS)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::PROGRESS)))
                             .child(
                                 div()
                                     .text_sm()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .whitespace_normal()
                                     .child(run.status_message.clone())
                             )
@@ -4094,15 +4139,15 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::PREVIEW)))
+                                    .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::PREVIEW)))
                                     .child(
                                         div()
                                             .text_xs()
@@ -4114,7 +4159,7 @@ impl AppState {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(SECONDARY_TEXT)
+                                    .text_color(SECONDARY_TEXT())
                                     .whitespace_normal()
                                     .child(
                                         preview
@@ -4127,7 +4172,7 @@ impl AppState {
                                 this.child(
                                     div()
                                         .text_xs()
-                                        .text_color(MUTED_TEXT)
+                                        .text_color(MUTED_TEXT())
                                         .whitespace_normal()
                                         .child(format!("{}: {}", t(lang, Translations::ENTRY), entry_file))
                                 )
@@ -4141,7 +4186,7 @@ impl AppState {
                                         .child(
                                             div()
                                                 .text_xs()
-                                                .text_color(BRAND_BLUE)
+                                                .text_color(BRAND_BLUE())
                                                 .whitespace_normal()
                                                 .child(url.clone())
                                         )
@@ -4150,7 +4195,7 @@ impl AppState {
                                                 .px_3()
                                                 .py_2()
                                                 .rounded_md()
-                                                .bg(BRAND_BLUE)
+                                                .bg(BRAND_BLUE())
                                                 .text_xs()
                                                 .text_color(gpui::white())
                                                 .cursor_pointer()
@@ -4171,23 +4216,23 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::ARTIFACTS)))
+                                    .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::ARTIFACTS)))
                                     .child(
                                         div()
                                             .px_3()
                                             .py_2()
                                             .rounded_md()
-                                            .bg(CANVAS_BG)
+                                            .bg(CANVAS_BG())
                                             .text_xs()
-                                            .text_color(PRIMARY_TEXT)
+                                            .text_color(PRIMARY_TEXT())
                                             .cursor_pointer()
                                             .on_mouse_down(gpui::MouseButton::Left, {
                                                 let task_dir = task_dir.clone();
@@ -4213,18 +4258,18 @@ impl AppState {
                                             .px_2()
                                             .py_2()
                                             .rounded_md()
-                                            .bg(CANVAS_BG)
+                                            .bg(CANVAS_BG())
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .text_color(PRIMARY_TEXT)
+                                                    .text_color(PRIMARY_TEXT())
                                                     .whitespace_normal()
                                                     .child(label)
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .text_color(BRAND_BLUE)
+                                                    .text_color(BRAND_BLUE())
                                                     .cursor_pointer()
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
                                                         this.reveal_file_in_finder(&absolute_path);
@@ -4238,7 +4283,7 @@ impl AppState {
                                 this.child(
                                     div()
                                         .text_xs()
-                                        .text_color(SECONDARY_TEXT)
+                                        .text_color(SECONDARY_TEXT())
                                         .child(t(lang, Translations::NO_ARTIFACTS_YET))
                                 )
                             })
@@ -4249,10 +4294,10 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::QUESTIONS)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::QUESTIONS)))
                             .when_some(pending_question.clone(), |this, question| {
                                 this.child(
                                     div()
@@ -4261,7 +4306,7 @@ impl AppState {
                                         .child(
                                             div()
                                                 .text_sm()
-                                                .text_color(PRIMARY_TEXT)
+                                                .text_color(PRIMARY_TEXT())
                                                 .whitespace_normal()
                                                 .child(question.prompt.clone())
                                         )
@@ -4277,10 +4322,10 @@ impl AppState {
                                                             .px_3()
                                                             .py_2()
                                                             .rounded_md()
-                                                            .bg(WORKSPACE_BG)
+                                                            .bg(WORKSPACE_BG())
                                                             .cursor_pointer()
                                                             .text_xs()
-                                                            .text_color(PRIMARY_TEXT)
+                                                            .text_color(PRIMARY_TEXT())
                                                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                                 this.continue_claude_with_answer(option.clone(), cx);
                                                             }))
@@ -4300,7 +4345,7 @@ impl AppState {
                                                         .px_2()
                                                         .py_2()
                                                         .rounded_md()
-                                                        .bg(CANVAS_BG)
+                                                        .bg(CANVAS_BG())
                                                         .track_focus(&question_focus)
                                                         .on_action(cx.listener({
                                                             let weak_question_editor = weak_question_editor.clone();
@@ -4321,7 +4366,7 @@ impl AppState {
                                                         .px_3()
                                                         .py_2()
                                                         .rounded_md()
-                                                        .bg(BRAND_BLUE)
+                                                        .bg(BRAND_BLUE())
                                                         .text_xs()
                                                         .text_color(gpui::white())
                                                         .cursor_pointer()
@@ -4346,7 +4391,7 @@ impl AppState {
                                 this.child(
                                     div()
                                         .text_xs()
-                                        .text_color(SECONDARY_TEXT)
+                                        .text_color(SECONDARY_TEXT())
                                         .child(t(lang, Translations::NO_PENDING_QUESTIONS))
                                 )
                             })
@@ -4357,14 +4402,14 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::LIVE_OUTPUT)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::LIVE_OUTPUT)))
                             .child(
                                 div()
                                     .text_sm()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .whitespace_normal()
                                     .child(live_output)
                             )
@@ -4375,14 +4420,14 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::COMMAND)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::COMMAND)))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(SECONDARY_TEXT)
+                                    .text_color(SECONDARY_TEXT())
                                     .whitespace_normal()
                                     .child(if run.command_preview.is_empty() {
                                         t(lang, Translations::COMMAND_NOT_STARTED).to_string()
@@ -4397,14 +4442,14 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::STDERR)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::STDERR)))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(if run.stderr_lines.is_empty() { SECONDARY_TEXT } else { Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 } })
+                                    .text_color(if run.stderr_lines.is_empty() { SECONDARY_TEXT() } else { Hsla { h: 0.0, s: 0.72, l: 0.52, a: 1.0 } })
                                     .whitespace_normal()
                                     .child(stderr_preview)
                             )
@@ -4415,10 +4460,10 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_xl()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
-                            .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TIMELINE)))
+                            .border_color(BORDER_LIGHT())
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::TIMELINE)))
                             .child(timeline)
                     )
             );
@@ -4440,14 +4485,14 @@ impl AppState {
                             .child(
                                 div()
                                     .text_sm()
-                                    .text_color(PRIMARY_TEXT)
+                                    .text_color(PRIMARY_TEXT())
                                     .font_weight(FontWeight::BOLD)
                                     .child(t(lang, Translations::NO_CLAUDE_RUN_YET))
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(MUTED_TEXT)
+                                    .text_color(MUTED_TEXT())
                                     .text_center()
                                     .whitespace_normal()
                                     .child(t(lang, Translations::CLAUDE_PANEL_HINT))
@@ -4465,7 +4510,7 @@ impl AppState {
             .w(px(8.0))
             .h_full()
             .cursor_col_resize()
-            .bg(BORDER_LIGHT)
+            .bg(BORDER_LIGHT())
             .on_drag(DraggedResizer, |_, _, _, cx| {
                 cx.new(|_| DraggedResizer)
             })
@@ -4489,8 +4534,8 @@ impl AppState {
     }
 
     fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let terminal_bg = WORKSPACE_BG;
-        let terminal_text = PRIMARY_TEXT;
+        let terminal_bg = WORKSPACE_BG();
+        let terminal_text = PRIMARY_TEXT();
         let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.45, a: 1.0 };
         let error_color = Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 };
         let width = self.terminal_width;
@@ -4520,26 +4565,26 @@ impl AppState {
                     .items_center()
                     .h(px(48.0))
                     .px_4()
-                    .bg(SURFACE_ELEVATED)
+                    .bg(SURFACE_ELEVATED())
                     .border_b_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .child(
                         div()
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(CANVAS_BG)
+                            .bg(CANVAS_BG())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .text_xs()
-                            .text_color(SECONDARY_TEXT)
+                            .text_color(SECONDARY_TEXT())
                             .child("TTY")
                     )
-                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TERMINAL)))
+                    .child(div().text_xs().text_color(MUTED_TEXT()).child(t(lang, Translations::TERMINAL)))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(TERTIARY_TEXT)
+                            .text_color(TERTIARY_TEXT())
                             .ml_auto()
                             .child(format!("{} | {}", work_dir, match &self.sandbox_backend {
                                 Backend::Docker(_) => "docker",
@@ -4567,9 +4612,9 @@ impl AppState {
                             .gap_2()
                             .p_3()
                             .rounded_lg()
-                            .bg(SURFACE_PANEL)
+                            .bg(SURFACE_PANEL())
                             .border_1()
-                            .border_color(BORDER_LIGHT)
+                            .border_color(BORDER_LIGHT())
                             .children(line.command.iter().map(|cmd| {
                                 div()
                                     .flex()
@@ -4591,9 +4636,9 @@ impl AppState {
                     .id("terminal-input-line")
                     .h(px(52.0))
                     .px_4()
-                    .bg(SURFACE_ELEVATED)
+                    .bg(SURFACE_ELEVATED())
                     .border_t_1()
-                    .border_color(BORDER_LIGHT)
+                    .border_color(BORDER_LIGHT())
                     .flex()
                     .items_center()
                     .gap_2()
@@ -4603,7 +4648,7 @@ impl AppState {
                             .flex_1()
                             .px_2()
                             .rounded_lg()
-                            .bg(CANVAS_BG)
+                            .bg(CANVAS_BG())
                             .track_focus(&terminal_focus)
                             .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
                                 if let Some(editor) = weak_terminal.upgrade() {

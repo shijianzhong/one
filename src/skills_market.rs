@@ -140,7 +140,7 @@ pub(crate) fn render_skills_market(
         .justify_between()
         .px_6()
         .py_5()
-        .bg(crate::CANVAS_BG)
+        .bg(crate::CANVAS_BG())
         .child(
             div()
                 .flex()
@@ -160,7 +160,7 @@ pub(crate) fn render_skills_market(
                                 .child(
                                     div()
                                         .text_lg()
-                                        .text_color(crate::PRIMARY_TEXT)
+                                        .text_color(crate::PRIMARY_TEXT())
                                         .font_weight(gpui::FontWeight::BOLD)
                                         .child(t(lang, Translations::SKILLS))
                                 )
@@ -169,26 +169,26 @@ pub(crate) fn render_skills_market(
                                         .px_2()
                                         .py_1()
                                         .rounded_lg()
-                                        .bg(crate::SURFACE_ELEVATED)
+                                        .bg(crate::SURFACE_ELEVATED())
                                         .border_1()
-                                        .border_color(crate::BORDER_LIGHT)
+                                        .border_color(crate::BORDER_LIGHT())
                                         .text_xs()
-                                        .text_color(crate::SECONDARY_TEXT)
+                                        .text_color(crate::SECONDARY_TEXT())
                                         .child("CAP")
                                 )
                         )
-                        .child(div().text_sm().text_color(crate::MUTED_TEXT).child(t(lang, Translations::SKILLS_HINT)))
+                        .child(div().text_sm().text_color(crate::MUTED_TEXT()).child(t(lang, Translations::SKILLS_HINT)))
                 )
                 .child(
                     div()
                         .px_3()
                         .py_2()
                         .rounded_lg()
-                        .bg(crate::SURFACE_ELEVATED)
+                        .bg(crate::SURFACE_ELEVATED())
                         .border_1()
-                        .border_color(crate::BORDER_LIGHT)
+                        .border_color(crate::BORDER_LIGHT())
                         .text_xs()
-                        .text_color(crate::MUTED_TEXT)
+                        .text_color(crate::MUTED_TEXT())
                         .child(format!("{} {}", state.installed.len(), t(lang, Translations::CAPABILITIES)))
                 ),
         )
@@ -202,12 +202,12 @@ pub(crate) fn render_skills_market(
                         .px_3()
                         .py_2()
                         .rounded_lg()
-                        .bg(crate::CANVAS_BG)
+                        .bg(crate::CANVAS_BG())
                         .border_1()
-                        .border_color(crate::BORDER_LIGHT)
+                        .border_color(crate::BORDER_LIGHT())
                         .cursor_pointer()
                         .text_xs()
-                        .text_color(crate::MUTED_TEXT)
+                        .text_color(crate::MUTED_TEXT())
                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                             this.main_view = crate::MainView::Chat;
                             cx.notify();
@@ -219,11 +219,11 @@ pub(crate) fn render_skills_market(
                         .px_3()
                         .py_2()
                         .rounded_lg()
-                        .bg(crate::SURFACE_ELEVATED)
+                        .bg(crate::SURFACE_ELEVATED())
                         .border_1()
-                        .border_color(crate::BRAND_BLUE)
+                        .border_color(crate::BRAND_BLUE())
                         .text_xs()
-                        .text_color(crate::PRIMARY_TEXT)
+                        .text_color(crate::PRIMARY_TEXT())
                         .font_weight(gpui::FontWeight::BOLD)
                         .child(t(lang, Translations::CAPABILITIES)),
                 )
@@ -232,7 +232,7 @@ pub(crate) fn render_skills_market(
                         .px_3()
                         .py_2()
                         .rounded_lg()
-                        .bg(crate::BRAND_BLUE)
+                        .bg(crate::BRAND_BLUE())
                         .cursor_pointer()
                         .text_sm()
                         .text_color(gpui::white())
@@ -259,11 +259,11 @@ pub(crate) fn render_skills_market(
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .bg(crate::SURFACE_ELEVATED)
+                .bg(crate::SURFACE_ELEVATED())
                 .border_1()
-                .border_color(crate::BORDER_LIGHT)
+                .border_color(crate::BORDER_LIGHT())
                 .text_sm()
-                .text_color(crate::SECONDARY_TEXT)
+                .text_color(crate::SECONDARY_TEXT())
                 .child(status),
         );
     }
@@ -273,9 +273,9 @@ pub(crate) fn render_skills_market(
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .bg(crate::SURFACE_ELEVATED)
+                .bg(crate::SURFACE_ELEVATED())
                 .border_1()
-                .border_color(crate::BORDER_LIGHT)
+                .border_color(crate::BORDER_LIGHT())
                 .text_sm()
                 .text_color(gpui::hsla(0.0, 0.8, 0.55, 1.0))
                 .child(error),
@@ -289,7 +289,7 @@ pub(crate) fn render_skills_market(
         .px_6()
         .pb_6()
         .pt_5()
-        .bg(crate::CANVAS_BG)
+        .bg(crate::CANVAS_BG())
         .id("skills-market-list")
         .overflow_scroll();
 
@@ -299,10 +299,10 @@ pub(crate) fn render_skills_market(
                 .p_4()
                 .rounded_xl()
                 .border_1()
-                .border_color(crate::BORDER_LIGHT)
-                .bg(crate::SURFACE_PANEL)
+                .border_color(crate::BORDER_LIGHT())
+                .bg(crate::SURFACE_PANEL())
                 .text_sm()
-                .text_color(crate::MUTED_TEXT)
+                .text_color(crate::MUTED_TEXT())
                 .child(t(lang, Translations::NO_SKILLS)),
         );
     } else {
@@ -313,10 +313,10 @@ pub(crate) fn render_skills_market(
                     .p_4()
                     .rounded_xl()
                     .border_1()
-                    .border_color(crate::BORDER_LIGHT)
-                    .bg(crate::SURFACE_PANEL)
+                    .border_color(crate::BORDER_LIGHT())
+                    .bg(crate::SURFACE_PANEL())
                     .cursor_pointer()
-                    .hover(|this| this.bg(crate::SURFACE_ELEVATED))
+                    .hover(|this| this.bg(crate::SURFACE_ELEVATED()))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                         this.skills_market.selected = Some(skill_for_click.clone());
                         this.skills_market.show_detail = true;
@@ -337,34 +337,34 @@ pub(crate) fn render_skills_market(
                                             .px_2()
                                             .py_1()
                                             .rounded_md()
-                                            .bg(crate::CANVAS_BG)
+                                            .bg(crate::CANVAS_BG())
                                             .border_1()
-                                            .border_color(crate::BORDER_LIGHT)
+                                            .border_color(crate::BORDER_LIGHT())
                                             .child(
                                                 match crate::icon_asset_path("skill") {
                                                     Some(path) => svg()
                                                         .path(path)
                                                         .size(px(14.0))
                                                         .flex_none()
-                                                        .text_color(crate::SECONDARY_TEXT)
+                                                        .text_color(crate::SECONDARY_TEXT())
                                                         .into_any_element(),
                                                     None => div()
                                                         .text_xs()
-                                                        .text_color(crate::SECONDARY_TEXT)
+                                                        .text_color(crate::SECONDARY_TEXT())
                                                         .child(crate::icon_label("skill"))
                                                         .into_any_element(),
                                                 }
                                             )
                                     )
-                                    .child(div().text_base().text_color(crate::PRIMARY_TEXT).font_weight(gpui::FontWeight::BOLD).child(skill.name))
+                                    .child(div().text_base().text_color(crate::PRIMARY_TEXT()).font_weight(gpui::FontWeight::BOLD).child(skill.name))
                             )
-                            .child(div().text_xs().text_color(crate::MUTED_TEXT).child(t(lang, Translations::DETAILS))),
+                            .child(div().text_xs().text_color(crate::MUTED_TEXT()).child(t(lang, Translations::DETAILS))),
                     )
                     .child(
                         div()
                             .mt_2()
                             .text_sm()
-                            .text_color(crate::SECONDARY_TEXT)
+                            .text_color(crate::SECONDARY_TEXT())
                             .child(skill.path.to_string_lossy().to_string()),
                     ),
             );
@@ -376,9 +376,9 @@ pub(crate) fn render_skills_market(
         .flex_col()
         .flex_1()
         .h_full()
-        .bg(crate::CANVAS_BG)
+        .bg(crate::CANVAS_BG())
         .child(header)
-        .child(div().h(px(1.0)).bg(crate::BORDER_LIGHT))
+        .child(div().h(px(1.0)).bg(crate::BORDER_LIGHT()))
         .child(grid)
         .into_any_element();
 
@@ -405,23 +405,23 @@ pub(crate) fn render_skills_market(
                         .gap_3()
                         .w(px(520.0))
                         .p_5()
-                        .bg(crate::SURFACE_PANEL)
+                        .bg(crate::SURFACE_PANEL())
                         .rounded_xl()
                         .border_1()
-                        .border_color(crate::BORDER_LIGHT)
+                        .border_color(crate::BORDER_LIGHT())
                         .shadow_md()
                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
                         .child(
                             div()
                                 .text_base()
-                                .text_color(crate::PRIMARY_TEXT)
+                                .text_color(crate::PRIMARY_TEXT())
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .child(title),
                         )
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(crate::SECONDARY_TEXT)
+                                .text_color(crate::SECONDARY_TEXT())
                                 .child(path_str),
                         )
                         .child(
@@ -438,8 +438,8 @@ pub(crate) fn render_skills_market(
                                         .justify_center()
                                     .rounded_lg()
                                         .border_1()
-                                        .border_color(crate::BORDER_LIGHT)
-                                    .bg(crate::CANVAS_BG)
+                                        .border_color(crate::BORDER_LIGHT())
+                                    .bg(crate::CANVAS_BG())
                                         .cursor_pointer()
                                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                             this.skills_market.show_detail = false;

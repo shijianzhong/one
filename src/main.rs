@@ -2370,29 +2370,16 @@ impl AppState {
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
-            let ws_bg = if is_active_ws {
-                SURFACE_ELEVATED()
-            } else {
-                WORKSPACE_BG()
-            };
             let ws_id = workspace.id;
 
             let ws_row = div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .px_3()
-                .py_2()
-                .rounded_xl()
-                .bg(ws_bg)
-                .border_1()
-                .border_color(if is_active_ws {
-                    BRAND_BLUE()
-                } else {
-                    BORDER_LIGHT()
-                })
+                .px_2()
+                .py_1()
                 .cursor_pointer()
-                .hover(|this| this.bg(GHOST_SURFACE_BG()))
+                .hover(|this| this.opacity(0.94))
                 .on_mouse_move(
                     cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
                         this.hovered_workspace_id = Some(ws_id);
@@ -2419,13 +2406,10 @@ impl AppState {
 
             let add_btn = div()
                 .text_sm()
-                .text_color(SECONDARY_TEXT())
-                .px_2()
+                .text_color(MUTED_TEXT())
+                .px_1()
                 .py_1()
-                .rounded_md()
-                .bg(GHOST_SURFACE_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
+                .opacity(0.72)
                 .cursor_pointer()
                 .id(format!("add-btn-{}", ws_id))
                 .on_mouse_down(
@@ -2443,12 +2427,9 @@ impl AppState {
 
             let more_btn = div()
                 .id(format!("more-btn-{}", ws_id))
-                .px_2()
+                .px_1()
                 .py_1()
-                .rounded_md()
-                .bg(GHOST_SURFACE_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
+                .opacity(0.72)
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(
@@ -2482,13 +2463,13 @@ impl AppState {
                 ws_row
                     .child(
                         div()
-                            .w(px(2.0))
-                            .h(px(22.0))
+                            .w(px(1.0))
+                            .h(px(18.0))
                             .rounded_full()
                             .bg(if is_active_ws {
                                 BRAND_BLUE()
                             } else {
-                                WORKSPACE_BG()
+                                BORDER_LIGHT()
                             }),
                     )
                     .child(if workspace.expanded {
@@ -2549,8 +2530,8 @@ impl AppState {
                     .ml_4()
                     .pl_3()
                     .border_l_1()
-                    .border_color(BORDER_LIGHT())
-                    .gap_2();
+                    .border_color(GHOST_SURFACE_BG())
+                    .gap_1();
 
                 for task in &workspace.tasks {
                     let is_active_task = active_task_id == Some(task.id)
@@ -2561,22 +2542,15 @@ impl AppState {
                         .items_center()
                         .gap_2()
                         .w_full()
-                        .px_3()
-                        .py_2()
-                        .rounded_xl()
+                        .px_2()
+                        .py_1()
                         .cursor_pointer()
                         .bg(if is_active_task {
-                            ACTIVE_BG()
+                            GHOST_SURFACE_BG()
                         } else {
-                            WORKSPACE_BG()
+                            NAV_BG()
                         })
-                        .border_1()
-                        .border_color(if is_active_task {
-                            BRAND_BLUE()
-                        } else {
-                            BORDER_LIGHT()
-                        })
-                        .hover(|this| this.bg(GHOST_SURFACE_BG()));
+                        .hover(|this| this.opacity(0.94));
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
@@ -2604,22 +2578,14 @@ impl AppState {
                                 if is_active_task {
                                     BRAND_BLUE()
                                 } else {
-                                    WORKSPACE_BG()
+                                    BORDER_LIGHT()
                                 },
                             ))
                             .child(
                                 div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(if is_active_task {
-                                        GHOST_SURFACE_BG()
-                                    } else {
-                                        NAV_BG()
-                                    })
                                     .text_xs()
                                     .text_color(if is_active_task {
-                                        ACCENT_TEXT()
+                                        TERTIARY_TEXT()
                                     } else {
                                         MUTED_TEXT()
                                     })

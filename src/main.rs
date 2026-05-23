@@ -2689,8 +2689,9 @@ impl AppState {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .px_6()
-                    .pb_4()
+                    .overflow_hidden()
+                    .px_8()
+                    .pb_5()
                     .child(
                         div()
                             .id("chat_container")
@@ -2698,11 +2699,17 @@ impl AppState {
                             .w_full()
                             .overflow_scroll()
                             .track_scroll(&scroll_handle)
-                            .pt_6()
-                            .pb_4()
-                            .child(self.render_chat_messages(&scroll_handle, window, cx)),
+                            .pt_8()
+                            .pb_6()
+                            .child(
+                                div().flex().justify_center().w_full().child(
+                                    div().w_full().max_w(px(940.0)).child(
+                                        self.render_chat_messages(&scroll_handle, window, cx),
+                                    ),
+                                ),
+                            ),
                     )
-                    .child(self.render_composer(window, cx)),
+                    .child(div().flex_none().child(self.render_composer(window, cx))),
             )
     }
 
@@ -2724,10 +2731,11 @@ impl AppState {
         let title = normalize_single_line_label(&title);
         div()
             .flex()
+            .flex_none()
             .items_center()
             .justify_between()
             .h(px(64.0))
-            .px_6()
+            .px_8()
             .bg(HEADER_BG())
             .border_b_1()
             .border_color(BORDER_LIGHT())
@@ -2735,42 +2743,33 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .gap_5()
+                    .gap_6()
                     .flex_1()
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
+                            .gap_2()
                             .overflow_hidden()
                             .child(
                                 div()
-                                    .text_size(px(20.0))
+                                    .text_size(px(18.0))
                                     .text_color(PRIMARY_TEXT())
                                     .font_weight(FontWeight::BOLD)
                                     .text_ellipsis()
                                     .child(title),
                             )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(GHOST_SURFACE_BG())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
-                                    .child(render_icon_element(
-                                        "assistant",
-                                        SECONDARY_TEXT(),
-                                        14.0,
-                                    )),
-                            ),
+                            .child(div().child(render_icon_element(
+                                "assistant",
+                                SECONDARY_TEXT(),
+                                13.0,
+                            ))),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_1()
+                            .gap_4()
                             .child(self.make_header_tab(t(lang, Translations::EXPLORER), true))
                             .child(
                                 self.make_placeholder_header_tab(t(lang, Translations::WORKFLOWS)),
@@ -2782,19 +2781,14 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
                             .id("export-btn")
-                            .px_3()
-                            .py_2()
-                            .rounded_xl()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
                             .cursor_pointer()
                             .text_xs()
                             .text_color(SECONDARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -2805,9 +2799,9 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .px_3()
-                            .py_2()
-                            .rounded_xl()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
                             .bg(GHOST_SURFACE_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
@@ -2849,38 +2843,30 @@ impl AppState {
 
     fn make_header_tab(&mut self, label: &'static str, active: bool) -> impl IntoElement {
         div()
-            .px_3()
-            .py_2()
-            .rounded_xl()
-            .bg(if active {
-                GHOST_SURFACE_BG()
+            .pb_3()
+            .border_b_1()
+            .border_color(if active {
+                BRAND_BLUE()
             } else {
-                HEADER_BG()
+                Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.0,
+                    a: 0.0,
+                }
             })
-            .border_1()
-            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
             .text_xs()
             .text_color(if active {
                 ACCENT_TEXT()
             } else {
                 SECONDARY_TEXT()
             })
-            .font_weight(if active {
-                FontWeight::BOLD
-            } else {
-                FontWeight::BOLD
-            })
+            .font_weight(FontWeight::BOLD)
             .child(label)
     }
 
     fn make_placeholder_header_tab(&mut self, label: &'static str) -> impl IntoElement {
         div()
-            .px_3()
-            .py_2()
-            .rounded_xl()
-            .bg(HEADER_BG())
-            .border_1()
-            .border_color(BORDER_LIGHT())
             .text_xs()
             .text_color(MUTED_TEXT())
             .opacity(0.88)
@@ -2896,15 +2882,13 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
-            .size(px(34.0))
-            .rounded_xl()
+            .size(px(30.0))
+            .rounded_full()
             .bg(if active {
-                SURFACE_ACCENT()
-            } else {
                 GHOST_SURFACE_BG()
+            } else {
+                HEADER_BG()
             })
-            .border_1()
-            .border_color(if active { BRAND_BLUE() } else { BORDER_LIGHT() })
             .flex()
             .items_center()
             .justify_center()
@@ -2923,11 +2907,11 @@ impl AppState {
             .child(render_icon_element(
                 icon_key,
                 if active {
-                    PRIMARY_TEXT()
+                    ACCENT_TEXT()
                 } else {
                     SECONDARY_TEXT()
                 },
-                14.0,
+                13.0,
             ))
     }
 
@@ -3482,7 +3466,7 @@ impl AppState {
 
         let mut message_list = div()
             .flex_col()
-            .gap_7()
+            .gap_8()
             .w_full()
             .children(messages.iter().enumerate().map(|(msg_index, msg)| {
                 let is_user_msg = is_user(&msg.role);
@@ -3509,14 +3493,13 @@ impl AppState {
                                 .flex_col()
                                 .items_end()
                                 .gap_2()
-                                .px_5()
-                                .py_4()
+                                .px_4()
+                                .py_3()
                                 .rounded_xl()
                                 .bg(bubble_bg)
                                 .border_1()
-                                .border_color(BRAND_BLUE())
-                                .shadow_md()
-                                .max_w(px(680.0))
+                                .border_color(SURFACE_ACCENT())
+                                .max_w(px(640.0))
                                 .min_w(px(35.0))
                                 .child(
                                     div()
@@ -3538,18 +3521,16 @@ impl AppState {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_3()
+                                .gap_2()
                                 .child(
                                     div()
-                                        .size(px(28.0))
-                                        .rounded_md()
-                                        .bg(GHOST_SURFACE_BG())
-                                        .border_1()
-                                        .border_color(BORDER_LIGHT())
+                                        .size(px(22.0))
+                                        .rounded_full()
+                                        .bg(AVATAR_BG())
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0))
+                                        .child(render_icon_element("assistant", gpui::white(), 11.0))
                                 )
                                 .child(
                                     div()
@@ -3563,14 +3544,8 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_start()
-                                .gap_3()
-                                .p_6()
-                                .rounded_xl()
-                                .bg(SURFACE_PANEL())
-                                .border_1()
-                                .border_color(BORDER_LIGHT())
-                                .shadow_md()
-                                .max_w(px(820.0))
+                                .gap_4()
+                                .max_w(px(780.0))
                                 .min_w(px(35.0))
                                 .w_full()
                                 .children({
@@ -3619,9 +3594,7 @@ impl AppState {
                                                             .px_2()
                                                             .py_1()
                                                             .rounded_md()
-                                                            .bg(SURFACE_ELEVATED())
-                                                            .border_1()
-                                                            .border_color(BORDER_LIGHT())
+                                                            .bg(GHOST_SURFACE_BG())
                                                             .cursor_pointer()
                                                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                                 let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
@@ -3787,14 +3760,8 @@ impl AppState {
         let mut content = div()
             .flex_col()
             .items_start()
-            .gap_3()
-            .p_6()
-            .rounded_xl()
-            .bg(SURFACE_PANEL())
-            .border_1()
-            .border_color(BORDER_LIGHT())
-            .shadow_md()
-            .max_w(px(820.0))
+            .gap_4()
+            .max_w(px(780.0))
             .min_w(px(35.0))
             .w_full();
         if waiting {
@@ -3808,9 +3775,7 @@ impl AppState {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(SURFACE_ELEVATED())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
+                            .bg(GHOST_SURFACE_BG())
                             .text_xs()
                             .text_color(BRAND_BLUE())
                             .child("LIVE"),
@@ -3836,18 +3801,16 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
                     .child(
                         div()
-                            .size(px(28.0))
-                            .rounded_md()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
+                            .size(px(22.0))
+                            .rounded_full()
+                            .bg(AVATAR_BG())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0)),
+                            .child(render_icon_element("assistant", gpui::white(), 11.0)),
                     )
                     .child(
                         div()
@@ -3885,18 +3848,16 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
                     .child(
                         div()
-                            .size(px(28.0))
-                            .rounded_md()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
+                            .size(px(22.0))
+                            .rounded_full()
+                            .bg(AVATAR_BG())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0))
+                            .child(render_icon_element("assistant", gpui::white(), 11.0))
                     )
                     .child(
                         div()
@@ -3910,14 +3871,8 @@ impl AppState {
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_3()
-                    .p_6()
-                    .rounded_xl()
-                    .bg(SURFACE_PANEL())
-                    .border_1()
-                    .border_color(BORDER_LIGHT())
-                    .shadow_md()
-                    .max_w(px(820.0))
+                    .gap_4()
+                    .max_w(px(780.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
@@ -3930,9 +3885,7 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(SURFACE_ELEVATED())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
+                                    .bg(GHOST_SURFACE_BG())
                                     .text_xs()
                                     .text_color(BRAND_BLUE())
                                     .child("LIVE")
@@ -3994,9 +3947,7 @@ impl AppState {
                                                         .px_2()
                                                         .py_1()
                                                         .rounded_md()
-                                                        .bg(SURFACE_ELEVATED())
-                                                        .border_1()
-                                                        .border_color(BORDER_LIGHT())
+                                                        .bg(GHOST_SURFACE_BG())
                                                         .cursor_pointer()
                                                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                             let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
@@ -4055,18 +4006,16 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
                     .child(
                         div()
-                            .size(px(28.0))
-                            .rounded_md()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
+                            .size(px(22.0))
+                            .rounded_full()
+                            .bg(AVATAR_BG())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(render_icon_element("assistant", ACCENT_TEXT(), 14.0)),
+                            .child(render_icon_element("assistant", gpui::white(), 11.0)),
                     )
                     .child(
                         div()
@@ -4080,14 +4029,8 @@ impl AppState {
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_3()
-                    .p_6()
-                    .rounded_xl()
-                    .bg(SURFACE_PANEL())
-                    .border_1()
-                    .border_color(BORDER_LIGHT())
-                    .shadow_md()
-                    .max_w(px(820.0))
+                    .gap_4()
+                    .max_w(px(780.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
@@ -4100,9 +4043,7 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(SURFACE_ELEVATED())
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT())
+                                    .bg(GHOST_SURFACE_BG())
                                     .text_xs()
                                     .text_color(BRAND_BLUE())
                                     .child("WAIT"),
@@ -4152,26 +4093,26 @@ impl AppState {
 
         div()
             .flex()
-            .flex_col()
-            .gap_3()
-            .pt_2()
-            .pb_3()
+            .justify_center()
+            .pt_3()
+            .pb_5()
             .child(
                 div()
                     .flex_col()
+                    .w_full()
+                    .max_w(px(940.0))
                     .gap_3()
-                    .px_3()
-                    .py_3()
+                    .px_4()
+                    .py_4()
                     .rounded_xl()
                     .bg(FLOATING_PANEL_BG())
                     .border_1()
                     .border_color(BORDER_LIGHT())
-                    .shadow_md()
                     .child(
                         div()
                             .flex()
                             .items_end()
-                            .gap_3()
+                            .gap_2()
                             .px_3()
                             .py_3()
                             .rounded_xl()
@@ -4180,9 +4121,8 @@ impl AppState {
                             .border_color(BORDER_LIGHT())
                             .child(
                                 div()
-                                    .size(px(34.0))
-                                    .rounded_xl()
-                                    .bg(GHOST_SURFACE_BG())
+                                    .size(px(30.0))
+                                    .rounded_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -4253,9 +4193,8 @@ impl AppState {
                             )
                             .child(
                                 div()
-                                    .size(px(34.0))
-                                    .rounded_xl()
-                                    .bg(GHOST_SURFACE_BG())
+                                    .size(px(30.0))
+                                    .rounded_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -4263,13 +4202,13 @@ impl AppState {
                             )
                             .child(
                                 div()
-                                    .px_5()
-                                    .py_3()
+                                    .px_4()
+                                    .py_2()
                                     .rounded_xl()
                                     .bg(send_bg)
                                     .cursor_pointer()
                                     .text_color(gpui::white())
-                                    .text_base()
+                                    .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if this.request_in_flight {

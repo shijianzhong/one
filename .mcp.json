@@ -4,7 +4,7 @@
       "transport": "http",
       "url": "https://stitch.googleapis.com/mcp",
       "headers": {
-        "X-Goog-Api-Key": ""
+        "X-Goog-Api-Key": "GCP_API_KEY_PLACEHOLDER"
       }
     }
   }

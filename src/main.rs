@@ -1,6 +1,6 @@
 use gpui::{
     svg,
-    App, AppContext as _, Bounds, Context, DragMoveEvent,
+    AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent,
     Hsla, IntoElement, ParentElement, Point, Pixels, px, size, Render,
     Styled, StatefulInteractiveElement, Window, WindowOptions, WindowBounds, div, prelude::*,
     Focusable, ScrollHandle,
@@ -59,31 +59,88 @@ gpui::actions!(
         SendMessage,
         ToggleLang,
         ExportChat,
-        OpenRegister,
-        SubmitRegister,
-        CancelRegister,
     ]
 );
 
-const NAV_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.98, a: 1.0 };
-const CARD_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 };
-const PRIMARY_TEXT: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.07, a: 1.0 };
-const SECONDARY_TEXT: Hsla = Hsla { h: 0.0, s: 0.03, l: 0.35, a: 1.0 };
-const TERTIARY_TEXT: Hsla = Hsla { h: 0.0, s: 0.02, l: 0.60, a: 1.0 };
-const MUTED_TEXT: Hsla = Hsla { h: 0.0, s: 0.02, l: 0.55, a: 1.0 };
-const BRAND_BLUE: Hsla = Hsla { h: 0.62, s: 1.0, l: 0.52, a: 1.0 };
-const BORDER_LIGHT: Hsla = Hsla { h: 0.0, s: 0.03, l: 0.90, a: 1.0 };
-const ACTIVE_BG: Hsla = Hsla { h: 0.62, s: 0.3, l: 0.95, a: 1.0 };
-const WORKSPACE_BG: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
+const NAV_BG: Hsla = Hsla { h: 0.61, s: 0.42, l: 0.08, a: 1.0 };
+const CARD_BG: Hsla = Hsla { h: 0.61, s: 0.31, l: 0.12, a: 1.0 };
+const PRIMARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.78, l: 0.93, a: 1.0 };
+const SECONDARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.26, l: 0.76, a: 1.0 };
+const TERTIARY_TEXT: Hsla = Hsla { h: 0.61, s: 0.16, l: 0.61, a: 1.0 };
+const MUTED_TEXT: Hsla = Hsla { h: 0.61, s: 0.14, l: 0.50, a: 1.0 };
+const BRAND_BLUE: Hsla = Hsla { h: 0.61, s: 0.83, l: 0.54, a: 1.0 };
+const BORDER_LIGHT: Hsla = Hsla { h: 0.61, s: 0.22, l: 0.24, a: 1.0 };
+const ACTIVE_BG: Hsla = Hsla { h: 0.61, s: 0.39, l: 0.19, a: 1.0 };
+const WORKSPACE_BG: Hsla = Hsla { h: 0.61, s: 0.34, l: 0.10, a: 1.0 };
+const CANVAS_BG: Hsla = Hsla { h: 0.61, s: 0.33, l: 0.10, a: 1.0 };
+const SURFACE_ELEVATED: Hsla = Hsla { h: 0.61, s: 0.27, l: 0.15, a: 1.0 };
+const SURFACE_ACCENT: Hsla = Hsla { h: 0.61, s: 0.55, l: 0.18, a: 1.0 };
+const SURFACE_PANEL: Hsla = Hsla { h: 0.61, s: 0.24, l: 0.13, a: 1.0 };
+const USER_BUBBLE_BG: Hsla = Hsla { h: 0.61, s: 0.76, l: 0.52, a: 1.0 };
+const ASSISTANT_BUBBLE_BG: Hsla = Hsla { h: 0.61, s: 0.24, l: 0.14, a: 1.0 };
+const INPUT_BG: Hsla = Hsla { h: 0.61, s: 0.25, l: 0.17, a: 1.0 };
 
-const NAV_WIDTH: f32 = 240.0;
+const NAV_WIDTH: f32 = 280.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MainView {
+pub(crate) enum MainView {
     Chat,
     SkillsMarket,
+}
+
+pub(crate) fn icon_label(key: &str) -> &'static str {
+    match key {
+        "workspace" => "WS",
+        "capabilities" => "CP",
+        "models" => "ML",
+        "settings" => "ST",
+        "support" => "SP",
+        "assistant" => "ONE",
+        "folder" => "DIR",
+        "share" => "SHR",
+        "terminal" => "TTY",
+        "run-panel" => "RUN",
+        "add" => "ADD",
+        "mic" => "MIC",
+        "skill" => "SKL",
+        _ => "UI",
+    }
+}
+
+pub(crate) fn icon_asset_path(key: &str) -> Option<&'static str> {
+    match key {
+        "workspace" => Some("thems/workspace.svg"),
+        "capabilities" => Some("thems/capabilities.svg"),
+        "models" => Some("thems/models.svg"),
+        "assistant" => Some("thems/one-ai.svg"),
+        "folder" => Some("folder.svg"),
+        "share" => Some("thems/attachment.svg"),
+        "terminal" => Some("thems/cmd.svg"),
+        "run-panel" => Some("thems/side-panel.svg"),
+        "add" => Some("thems/attachment.svg"),
+        "mic" => Some("thems/mic.svg"),
+        "skill" => Some("thems/upload.svg"),
+        "upload" => Some("thems/upload.svg"),
+        _ => None,
+    }
+}
+
+fn render_icon_element(icon_key: &str, color: Hsla, size_px: f32) -> AnyElement {
+    match icon_asset_path(icon_key) {
+        Some(path) => svg()
+            .path(path)
+            .size(px(size_px))
+            .flex_none()
+            .text_color(color)
+            .into_any_element(),
+        None => div()
+            .text_xs()
+            .text_color(color)
+            .child(icon_label(icon_key))
+            .into_any_element(),
+    }
 }
 
 struct AppState {
@@ -103,11 +160,6 @@ struct AppState {
     show_export_dialog: bool,
     exported_json: Option<String>,
     exported_md: Option<String>,
-    // Register dialog
-    show_register_dialog: bool,
-    editing_username: String,
-    editing_email: String,
-    editing_password: String,
     model_base_url: String,
     model_api_key: String,
     model_name: String,
@@ -1064,11 +1116,6 @@ impl AppState {
             show_export_dialog: false,
             exported_json: None,
             exported_md: None,
-            // Register dialog
-            show_register_dialog: false,
-            editing_username: "".to_string(),
-            editing_email: "".to_string(),
-            editing_password: "".to_string(),
             model_base_url: config.model_base_url,
             model_api_key: config.model_api_key,
             model_name: config.model_name,
@@ -1760,26 +1807,6 @@ impl AppState {
         }
     }
 
-    fn open_register(&mut self, _: &OpenRegister, _: &mut Window, cx: &mut Context<Self>) {
-        self.editing_username = "".to_string();
-        self.editing_email = "".to_string();
-        self.editing_password = "".to_string();
-        self.show_register_dialog = true;
-        cx.notify();
-    }
-
-    fn submit_register(&mut self, _: &SubmitRegister, _: &mut Window, cx: &mut Context<Self>) {
-        // Handle registration logic here (e.g., API call, validation)
-        // For now, just close the dialog
-        self.show_register_dialog = false;
-        cx.notify();
-    }
-
-    fn cancel_register(&mut self, _: &CancelRegister, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_register_dialog = false;
-        cx.notify();
-    }
-
 }
 
 impl Render for AppState {
@@ -1806,9 +1833,6 @@ impl Render for AppState {
             })
             .when(self.show_model_config_dialog, |this| {
                 this.child(self.render_model_config_dialog(window, cx))
-            })
-            .when(self.show_register_dialog, |this| {
-                this.child(self.render_register_dialog(window, cx))
             })
             .when(self.show_export_dialog, |this| {
                 this.child(self.render_export_dialog(cx))
@@ -1846,17 +1870,44 @@ impl AppState {
         div()
             .flex()
             .items_center()
-            .h(px(40.0))
-            .px_4()
-            .child(div().text_base().text_color(PRIMARY_TEXT).font_weight(FontWeight::BOLD).child(t(lang, Translations::NAV_ONE)))
+            .justify_between()
+            .h(px(64.0))
+            .px_5()
             .child(
                 div()
-                    .ml_3()
-                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(24.0))
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child(t(lang, Translations::NAV_ONE))
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT)
+                            .child("AI Assistant")
+                    )
+            )
+            .child(
+                div()
+                    .px_3()
                     .py_1()
-                    .rounded_md()
+                    .rounded_lg()
+                    .bg(SURFACE_ELEVATED)
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
                     .text_xs()
-                    .text_color(MUTED_TEXT)
+                    .text_color(SECONDARY_TEXT)
                     .cursor_pointer()
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                         this.toggle_lang(&ToggleLang, _window, cx);
@@ -1867,33 +1918,84 @@ impl AppState {
 
     fn render_nav_buttons(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
+        let skills_active = matches!(self.main_view, MainView::SkillsMarket);
+        let models_active = self.show_model_config_dialog;
         let mut nav = div()
             .flex()
             .flex_col()
-            .gap_1()
-            .p_2();
+            .gap_2()
+            .p_4()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(MUTED_TEXT)
+                    .font_weight(FontWeight::BOLD)
+                    .child("GLOBAL")
+            );
 
-        nav = nav.child(self.make_nav_item(t(lang, Translations::NEW_WORKSPACE).to_string(), "⌘N".to_string(), cx));
-        nav = nav.child(self.make_nav_item(t(lang, Translations::SKILLS).to_string(), "⌘K".to_string(), cx));
-        nav = nav.child(self.make_nav_item(t(lang, Translations::MODEL_CONFIG).to_string(), "⌘M".to_string(), cx));
-        nav = nav.child(self.make_nav_register_item(cx));
+        nav = nav.child(self.make_nav_item(
+            t(lang, Translations::NEW_WORKSPACE).to_string(),
+            t(lang, Translations::WORKSPACES).to_string(),
+            "⌘N".to_string(),
+            "workspace",
+            false,
+            cx,
+        ));
+        nav = nav.child(self.make_nav_item(
+            t(lang, Translations::CAPABILITIES).to_string(),
+            t(lang, Translations::SKILLS).to_string(),
+            "⌘K".to_string(),
+            "capabilities",
+            skills_active,
+            cx,
+        ));
+        nav = nav.child(self.make_nav_item(
+            t(lang, Translations::MODELS).to_string(),
+            t(lang, Translations::MODEL_CONFIG).to_string(),
+            "⌘M".to_string(),
+            "models",
+            models_active,
+            cx,
+        ));
+        nav = nav.child(self.make_placeholder_nav_item(
+            t(lang, Translations::SETTINGS).to_string(),
+            t(lang, Translations::PLACEHOLDER_ENTRY).to_string(),
+            "settings",
+        ));
+        nav = nav.child(self.make_placeholder_nav_item(
+            t(lang, Translations::SUPPORT).to_string(),
+            t(lang, Translations::PLACEHOLDER_ENTRY).to_string(),
+            "support",
+        ));
 
         nav
     }
 
-    fn make_nav_item(&mut self, label: String, shortcut: String, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_new_workspace = label == t(self.current_lang, Translations::NEW_WORKSPACE);
-        let is_skills = label == t(self.current_lang, Translations::SKILLS);
-        let is_model_config = label == t(self.current_lang, Translations::MODEL_CONFIG);
+    fn make_nav_item(
+        &mut self,
+        title: String,
+        subtitle: String,
+        shortcut: String,
+        icon_key: &'static str,
+        active: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_new_workspace = title == t(self.current_lang, Translations::NEW_WORKSPACE);
+        let is_skills = title == t(self.current_lang, Translations::CAPABILITIES);
+        let is_model_config = title == t(self.current_lang, Translations::MODELS);
 
         div()
             .flex()
-            .items_center()
+            .items_start()
             .gap_3()
             .px_3()
-            .py_2()
-            .rounded_md()
+            .py_3()
+            .rounded_lg()
+            .bg(if active { SURFACE_ACCENT } else { SURFACE_ELEVATED })
+            .border_1()
+            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
             .cursor_pointer()
+            .hover(|this| this.bg(SURFACE_ACCENT))
             .when(is_new_workspace, |this| {
                 this.on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                     this.handle_new_workspace_click(cx);
@@ -1909,25 +2011,86 @@ impl AppState {
                     this.open_model_config_dialog(&OpenModelConfigDialog, _window, cx);
                 }))
             })
-            .child(div().text_sm().text_color(SECONDARY_TEXT).child(label))
-            .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child(shortcut))
+            .child(
+                self.make_icon_slot(icon_key, active)
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(if active { PRIMARY_TEXT } else { PRIMARY_TEXT })
+                            .font_weight(FontWeight::BOLD)
+                            .child(title)
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if active { SECONDARY_TEXT } else { MUTED_TEXT })
+                            .child(subtitle)
+                    )
+            )
+            .child(div().text_xs().text_color(if active { SECONDARY_TEXT } else { MUTED_TEXT }).child(shortcut))
     }
 
-    fn make_nav_register_item(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let lang = self.current_lang;
+    fn make_placeholder_nav_item(&mut self, title: String, subtitle: String, icon_key: &'static str) -> impl IntoElement {
         div()
             .flex()
-            .items_center()
+            .items_start()
             .gap_3()
             .px_3()
-            .py_2()
+            .py_3()
+            .rounded_lg()
+            .bg(WORKSPACE_BG)
+            .border_1()
+            .border_color(BORDER_LIGHT)
+            .opacity(0.82)
+            .child(self.make_icon_slot(icon_key, false))
+            .child(
+                div()
+                    .flex_1()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_sm().text_color(SECONDARY_TEXT).child(title))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_xs().text_color(MUTED_TEXT).child(subtitle))
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(CANVAS_BG)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .text_xs()
+                                    .text_color(MUTED_TEXT)
+                                    .child("SOON")
+                            )
+                    )
+            )
+    }
+
+    fn make_icon_slot(&mut self, icon_key: &'static str, active: bool) -> impl IntoElement {
+        div()
+            .mt(px(1.0))
+            .px_2()
+            .py_1()
             .rounded_md()
-            .cursor_pointer()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                this.open_register(&OpenRegister, _window, cx);
-            }))
-            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::REGISTER)))
-            .child(div().text_xs().text_color(MUTED_TEXT).ml_auto().child("⌘R"))
+            .bg(if active { CANVAS_BG } else { WORKSPACE_BG })
+            .border_1()
+            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
+            .child(render_icon_element(
+                icon_key,
+                if active { BRAND_BLUE } else { SECONDARY_TEXT },
+                14.0,
+            ))
     }
 
     fn pick_folder_dialog() -> Option<(PathBuf, String)> {
@@ -1984,7 +2147,6 @@ impl AppState {
     }
 
     fn render_task_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Ensure default workspace exists before rendering
         self.ensure_default_workspace();
 
         let lang = self.current_lang;
@@ -1996,31 +2158,43 @@ impl AppState {
             .flex()
             .flex_col()
             .flex_1()
-            .p_3()
+            .px_4()
+            .pb_4()
             .id("task-list")
             .overflow_scroll()
+            .gap_2()
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                // Close dropdown when clicking elsewhere
                 this.delete_confirm_workspace_id = None;
             }));
 
-        result = result.child(div().text_xs().text_color(MUTED_TEXT).mb_3().child(t(lang, Translations::WORKSPACES_HEADING)));
+        result = result
+            .child(
+                div()
+                    .pt_2()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(MUTED_TEXT)
+                    .font_weight(FontWeight::BOLD)
+                    .child(t(lang, Translations::WORKSPACES_HEADING))
+            );
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
-            let ws_bg = if is_active_ws { CARD_BG } else { CARD_BG };
+            let ws_bg = if is_active_ws { SURFACE_ELEVATED } else { WORKSPACE_BG };
             let ws_id = workspace.id;
 
-            // Workspace row - clicking toggles expand/collapse
             let ws_row = div()
                 .flex()
                 .items_center()
                 .gap_2()
                 .px_3()
-                .py_2()
-                .rounded_md()
+                .py_3()
+                .rounded_lg()
                 .bg(ws_bg)
+                .border_1()
+                .border_color(if is_active_ws { BRAND_BLUE } else { BORDER_LIGHT })
                 .cursor_pointer()
+                .hover(|this| this.bg(SURFACE_ELEVATED))
                 .on_mouse_move(cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
                     this.hovered_workspace_id = Some(ws_id);
                 }))
@@ -2032,20 +2206,20 @@ impl AppState {
                     }
                 }));
 
-            // Workspace expand/collapse icon - visual only, click handled by ws_row
             let expand_btn = div()
-                .text_base()
+                .text_sm()
                 .text_color(MUTED_TEXT)
                 .px_1()
                 .py_1()
                 .size(px(16.0));
-            // Add button (+)
-            // Add button (+) - stops propagation so only adds task, doesn't toggle expand
+
             let add_btn = div()
-                .text_base()
-                .text_color(MUTED_TEXT)
-                .px_1()
+                .text_sm()
+                .text_color(SECONDARY_TEXT)
+                .px_2()
                 .py_1()
+                .rounded_md()
+                .bg(SURFACE_ELEVATED)
                 .cursor_pointer()
                 .id(format!("add-btn-{}", ws_id))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -2060,6 +2234,10 @@ impl AppState {
 
             let more_btn = div()
                 .id(format!("more-btn-{}", ws_id))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(SURFACE_ELEVATED)
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
                     cx.stop_propagation();
                     this.delete_confirm_workspace_id = Some(ws_id);
@@ -2073,12 +2251,18 @@ impl AppState {
                         .text_color(MUTED_TEXT),
                 );
 
-            let action_div = div().ml_auto().flex().items_center().gap_3()
+            let action_div = div().ml_auto().flex().items_center().gap_2()
                 .child(more_btn)
                 .child(add_btn.child("+"));
 
             result = result.child(
                 ws_row.child(
+                    div()
+                        .w(px(2.0))
+                        .h(px(22.0))
+                        .rounded_full()
+                        .bg(if is_active_ws { BRAND_BLUE } else { WORKSPACE_BG })
+                ).child(
                     if workspace.expanded {
                         expand_btn.child(
                             svg()
@@ -2101,20 +2285,36 @@ impl AppState {
                         .path("folder.svg")
                         .size(px(16.0))
                         .flex_none()
-                        .text_color(MUTED_TEXT)
+                        .text_color(if is_active_ws { BRAND_BLUE } else { SECONDARY_TEXT })
                 ).child(
-                    div().text_sm().ml_1().text_color(if is_active_ws { BRAND_BLUE } else { PRIMARY_TEXT }).child(ws_label)
+                    if is_active_ws {
+                        div()
+                            .text_sm()
+                            .ml_1()
+                            .text_color(PRIMARY_TEXT)
+                            .font_weight(FontWeight::BOLD)
+                            .child(ws_label)
+                    } else {
+                        div()
+                            .text_sm()
+                            .ml_1()
+                            .text_color(SECONDARY_TEXT)
+                            .child(ws_label)
+                    }
                 ).child(
                     div().ml_auto().flex().items_center().gap_3()
                         .child(action_div)
                 )
             );
 
-            // Tasks under workspace (if expanded) - each workspace's tasks are in their own scrollable container
             if workspace.expanded {
                 let mut tasks_container = div()
                     .flex_col()
-                    .ml_2();
+                    .ml_4()
+                    .pl_3()
+                    .border_l_1()
+                    .border_color(BORDER_LIGHT)
+                    .gap_1();
 
                 for task in &workspace.tasks {
                     let is_active_task = active_task_id == Some(task.id) && active_workspace_id == Some(workspace.id);
@@ -2126,9 +2326,12 @@ impl AppState {
                         .w_full()
                         .px_3()
                         .py_2()
-                        .ml_2()
-                        .rounded_md()
-                        .cursor_pointer();
+                        .rounded_lg()
+                        .cursor_pointer()
+                        .bg(if is_active_task { ACTIVE_BG } else { WORKSPACE_BG })
+                        .border_1()
+                        .border_color(if is_active_task { BRAND_BLUE } else { BORDER_LIGHT })
+                        .hover(|this| this.bg(SURFACE_ELEVATED));
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
@@ -2149,9 +2352,30 @@ impl AppState {
                         }));
 
                     tasks_container = tasks_container.child(
-                        task_div.child(
-                            div().flex_1().overflow_hidden().text_size(px(10.0)).text_color(if is_active_task { BRAND_BLUE } else { PRIMARY_TEXT }).text_ellipsis().child(title_display.clone())
-                        ).child(
+                        task_div
+                        .child(
+                            div()
+                                .w(px(2.0))
+                                .h(px(18.0))
+                                .rounded_full()
+                                .bg(if is_active_task { BRAND_BLUE } else { WORKSPACE_BG })
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if is_active_task { BRAND_BLUE } else { MUTED_TEXT })
+                                .child("[task]")
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .text_sm()
+                                .text_color(if is_active_task { PRIMARY_TEXT } else { SECONDARY_TEXT })
+                                .text_ellipsis()
+                                .child(title_display.clone())
+                        )
+                        .child(
                             div()
                                 .ml_auto()
                                 .text_xs()
@@ -2220,6 +2444,7 @@ impl AppState {
             .flex_1()
             .h_full()
             .min_w(px(350.0))
+            .bg(CANVAS_BG)
             .child(self.render_chat_header(title, work_dir, sidebar_visible, terminal_visible, cx))
             .child(
                 div()
@@ -2228,7 +2453,8 @@ impl AppState {
                     .w_full()
                     .overflow_scroll()
                     .track_scroll(&scroll_handle)
-                    .p_4()
+                    .px_6()
+                    .py_5()
                     .child(self.render_chat_messages(&scroll_handle, window, cx))
             )
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
@@ -2246,41 +2472,113 @@ impl AppState {
         let title = normalize_single_line_label(&title);
         div()
             .flex()
-            .items_center()
-            .justify_between()
-            .h(px(40.0))
-            .px_4()
-            .bg(NAV_BG)
+            .flex_col()
+            .gap_3()
+            .px_6()
+            .py_5()
+            .bg(CANVAS_BG)
+            .border_b_1()
+            .border_color(BORDER_LIGHT)
             .child(
                 div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .text_base()
-                    .text_color(PRIMARY_TEXT)
-                    .text_ellipsis()
-                    .child(title)
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_lg()
+                                            .text_color(PRIMARY_TEXT)
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_ellipsis()
+                                            .child(title)
+                                    )
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_lg()
+                                            .bg(SURFACE_ELEVATED)
+                                            .border_1()
+                                            .border_color(BORDER_LIGHT)
+                                    .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(self.make_header_tab(t(lang, Translations::EXPLORER), true))
+                                    .child(self.make_placeholder_header_tab(t(lang, Translations::WORKFLOWS)))
+                                    .child(self.make_placeholder_header_tab(t(lang, Translations::API)))
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_lg()
+                                    .bg(SURFACE_ELEVATED)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .text_xs()
+                                    .text_color(TERTIARY_TEXT)
+                                    .child(format!("[path] {}", work_dir))
+                            )
+                            .child(self.make_chat_header_button("folder", false, None, None, cx))
+                            .child(self.make_chat_header_button("share", false, None, None, cx))
+                            .child(self.make_chat_header_button("terminal", terminal_visible, Some("terminal"), None, cx))
+                            .child(self.make_chat_header_button("run-panel", sidebar_visible, Some("sidebar"), None, cx))
+                            .child(
+                                div()
+                                    .size(px(34.0))
+                                    .rounded_full()
+                                    .bg(SURFACE_ACCENT)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(PRIMARY_TEXT)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("U")
+                            )
+                    )
             )
             .child(
                 div()
                     .flex()
-                    .flex_none()
-                    .gap_3()
                     .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(TERTIARY_TEXT)
-                            .child(format!("📁 {}", work_dir))
-                    )
+                    .gap_2()
                     .child(
                         div()
                             .id("export-btn")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
+                            .px_3()
+                            .py_2()
+                            .rounded_lg()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(MUTED_TEXT)
+                            .text_color(SECONDARY_TEXT)
                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                 this.export_chat(&ExportChat, _window, cx);
                             }))
@@ -2288,59 +2586,89 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .id("terminal-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .bg(if terminal_visible { Hsla { h: 0.0, s: 0.0, l: 0.85, a: 1.0 } } else { CARD_BG })
-                            .on_click(cx.listener(|this, _event, _window, _cx| {
-                                this.terminal_visible = !this.terminal_visible;
-                            }))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if terminal_visible { BRAND_BLUE } else { MUTED_TEXT })
-                                    .child(">_")
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if terminal_visible { MUTED_TEXT } else { CARD_BG })
-                                    .child("×")
-                            )
-                    )
-                    .child(
-                        div()
-                            .id("sidebar-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .bg(if sidebar_visible { Hsla { h: 0.0, s: 0.0, l: 0.85, a: 1.0 } } else { CARD_BG })
-                            .on_click(cx.listener(|this, _event, _window, _cx| {
-                                this.sidebar_visible = !this.sidebar_visible;
-                            }))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if sidebar_visible { BRAND_BLUE } else { MUTED_TEXT })
-                                    .child("☰")
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if sidebar_visible { MUTED_TEXT } else { CARD_BG })
-                                    .child("×")
-                            )
+                            .px_3()
+                            .py_2()
+                            .rounded_lg()
+                            .bg(WORKSPACE_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .text_xs()
+                            .text_color(MUTED_TEXT)
+                            .child(format!("{} · SOON", t(lang, Translations::PLACEHOLDER_ENTRY)))
                     )
             )
+    }
+
+    fn make_header_tab(&mut self, label: &'static str, active: bool) -> impl IntoElement {
+        if active {
+            div()
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(SURFACE_ELEVATED)
+                .border_1()
+                .border_color(BRAND_BLUE)
+                .text_xs()
+                .text_color(PRIMARY_TEXT)
+                .font_weight(FontWeight::BOLD)
+                .child(label)
+        } else {
+            div()
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(CANVAS_BG)
+                .border_1()
+                .border_color(BORDER_LIGHT)
+                .text_xs()
+                .text_color(MUTED_TEXT)
+                .child(label)
+        }
+    }
+
+    fn make_placeholder_header_tab(&mut self, label: &'static str) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .bg(CANVAS_BG)
+            .border_1()
+            .border_color(BORDER_LIGHT)
+            .text_xs()
+            .text_color(MUTED_TEXT)
+            .opacity(0.82)
+            .child(format!("{label} · SOON"))
+    }
+
+    fn make_chat_header_button(
+        &mut self,
+        icon_key: &'static str,
+        active: bool,
+        action: Option<&'static str>,
+        _unused: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .bg(if active { SURFACE_ACCENT } else { SURFACE_ELEVATED })
+            .border_1()
+            .border_color(if active { BRAND_BLUE } else { BORDER_LIGHT })
+            .cursor_pointer()
+            .text_xs()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                match action {
+                    Some("terminal") => this.terminal_visible = !this.terminal_visible,
+                    Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
+                    _ => {}
+                }
+            }))
+            .child(render_icon_element(
+                icon_key,
+                if active { PRIMARY_TEXT } else { SECONDARY_TEXT },
+                14.0,
+            ))
     }
 
     fn render_model_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2392,8 +2720,8 @@ impl AppState {
                     .gap_4()
                     .w(px(400.0))
                     .p_5()
-                    .bg(CARD_BG)
-                    .rounded_lg()
+                    .bg(SURFACE_PANEL)
+                    .rounded_xl()
                     .border_1()
                     .border_color(BORDER_LIGHT)
                     .shadow_md()
@@ -2417,10 +2745,10 @@ impl AppState {
                                     .items_center()
                                     .h(px(36.0))
                                     .px_3()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
+                                    .bg(CANVAS_BG)
                                     .track_focus(&model_name_focus)
                                     .child(model_name_editor.clone()),
                             )
@@ -2437,10 +2765,10 @@ impl AppState {
                                     .items_center()
                                     .h(px(36.0))
                                     .px_3()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
+                                    .bg(CANVAS_BG)
                                     .track_focus(&base_url_focus)
                                     .child(base_url_editor.clone()),
                             )
@@ -2457,10 +2785,10 @@ impl AppState {
                                     .items_center()
                                     .h(px(36.0))
                                     .px_3()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
+                                    .bg(CANVAS_BG)
                                     .track_focus(&api_key_focus)
                                     .child(api_key_editor.clone()),
                             )
@@ -2477,9 +2805,10 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
+                                    .bg(CANVAS_BG)
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         this.cancel_model_config(&CancelModelConfig, _window, cx);
@@ -2493,7 +2822,7 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .bg(BRAND_BLUE)
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
@@ -2509,175 +2838,6 @@ impl AppState {
                                         this.save_model_config(&SaveModelConfig, _window, cx);
                                     }))
                                     .child(div().text_sm().text_color(gpui::white()).child(t(lang, Translations::SAVE)))
-                            )
-                    )
-            )
-    }
-
-    fn render_register_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let lang = self.current_lang;
-        let username_editor = window.use_keyed_state("register_username_editor", cx, |window, cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_text(self.editing_username.clone(), window, cx);
-            editor
-        });
-
-        let email_editor = window.use_keyed_state("register_email_editor", cx, |window, cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_text(self.editing_email.clone(), window, cx);
-            editor
-        });
-
-        let password_editor = window.use_keyed_state("register_password_editor", cx, |window, cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("••••••••", window, cx);
-            editor.set_text(self.editing_password.clone(), window, cx);
-            editor
-        });
-
-        let username_focus = username_editor.read(cx).focus_handle(cx);
-        let email_focus = email_editor.read(cx).focus_handle(cx);
-        let password_focus = password_editor.read(cx).focus_handle(cx);
-
-        let weak_username = username_editor.downgrade();
-        let weak_email = email_editor.downgrade();
-        let weak_password = password_editor.downgrade();
-
-        // Overlay
-        div()
-            .absolute()
-            .inset_0()
-            .bg(gpui::hsla(0., 0., 0., 0.5))
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                this.cancel_register(&CancelRegister, _window, cx);
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .w(px(400.0))
-                    .p_5()
-                    .bg(CARD_BG)
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(BORDER_LIGHT)
-                    .shadow_md()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}))
-                    .child(
-                        div()
-                            .text_base()
-                            .text_color(PRIMARY_TEXT)
-                            .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::CREATE_ACCOUNT))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::USERNAME)))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .h(px(36.0))
-                                    .px_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
-                                    .track_focus(&username_focus)
-                                    .child(username_editor.clone()),
-                            )
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::EMAIL)))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .h(px(36.0))
-                                    .px_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
-                                    .track_focus(&email_focus)
-                                    .child(email_editor.clone()),
-                            )
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(div().text_sm().text_color(SECONDARY_TEXT).child(t(lang, Translations::PASSWORD)))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .h(px(36.0))
-                                    .px_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .bg(gpui::white())
-                                    .track_focus(&password_focus)
-                                    .child(password_editor.clone()),
-                            )
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .mt_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h(px(36.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(BORDER_LIGHT)
-                                    .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        this.cancel_register(&CancelRegister, _window, cx);
-                                    }))
-                                    .child(div().text_sm().text_color(PRIMARY_TEXT).child(t(lang, Translations::CANCEL)))
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h(px(36.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(BRAND_BLUE)
-                                    .cursor_pointer()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if let Some(editor) = weak_username.upgrade() {
-                                            this.editing_username = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        if let Some(editor) = weak_email.upgrade() {
-                                            this.editing_email = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        if let Some(editor) = weak_password.upgrade() {
-                                            this.editing_password = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                        }
-                                        this.submit_register(&SubmitRegister, _window, cx);
-                                    }))
-                                    .child(div().text_sm().text_color(gpui::white()).child(t(lang, Translations::REGISTER)))
                             )
                     )
             )
@@ -2701,8 +2861,8 @@ impl AppState {
                     .gap_2()
                     .w(px(180.0))
                     .p_3()
-                    .bg(CARD_BG)
-                    .rounded_lg()
+                    .bg(SURFACE_PANEL)
+                    .rounded_xl()
                     .border_1()
                     .border_color(BORDER_LIGHT)
                     .shadow_md()
@@ -2779,8 +2939,8 @@ impl AppState {
                     .w(px(500.0))
                     .h(px(400.0))
                     .p_5()
-                    .bg(CARD_BG)
-                    .rounded_lg()
+                    .bg(SURFACE_PANEL)
+                    .rounded_xl()
                     .border_1()
                     .border_color(BORDER_LIGHT)
                     .shadow_md()
@@ -2801,7 +2961,8 @@ impl AppState {
                                     .flex_1()
                                     .h(px(200.0))
                                     .p_3()
-                                    .rounded_md()
+                                    .rounded_lg()
+                                    .bg(CANVAS_BG)
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
                                     .overflow_hidden()
@@ -2814,7 +2975,8 @@ impl AppState {
                                     .flex_1()
                                     .h(px(200.0))
                                     .p_3()
-                                    .rounded_md()
+                                    .rounded_lg()
+                                    .bg(CANVAS_BG)
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
                                     .overflow_hidden()
@@ -2835,9 +2997,10 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
+                                    .bg(CANVAS_BG)
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(json) = this.exported_json.clone() {
@@ -2862,9 +3025,10 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
+                                    .bg(CANVAS_BG)
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if let Some(md) = this.exported_md.clone() {
@@ -2889,7 +3053,7 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded_md()
+                                    .rounded_lg()
                                     .bg(BRAND_BLUE)
                                     .cursor_pointer()
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
@@ -2930,18 +3094,18 @@ impl AppState {
 
         let mut message_list = div()
             .flex_col()
-            .gap_5()
+            .gap_6()
             .w_full()
             .children(messages.iter().enumerate().map(|(msg_index, msg)| {
                 let is_user_msg = is_user(&msg.role);
                 let bubble_bg = if is_user_msg {
-                    Hsla { h: 0.58, s: 0.75, l: 0.45, a: 1.0 } // Blue bg for user
+                    USER_BUBBLE_BG
                 } else {
-                    Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 } // Light gray bg for assistant
+                    ASSISTANT_BUBBLE_BG
                 };
-                let text_color = if is_user_msg { gpui::white() } else { Hsla { h: 0.0, s: 0.0, l: 0.15, a: 1.0 } };
-                let avatar_icon = if is_user_msg { "👤" } else { "🤖" };
-                let role_label = if is_user_msg { t(lang, Translations::YOU) } else { t(lang, Translations::ASSISTANT) };
+                let text_color = if is_user_msg { gpui::white() } else { PRIMARY_TEXT };
+                let avatar_icon = if is_user_msg { "YOU" } else { "ONE" };
+                let role_label = if is_user_msg { t(lang, Translations::YOU) } else { "ONE AI" };
 
                 // Parse content for think tags
                 let parts = parse_think_content(&msg.content);
@@ -2957,11 +3121,13 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_end()
-                                .gap_1()
-                                .p_4()
-                                .rounded_2xl()
+                                .gap_2()
+                                .p_5()
+                                .rounded_xl()
                                 .bg(bubble_bg)
-                                .max_w(px(520.0))
+                                .border_1()
+                                .border_color(BRAND_BLUE)
+                                .max_w(px(720.0))
                                 .min_w(px(35.0))
                                 .child(
                                     div()
@@ -2986,14 +3152,20 @@ impl AppState {
                                 .gap_2()
                                 .child(
                                     div()
-                                        .text_sm()
-                                        .text_color(MUTED_TEXT)
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(SURFACE_ELEVATED)
+                                        .border_1()
+                                        .border_color(BORDER_LIGHT)
+                                        .text_xs()
+                                        .text_color(SECONDARY_TEXT)
                                         .child(avatar_icon)
                                 )
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(MUTED_TEXT)
+                                        .text_color(SECONDARY_TEXT)
                                         .child(role_label)
                                 )
                         )
@@ -3001,10 +3173,12 @@ impl AppState {
                             div()
                                 .flex_col()
                                 .items_start()
-                                .p_4()
-                                .rounded_2xl()
+                                .p_5()
+                                .rounded_xl()
                                 .bg(bubble_bg)
-                                .max_w(px(520.0))
+                                .border_1()
+                                .border_color(BORDER_LIGHT)
+                                .max_w(px(760.0))
                                 .min_w(px(35.0))
                                 .w_full()
                                 .children({
@@ -3053,7 +3227,7 @@ impl AppState {
                                                             .px_2()
                                                             .py_1()
                                                             .rounded_md()
-                                                            .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                                            .bg(SURFACE_ELEVATED)
                                                             .border_1()
                                                             .border_color(BORDER_LIGHT)
                                                             .cursor_pointer()
@@ -3168,7 +3342,7 @@ impl AppState {
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                    .bg(SURFACE_ELEVATED)
                                     .border_1()
                                     .border_color(BORDER_LIGHT)
                                     .cursor_pointer()
@@ -3211,18 +3385,39 @@ impl AppState {
         let mut content = div()
             .flex_col()
             .items_start()
-            .p_4()
-            .rounded_2xl()
-            .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
-            .max_w(px(520.0))
+            .gap_2()
+            .p_5()
+            .rounded_xl()
+            .bg(ASSISTANT_BUBBLE_BG)
+            .border_1()
+            .border_color(BORDER_LIGHT)
+            .max_w(px(760.0))
             .min_w(px(35.0))
             .w_full();
         if waiting {
             content = content.child(
                 div()
-                    .text_xs()
-                    .text_color(TERTIARY_TEXT)
-                    .child(status_text)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .text_xs()
+                            .text_color(BRAND_BLUE)
+                            .child("LIVE")
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT)
+                            .child(status_text)
+                    )
             );
         } else {
             content = content.children(rendered_parts);
@@ -3239,8 +3434,17 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
-                    .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::ASSISTANT)))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                    )
+                    .child(div().text_xs().text_color(SECONDARY_TEXT).child("ONE AI"))
             )
             .child(content)
     }
@@ -3267,11 +3471,20 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                    )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(MUTED_TEXT)
+                            .text_color(SECONDARY_TEXT)
                             .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
                     )
             )
@@ -3279,18 +3492,38 @@ impl AppState {
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_1()
-                    .p_4()
-                    .rounded_2xl()
-                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
-                    .max_w(px(520.0))
+                    .gap_2()
+                    .p_5()
+                    .rounded_xl()
+                    .bg(ASSISTANT_BUBBLE_BG)
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .max_w(px(760.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(TERTIARY_TEXT)
-                            .child(run.status_message.clone())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(SURFACE_ELEVATED)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .text_xs()
+                                    .text_color(BRAND_BLUE)
+                                    .child("LIVE")
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(TERTIARY_TEXT)
+                                    .child(run.status_message.clone())
+                            )
                     )
                     .child(
                         div()
@@ -3342,7 +3575,7 @@ impl AppState {
                                                         .px_2()
                                                         .py_1()
                                                         .rounded_md()
-                                                        .bg(Hsla { h: 0.0, s: 0.0, l: 0.97, a: 1.0 })
+                                                        .bg(SURFACE_ELEVATED)
                                                         .border_1()
                                                         .border_color(BORDER_LIGHT)
                                                         .cursor_pointer()
@@ -3404,30 +3637,59 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_sm().text_color(MUTED_TEXT).child("🤖"))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(SURFACE_ELEVATED)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .child(render_icon_element("assistant", SECONDARY_TEXT, 14.0))
+                    )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(MUTED_TEXT)
-                            .child(t(lang, Translations::ASSISTANT))
+                            .text_color(SECONDARY_TEXT)
+                            .child("ONE AI")
                     )
             )
             .child(
                 div()
                     .flex_col()
                     .items_start()
-                    .gap_2()
-                    .p_4()
-                    .rounded_2xl()
-                    .bg(Hsla { h: 0.0, s: 0.0, l: 0.95, a: 1.0 })
-                    .max_w(px(520.0))
+                    .gap_3()
+                    .p_5()
+                    .rounded_xl()
+                    .bg(ASSISTANT_BUBBLE_BG)
+                    .border_1()
+                    .border_color(BORDER_LIGHT)
+                    .max_w(px(760.0))
                     .min_w(px(35.0))
                     .w_full()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(TERTIARY_TEXT)
-                            .child(status_text)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(SURFACE_ELEVATED)
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT)
+                                    .text_xs()
+                                    .text_color(BRAND_BLUE)
+                                    .child("WAIT")
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(TERTIARY_TEXT)
+                                    .child(status_text)
+                            )
                     )
             )
     }
@@ -3462,156 +3724,187 @@ impl AppState {
 
         div()
             .flex()
+            .flex_col()
             .gap_3()
-            .p_4()
-            .bg(NAV_BG)
+            .px_6()
+            .py_5()
+            .bg(CANVAS_BG)
             .child(
                 div()
-                    .flex_1()
-                    .px_4()
+                    .flex()
+                    .items_end()
+                    .gap_3()
+                    .px_3()
                     .py_3()
-                    .rounded_lg()
-                    .bg(CARD_BG)
+                    .rounded_full()
+                    .bg(INPUT_BG)
                     .border_1()
                     .border_color(BORDER_LIGHT)
-                    .track_focus(&composer_focus)
-                    .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
-                        if this.request_in_flight {
-                            return;
-                        }
-                        if let Some(editor) = weak_composer_for_action.upgrade() {
-                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                            if !text.is_empty() {
-                                let user_message = text.clone();
-                                // Check if this is the first message
-                                let is_first_message = this.messages.is_empty();
-                                if is_first_message {
-                                    this.pending_summarize = true;
+                    .shadow_md()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_2()
+                            .child(render_icon_element("add", MUTED_TEXT, 14.0))
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .pb_1()
+                            .track_focus(&composer_focus)
+                            .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                                if this.request_in_flight {
+                                    return;
                                 }
-
-                                // Route message to appropriate agent
-                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                eprintln!("[ROUTER] Decision: {:?}", decision);
-
-                                match decision {
-                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                        // Execute via Claude Code
-                                        eprintln!("[ROUTER] Routing to Claude Code");
-                                        this.messages.push(ChatMessage {
-                                            role: "user".to_string(),
-                                            content: user_message.clone(),
-                                        });
-                                        if let Some(task_id) = this.active_task_id {
-                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                if let Some(editor) = weak_composer_for_action.upgrade() {
+                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                    if !text.is_empty() {
+                                        let user_message = text.clone();
+                                        let is_first_message = this.messages.is_empty();
+                                        if is_first_message {
+                                            this.pending_summarize = true;
                                         }
-                                        this.request_in_flight = true;
-                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                        this.request_kind = Some(RequestKind::ClaudeCode);
-                                        this.needs_auto_scroll = true;
-                                        editor.update(cx, |editor, cx| {
-                                            editor.set_text("", _window, cx);
-                                        });
-                                        cx.notify();
-                                        this.spawn_claude_code_run(instruction, session_id, cx);
-                                    }
-                                    _ => {
-                                        // Default: send to general AI
-                                        this.messages.push(ChatMessage {
-                                            role: "user".to_string(),
-                                            content: user_message.clone(),
-                                        });
-                                        // Save user message to database
-                                        if let Some(task_id) = this.active_task_id {
-                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+
+                                        let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                        eprintln!("[ROUTER] Decision: {:?}", decision);
+
+                                        match decision {
+                                            agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                                eprintln!("[ROUTER] Routing to Claude Code");
+                                                this.messages.push(ChatMessage {
+                                                    role: "user".to_string(),
+                                                    content: user_message.clone(),
+                                                });
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                }
+                                                this.request_in_flight = true;
+                                                this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                                                this.request_kind = Some(RequestKind::ClaudeCode);
+                                                this.needs_auto_scroll = true;
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
+                                                cx.notify();
+                                                this.spawn_claude_code_run(instruction, session_id, cx);
+                                            }
+                                            _ => {
+                                                this.messages.push(ChatMessage {
+                                                    role: "user".to_string(),
+                                                    content: user_message.clone(),
+                                                });
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                }
+                                                this.needs_auto_scroll = true;
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
+                                                cx.notify();
+                                                this.spawn_general_ai_run(cx);
+                                            }
                                         }
-                                        this.needs_auto_scroll = true;
-                                        editor.update(cx, |editor, cx| {
-                                            editor.set_text("", _window, cx);
-                                        });
-                                        cx.notify();
-                                        this.spawn_general_ai_run(cx);
                                     }
                                 }
-                            }
-                        }
-                    }))
-                    .child(composer_editor)
+                            }))
+                            .child(composer_editor)
+                    )
+                    .child(div().px_2().py_2().child(render_icon_element("mic", MUTED_TEXT, 14.0)))
+                    .child(
+                        div()
+                            .px_5()
+                            .py_3()
+                            .rounded_full()
+                            .bg(send_bg)
+                            .cursor_pointer()
+                            .text_color(gpui::white())
+                            .text_base()
+                            .font_weight(FontWeight::BOLD)
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                if this.request_in_flight {
+                                    return;
+                                }
+                                if let Some(editor) = weak_composer.upgrade() {
+                                    let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
+                                    if !text.is_empty() {
+                                        let user_message = text.clone();
+                                        let is_first_message = this.messages.is_empty();
+                                        if is_first_message {
+                                            this.pending_summarize = true;
+                                        }
+
+                                        let decision = this.agent_router.classify_intent(&user_message, &this.messages);
+                                        eprintln!("[ROUTER] Decision: {:?}", decision);
+
+                                        match decision {
+                                            agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
+                                                eprintln!("[ROUTER] Routing to Claude Code");
+                                                this.messages.push(ChatMessage {
+                                                    role: "user".to_string(),
+                                                    content: user_message.clone(),
+                                                });
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                }
+                                                this.request_in_flight = true;
+                                                this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                                                this.request_kind = Some(RequestKind::ClaudeCode);
+                                                this.needs_auto_scroll = true;
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
+                                                cx.notify();
+                                                this.spawn_claude_code_run(instruction, session_id, cx);
+                                            }
+                                            _ => {
+                                                this.messages.push(ChatMessage {
+                                                    role: "user".to_string(),
+                                                    content: user_message.clone(),
+                                                });
+                                                if let Some(task_id) = this.active_task_id {
+                                                    task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                }
+                                                this.needs_auto_scroll = true;
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
+                                                cx.notify();
+                                                this.spawn_general_ai_run(cx);
+                                            }
+                                        }
+                                    }
+                                }
+                            }))
+                            .child(send_label)
+                    )
             )
             .child(
                 div()
-                    .px_5()
-                    .py_3()
-                    .rounded_lg()
-                    .bg(send_bg)
-                    .cursor_pointer()
-                    .text_color(gpui::white())
-                    .text_base()
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                        if this.request_in_flight {
-                            return;
-                        }
-                        if let Some(editor) = weak_composer.upgrade() {
-                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                            if !text.is_empty() {
-                                let user_message = text.clone();
-                                // Check if this is the first message
-                                let is_first_message = this.messages.is_empty();
-                                if is_first_message {
-                                    this.pending_summarize = true;
-                                }
-
-                                // Route message to appropriate agent
-                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                eprintln!("[ROUTER] Decision: {:?}", decision);
-
-                                match decision {
-                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                        // Execute via Claude Code
-                                        eprintln!("[ROUTER] Routing to Claude Code");
-                                        this.messages.push(ChatMessage {
-                                            role: "user".to_string(),
-                                            content: user_message.clone(),
-                                        });
-                                        if let Some(task_id) = this.active_task_id {
-                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                        }
-                                        this.request_in_flight = true;
-                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                        this.request_kind = Some(RequestKind::ClaudeCode);
-                                        this.needs_auto_scroll = true;
-                                        editor.update(cx, |editor, cx| {
-                                            editor.set_text("", _window, cx);
-                                        });
-                                        cx.notify();
-                                        this.spawn_claude_code_run(instruction, session_id, cx);
-                                    }
-                                    _ => {
-                                        // Default: send to general AI
-                                        this.messages.push(ChatMessage {
-                                            role: "user".to_string(),
-                                            content: user_message.clone(),
-                                        });
-                                        // Save user message to database
-                                        if let Some(task_id) = this.active_task_id {
-                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                        }
-                                        this.needs_auto_scroll = true;
-                                        editor.update(cx, |editor, cx| {
-                                            editor.set_text("", _window, cx);
-                                        });
-                                        cx.notify();
-                                        this.spawn_general_ai_run(cx);
-                                    }
-                                }
-                            }
-                        }
-                    }))
-                    .child(send_label)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(MUTED_TEXT)
+                            .child(format!("{} · {}", self.model_name, t(lang, Translations::EXPLORER)))
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if request_in_flight { BRAND_BLUE } else { SECONDARY_TEXT })
+                            .child(if request_in_flight {
+                                self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::SENDING).to_string())
+                            } else {
+                                format!("{} Active", self.model_name)
+                            })
+                    )
             )
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar_bg = Hsla { h: 0.0, s: 0.0, l: 0.96, a: 1.0 };
+        let sidebar_bg = WORKSPACE_BG;
         let lang = self.current_lang;
         let run = self
             .current_claude_run
@@ -3622,7 +3915,7 @@ impl AppState {
         let mut sidebar = div()
             .flex()
             .flex_col()
-            .w(px(320.0))
+            .w(px(340.0))
             .h_full()
             .bg(sidebar_bg)
             .child(div().h(px(1.0)).bg(BORDER_LIGHT))
@@ -3631,9 +3924,11 @@ impl AppState {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .h(px(44.0))
+                    .h(px(56.0))
                     .px_4()
-                    .bg(WORKSPACE_BG)
+                    .bg(SURFACE_ELEVATED)
+                    .border_b_1()
+                    .border_color(BORDER_LIGHT)
                     .child(
                         div()
                             .text_sm()
@@ -3681,7 +3976,7 @@ impl AppState {
                         .gap_1()
                         .p_3()
                         .rounded_lg()
-                        .bg(CARD_BG)
+                        .bg(SURFACE_ELEVATED)
                         .border_1()
                         .border_color(BORDER_LIGHT)
                         .child(
@@ -3719,10 +4014,10 @@ impl AppState {
                     .child(
                         div()
                             .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .gap_3()
+                            .p_4()
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(
@@ -3730,6 +4025,18 @@ impl AppState {
                                     .flex()
                                     .items_center()
                                     .gap_2()
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(CANVAS_BG)
+                                            .border_1()
+                                            .border_color(BORDER_LIGHT)
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT)
+                                            .child("RUN")
+                                    )
                                     .child(
                                         div()
                                             .text_xs()
@@ -3768,8 +4075,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::PROGRESS)))
@@ -3786,8 +4093,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(
@@ -3863,8 +4170,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(
@@ -3878,7 +4185,7 @@ impl AppState {
                                             .px_3()
                                             .py_2()
                                             .rounded_md()
-                                            .bg(WORKSPACE_BG)
+                                            .bg(CANVAS_BG)
                                             .text_xs()
                                             .text_color(PRIMARY_TEXT)
                                             .cursor_pointer()
@@ -3906,7 +4213,7 @@ impl AppState {
                                             .px_2()
                                             .py_2()
                                             .rounded_md()
-                                            .bg(WORKSPACE_BG)
+                                            .bg(CANVAS_BG)
                                             .child(
                                                 div()
                                                     .text_xs()
@@ -3941,8 +4248,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::QUESTIONS)))
@@ -3993,7 +4300,7 @@ impl AppState {
                                                         .px_2()
                                                         .py_2()
                                                         .rounded_md()
-                                                        .bg(WORKSPACE_BG)
+                                                        .bg(CANVAS_BG)
                                                         .track_focus(&question_focus)
                                                         .on_action(cx.listener({
                                                             let weak_question_editor = weak_question_editor.clone();
@@ -4049,8 +4356,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::LIVE_OUTPUT)))
@@ -4067,8 +4374,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::COMMAND)))
@@ -4089,8 +4396,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::STDERR)))
@@ -4107,8 +4414,8 @@ impl AppState {
                             .flex_col()
                             .gap_2()
                             .p_3()
-                            .rounded_lg()
-                            .bg(CARD_BG)
+                            .rounded_xl()
+                            .bg(SURFACE_PANEL)
                             .border_1()
                             .border_color(BORDER_LIGHT)
                             .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TIMELINE)))
@@ -4182,7 +4489,7 @@ impl AppState {
     }
 
     fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let terminal_bg = CARD_BG;
+        let terminal_bg = WORKSPACE_BG;
         let terminal_text = PRIMARY_TEXT;
         let prompt_color = Hsla { h: 0.35, s: 0.8, l: 0.45, a: 1.0 };
         let error_color = Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 };
@@ -4211,9 +4518,23 @@ impl AppState {
                 div()
                     .flex()
                     .items_center()
-                    .h(px(36.0))
-                    .px_3()
-                    .bg(WORKSPACE_BG)
+                    .h(px(48.0))
+                    .px_4()
+                    .bg(SURFACE_ELEVATED)
+                    .border_b_1()
+                    .border_color(BORDER_LIGHT)
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(CANVAS_BG)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT)
+                            .child("TTY")
+                    )
                     .child(div().text_xs().text_color(MUTED_TEXT).child(t(lang, Translations::TERMINAL)))
                     .child(
                         div()
@@ -4231,10 +4552,10 @@ impl AppState {
                     .id("terminal-content")
                     .flex_1()
                     .overflow_scroll()
-                    .p_3()
+                    .p_4()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap_2()
                     .children(self.terminal_output.iter().map(|line| {
                         let prompt_color = prompt_color;
                         let terminal_text = terminal_text;
@@ -4243,7 +4564,12 @@ impl AppState {
                         let is_error = output.contains("Error") || output.contains("error:");
                         div()
                             .flex_col()
-                            .gap_1()
+                            .gap_2()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(SURFACE_PANEL)
+                            .border_1()
+                            .border_color(BORDER_LIGHT)
                             .children(line.command.iter().map(|cmd| {
                                 div()
                                     .flex()
@@ -4263,9 +4589,11 @@ impl AppState {
             .child(
                 div()
                     .id("terminal-input-line")
-                    .h(px(40.0))
-                    .px_3()
-                    .bg(CARD_BG)
+                    .h(px(52.0))
+                    .px_4()
+                    .bg(SURFACE_ELEVATED)
+                    .border_t_1()
+                    .border_color(BORDER_LIGHT)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -4275,7 +4603,7 @@ impl AppState {
                             .flex_1()
                             .px_2()
                             .rounded_lg()
-                            .bg(WORKSPACE_BG)
+                            .bg(CANVAS_BG)
                             .track_focus(&terminal_focus)
                             .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
                                 if let Some(editor) = weak_terminal.upgrade() {

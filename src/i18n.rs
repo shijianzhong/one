@@ -44,7 +44,14 @@ impl Translations {
     pub const CLOSE: (&'static str, &'static str) = ("关闭", "Close");
     pub const AUTOMATION: (&'static str, &'static str) = ("自动化", "Automation");
     pub const MODEL_CONFIG: (&'static str, &'static str) = ("模型配置", "Model Config");
-    pub const REGISTER: (&'static str, &'static str) = ("注册", "Register");
+    pub const CAPABILITIES: (&'static str, &'static str) = ("能力", "Capabilities");
+    pub const MODELS: (&'static str, &'static str) = ("模型", "Models");
+    pub const SETTINGS: (&'static str, &'static str) = ("设置", "Settings");
+    pub const SUPPORT: (&'static str, &'static str) = ("支持", "Support");
+    pub const EXPLORER: (&'static str, &'static str) = ("工作台", "Explorer");
+    pub const WORKFLOWS: (&'static str, &'static str) = ("工作流", "Workflows");
+    pub const API: (&'static str, &'static str) = ("API", "API");
+    pub const PLACEHOLDER_ENTRY: (&'static str, &'static str) = ("占位入口", "Placeholder");
 
     // Task list
     pub const WORKSPACES: (&'static str, &'static str) = ("工作空间", "Workspaces");
@@ -83,12 +90,6 @@ impl Translations {
     pub const SAVE_MARKDOWN: (&'static str, &'static str) = ("保存 Markdown", "Save Markdown");
     pub const JSON: (&'static str, &'static str) = ("JSON", "JSON");
     pub const MARKDOWN: (&'static str, &'static str) = ("Markdown", "Markdown");
-
-    // Register dialog
-    pub const CREATE_ACCOUNT: (&'static str, &'static str) = ("创建账号", "Create Account");
-    pub const USERNAME: (&'static str, &'static str) = ("用户名", "Username");
-    pub const EMAIL: (&'static str, &'static str) = ("邮箱", "Email");
-    pub const PASSWORD: (&'static str, &'static str) = ("密码", "Password");
 
     // Sidebar
     pub const TODO: (&'static str, &'static str) = ("待办", "Todo");

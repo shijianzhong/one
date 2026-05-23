@@ -1,7 +1,7 @@
 use dirs;
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, DragMoveEvent, Focusable,
-    Hsla, IntoElement, ParentElement, Pixels, Point, Render, ScrollHandle,
+    Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,27 @@ struct DraggedResizer;
 impl Render for DraggedResizer {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div().size(px(0.0)).into_element()
+    }
+}
+
+struct HeaderTooltip {
+    text: String,
+}
+
+impl Render for HeaderTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(420.0))
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(SURFACE_PANEL())
+            .border_1()
+            .border_color(BORDER_LIGHT())
+            .text_xs()
+            .text_color(PRIMARY_TEXT())
+            .whitespace_normal()
+            .child(self.text.clone())
     }
 }
 
@@ -2747,6 +2768,8 @@ impl AppState {
                     .flex_1()
                     .child(
                         div()
+                            .w(px(320.0))
+                            .flex_none()
                             .flex()
                             .items_center()
                             .gap_2()
@@ -2797,19 +2820,13 @@ impl AppState {
                             )
                             .child(t(lang, Translations::EXPORT)),
                     )
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(GHOST_SURFACE_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .text_xs()
-                            .text_color(TERTIARY_TEXT())
-                            .child(format!("[path] {}", work_dir)),
-                    )
-                    .child(self.make_chat_header_button("folder", false, None, None, cx))
+                    .child(self.make_chat_header_button(
+                        "folder",
+                        false,
+                        Some("open-work-dir"),
+                        Some(work_dir.clone()),
+                        cx,
+                    ))
                     .child(self.make_chat_header_button("share", false, None, None, cx))
                     .child(self.make_chat_header_button(
                         "terminal",
@@ -2878,10 +2895,17 @@ impl AppState {
         icon_key: &'static str,
         active: bool,
         action: Option<&'static str>,
-        _unused: Option<&'static str>,
+        tooltip_text: Option<String>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        div()
+        let action_key = action;
+        let tooltip = tooltip_text.clone();
+        let button = div()
+            .id(format!(
+                "chat-header-btn-{}-{}",
+                icon_key,
+                action_key.unwrap_or("none")
+            ))
             .size(px(30.0))
             .rounded_full()
             .bg(if active {
@@ -2898,6 +2922,13 @@ impl AppState {
                 gpui::MouseButton::Left,
                 cx.listener(
                     move |this, _: &gpui::MouseDownEvent, _window, _cx| match action {
+                        Some("open-work-dir") => {
+                            if let Some(path) = tooltip.as_deref() {
+                                if !path.trim().is_empty() {
+                                    this.open_folder_in_finder(path);
+                                }
+                            }
+                        }
                         Some("terminal") => this.terminal_visible = !this.terminal_visible,
                         Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
                         _ => {}
@@ -2912,7 +2943,25 @@ impl AppState {
                     SECONDARY_TEXT()
                 },
                 13.0,
-            ))
+            ));
+        if let Some(tooltip_text) = tooltip_text.filter(|text| !text.trim().is_empty()) {
+            button.tooltip(move |_, cx| {
+                cx.new(|_| HeaderTooltip {
+                    text: tooltip_text.clone(),
+                })
+                .into()
+            })
+        } else {
+            match action_key {
+                Some("open-work-dir") => button.tooltip(move |_, cx| {
+                    cx.new(|_| HeaderTooltip {
+                        text: "No working directory".to_string(),
+                    })
+                    .into()
+                }),
+                _ => button,
+            }
+        }
     }
 
     fn render_model_config_dialog(

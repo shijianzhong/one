@@ -2472,23 +2472,6 @@ impl AppState {
                                 BORDER_LIGHT()
                             }),
                     )
-                    .child(if workspace.expanded {
-                        expand_btn.child(
-                            svg()
-                                .path("expand.svg")
-                                .size(px(16.0))
-                                .flex_none()
-                                .text_color(MUTED_TEXT()),
-                        )
-                    } else {
-                        expand_btn.child(
-                            svg()
-                                .path("fold.svg")
-                                .size(px(16.0))
-                                .flex_none()
-                                .text_color(MUTED_TEXT()),
-                        )
-                    })
                     .child(
                         svg()
                             .path("folder.svg")
@@ -2513,6 +2496,23 @@ impl AppState {
                             .ml_1()
                             .text_color(SECONDARY_TEXT())
                             .child(ws_label)
+                    })
+                    .child(if workspace.expanded {
+                        expand_btn.child(
+                            svg()
+                                .path("expand.svg")
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(MUTED_TEXT()),
+                        )
+                    } else {
+                        expand_btn.child(
+                            svg()
+                                .path("fold.svg")
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(MUTED_TEXT()),
+                        )
                     })
                     .child(
                         div()

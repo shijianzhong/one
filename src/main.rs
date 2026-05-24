@@ -2385,9 +2385,7 @@ impl AppState {
             .child(
                 self.make_footer_action_item(t(lang, Translations::SUPPORT).to_string(), "support"),
             )
-            .child(
-                div().h(px(40.0)),
-            )
+            .child(div().h(px(40.0)))
     }
 
     fn make_icon_slot(&mut self, icon_key: &'static str, active: bool) -> impl IntoElement {

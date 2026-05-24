@@ -155,13 +155,57 @@ impl SkillsMarketState {
 
 pub(crate) fn render_skills_market(
     app: &crate::AppState,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<crate::AppState>,
 ) -> AnyElement {
     let lang = app.current_lang;
     let state = &app.skills_market;
     let active_tab = state.active_tab;
     let active_category = state.active_category;
+
+    const MIN_CARD_W: f32 = 260.0;
+    const MAX_CARD_W: f32 = 330.0;
+    const MAX_COLS: usize = 6;
+    const CARD_H: f32 = 144.0;
+    const GAP: f32 = 24.0;
+    const SIDE_PAD: f32 = 32.0;
+
+    let window_w: f32 = window.bounds().size.width.into();
+    let mut main_w = window_w - crate::NAV_WIDTH - 1.0;
+    if app.sidebar_visible {
+        main_w -= 340.0 + 1.0;
+    }
+    if app.terminal_visible {
+        main_w -= app.terminal_width + 1.0;
+    }
+    if main_w < 320.0 {
+        main_w = 320.0;
+    }
+
+    let max_content_w =
+        MAX_CARD_W * MAX_COLS as f32 + GAP * (MAX_COLS as f32 - 1.0) + SIDE_PAD * 2.0;
+    let content_w = main_w.min(max_content_w).max(MIN_CARD_W + SIDE_PAD * 2.0);
+    let available_w = (content_w - SIDE_PAD * 2.0).max(MIN_CARD_W);
+
+    let mut cols = (((available_w + GAP) / (MIN_CARD_W + GAP)).floor() as usize).clamp(1, MAX_COLS);
+    loop {
+        if cols >= MAX_COLS {
+            break;
+        }
+        let current_card_w = (available_w - GAP * (cols as f32 - 1.0)) / cols as f32;
+        if current_card_w <= MAX_CARD_W {
+            break;
+        }
+        let next_cols = cols + 1;
+        let next_card_w = (available_w - GAP * (next_cols as f32 - 1.0)) / next_cols as f32;
+        if next_card_w >= MIN_CARD_W {
+            cols = next_cols;
+        } else {
+            break;
+        }
+    }
+    let card_w =
+        ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
     let categories: [&'static str; 6] = [
         "All",
@@ -213,7 +257,7 @@ pub(crate) fn render_skills_market(
     };
 
     let header_inner = div()
-        .w(px(1020.0))
+        .w(px(content_w))
         .px_8()
         .py_6()
         .child(
@@ -450,13 +494,10 @@ pub(crate) fn render_skills_market(
         );
     }
 
-    let card_w = 302.0;
-    let card_h = 144.0;
-
     let render_card = |title: String, tag: &'static str, description: String, icon: AnyElement| {
         div()
             .w(px(card_w))
-            .h(px(card_h))
+            .h(px(CARD_H))
             .flex_none()
             .p_5()
             .rounded_xl()
@@ -549,7 +590,7 @@ pub(crate) fn render_skills_market(
         .overflow_scroll();
 
     let mut inner = div()
-        .w(px(1020.0))
+        .w(px(content_w))
         .px_8()
         .pt_6()
         .pb_8()
@@ -635,7 +676,7 @@ pub(crate) fn render_skills_market(
         } else {
             let mut i = 0usize;
             while i < cards.len() {
-                let row_items = cards[i..cards.len().min(i + 3)].to_vec();
+                let row_items = cards[i..cards.len().min(i + cols)].to_vec();
                 let mut row = div().flex().gap_6();
                 for (_, title, tag, desc) in row_items.iter() {
                     let icon = div()
@@ -651,13 +692,13 @@ pub(crate) fn render_skills_market(
                         icon,
                     ));
                 }
-                if row_items.len() < 3 {
-                    for _ in 0..(3 - row_items.len()) {
-                        row = row.child(div().w(px(card_w)).h(px(card_h)).flex_none());
+                if row_items.len() < cols {
+                    for _ in 0..(cols - row_items.len()) {
+                        row = row.child(div().w(px(card_w)).h(px(CARD_H)).flex_none());
                     }
                 }
                 inner = inner.child(row);
-                i += 3;
+                i += cols;
             }
         }
     } else if state.installed.is_empty() {
@@ -676,7 +717,7 @@ pub(crate) fn render_skills_market(
         let skills = state.installed.clone();
         let mut i = 0usize;
         while i < skills.len() {
-            let row_items = skills[i..skills.len().min(i + 3)].to_vec();
+            let row_items = skills[i..skills.len().min(i + cols)].to_vec();
             let row_len = row_items.len();
             let mut row = div().flex().gap_6();
             for skill in row_items {
@@ -713,13 +754,13 @@ pub(crate) fn render_skills_market(
                     ),
                 );
             }
-            if row_len < 3 {
-                for _ in 0..(3 - row_len) {
-                    row = row.child(div().w(px(card_w)).h(px(card_h)).flex_none());
+            if row_len < cols {
+                for _ in 0..(cols - row_len) {
+                    row = row.child(div().w(px(card_w)).h(px(CARD_H)).flex_none());
                 }
             }
             inner = inner.child(row);
-            i += 3;
+            i += cols;
         }
     }
 

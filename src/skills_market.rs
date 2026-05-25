@@ -35,6 +35,7 @@ pub(crate) struct SkillsMarketState {
     pub error_text: Option<String>,
     pub active_tab: SkillsMarketTab,
     pub active_category: usize,
+    pub category_dropdown_open: bool,
 }
 
 impl Default for SkillsMarketState {
@@ -47,6 +48,7 @@ impl Default for SkillsMarketState {
             error_text: None,
             active_tab: SkillsMarketTab::default(),
             active_category: 0,
+            category_dropdown_open: false,
         }
     }
 }
@@ -287,12 +289,12 @@ pub(crate) fn render_skills_market_titlebar(
                 )
                 .child(
                     div()
+                        .id("category-dropdown")
                         .cursor_pointer()
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                let current = this.skills_market.active_category;
-                                this.skills_market.active_category = (current + 1) % 6;
+                                this.skills_market.category_dropdown_open = !this.skills_market.category_dropdown_open;
                                 cx.notify();
                             }),
                         )
@@ -305,7 +307,62 @@ pub(crate) fn render_skills_market_titlebar(
                                 .text_color(crate::MUTED_TEXT())
                                 .child(category_labels[active_category]),
                         )
-                        .child(text_btn("▼")),
+                        .child(text_btn("▼"))
+                        .when(state.category_dropdown_open, |this| {
+                            this.child(
+                                gpui::deferred(
+                                    gpui::anchored()
+                                        .anchor(gpui::Anchor::BottomLeft)
+                                        .offset(gpui::Point::new(px(0.0), px(4.0)))
+                                        .child(
+                                            div()
+                                                .flex_col()
+                                                .gap_1()
+                                                .w(px(140.0))
+                                                .p_2()
+                                                .rounded_md()
+                                                .bg(crate::SURFACE_PANEL())
+                                                .border_1()
+                                                .border_color(crate::BORDER_LIGHT())
+                                                .shadow_md()
+                                                .children(category_labels.iter().enumerate().map(|(i, label)| {
+                                                    let idx = i;
+                                                    let is_active = i == active_category;
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .rounded_md()
+                                                        .text_xs()
+                                                        .text_color(if is_active { crate::ACCENT_TEXT() } else { crate::SECONDARY_TEXT() })
+                                                        .font_weight(if is_active { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
+                                                        .when(!is_active, |this| {
+                                                            this.hover(|this| this.bg(crate::SURFACE_ELEVATED()))
+                                                        })
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                                                                this.skills_market.active_category = idx;
+                                                                this.skills_market.category_dropdown_open = false;
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                        .child(*label)
+                                                }))
+                                                .on_mouse_down_out(
+                                                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                        this.skills_market.category_dropdown_open = false;
+                                                        cx.notify();
+                                                    }),
+                                                ),
+                                        ),
+                                )
+                                .priority(1),
+                            )
+                        }),
                 ),
         )
         .into_any_element()

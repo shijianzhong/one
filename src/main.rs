@@ -78,6 +78,27 @@ impl Render for HeaderTooltip {
     }
 }
 
+pub(crate) struct TitleTooltip {
+    pub text: String,
+}
+
+impl Render for TitleTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(420.0))
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(SURFACE_PANEL())
+            .border_1()
+            .border_color(BORDER_LIGHT())
+            .text_xs()
+            .text_color(PRIMARY_TEXT())
+            .whitespace_normal()
+            .child(self.text.clone())
+    }
+}
+
 gpui::actions!(
     app,
     [

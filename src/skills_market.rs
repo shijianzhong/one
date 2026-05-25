@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, Context, InteractiveElement, StatefulInteractiveElement,
-    Window,
+    div, prelude::*, px, svg, AnyElement, Context, InteractiveElement,
+    StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::i18n::{t, Translations};
@@ -422,7 +422,22 @@ pub(crate) fn render_skills_market(
     let card_w =
         ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
-    let render_card = |title: String, tag: &'static str, description: String, icon: AnyElement| {
+    let render_card = |title: String, tag: &'static str, description: String, icon: AnyElement, title_for_tooltip: String| {
+        let mut title_el = div()
+            .text_base()
+            .text_color(crate::PRIMARY_TEXT())
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_ellipsis()
+            .child(title.clone());
+        let needs_tooltip = title_for_tooltip.len() > 20;
+        if needs_tooltip {
+            title_el.interactivity().tooltip(move |_, cx| {
+                cx.new(|_| crate::TitleTooltip {
+                    text: title_for_tooltip.clone(),
+                })
+                .into()
+            });
+        }
         div()
             .w(px(card_w))
             .h(px(CARD_H))
@@ -437,8 +452,8 @@ pub(crate) fn render_skills_market(
             .child(
                 div()
                     .flex()
-                    .items_start()
-                    .justify_between()
+                    .flex_col()
+                    .gap_3()
                     .child(
                         div()
                             .flex()
@@ -460,23 +475,12 @@ pub(crate) fn render_skills_market(
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap_2()
+                                    .gap_1()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(title_el)
                                     .child(
                                         div()
-                                            .text_base()
-                                            .text_color(crate::PRIMARY_TEXT())
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .text_ellipsis()
-                                            .child(title),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_md()
-                                            .bg(crate::CANVAS_BG())
-                                            .border_1()
-                                            .border_color(crate::BORDER_LIGHT())
                                             .text_xs()
                                             .text_color(crate::MUTED_TEXT())
                                             .child(tag),
@@ -485,27 +489,12 @@ pub(crate) fn render_skills_market(
                     )
                     .child(
                         div()
-                            .size(px(28.0))
-                            .rounded_md()
-                            .bg(crate::SURFACE_ELEVATED())
-                            .border_1()
-                            .border_color(crate::BORDER_LIGHT())
-                            .flex()
-                            .items_center()
-                            .justify_center()
                             .text_sm()
                             .text_color(crate::SECONDARY_TEXT())
-                            .child("+"),
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(description),
                     ),
-            )
-            .child(
-                div()
-                    .mt_4()
-                    .text_sm()
-                    .text_color(crate::SECONDARY_TEXT())
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(description),
             )
     };
 
@@ -618,6 +607,7 @@ pub(crate) fn render_skills_market(
                         *tag,
                         (*desc).to_string(),
                         icon,
+                        (*title).to_string(),
                     ));
                 }
                 if row_items.len() < cols {
@@ -666,10 +656,11 @@ pub(crate) fn render_skills_market(
 
                 row = row.child(
                     render_card(
-                        skill.name,
+                        skill.name.clone(),
                         "LOCAL",
                         skill.path.to_string_lossy().to_string(),
                         icon,
+                        skill.name,
                     )
                     .cursor_pointer()
                     .on_mouse_down(

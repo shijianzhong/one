@@ -207,36 +207,6 @@ pub(crate) fn render_skills_market(
     let card_w =
         ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
-    let categories: [&'static str; 6] = [
-        "All",
-        "Dev Tools",
-        "Data Analysis",
-        "UI Design",
-        "Content Creation",
-        "Efficiency",
-    ];
-
-    let chip = |label: &'static str, active: bool| {
-        div()
-            .px_4()
-            .py_2()
-            .rounded_xl()
-            .border_1()
-            .border_color(crate::BORDER_LIGHT())
-            .bg(if active {
-                crate::SURFACE_PANEL()
-            } else {
-                crate::CANVAS_BG()
-            })
-            .text_sm()
-            .text_color(if active {
-                crate::PRIMARY_TEXT()
-            } else {
-                crate::MUTED_TEXT()
-            })
-            .child(label)
-    };
-
     let tab = |label: String, active: bool| {
         div()
             .px_4()
@@ -256,205 +226,152 @@ pub(crate) fn render_skills_market(
             .child(label)
     };
 
+    let category_labels: [&'static str; 6] = [
+        "All",
+        "Dev Tools",
+        "Data Analysis",
+        "UI Design",
+        "Content Creation",
+        "Efficiency",
+    ];
+
     let header_inner = div()
         .w(px(content_w))
         .px_8()
-        .py_6()
+        .py_4()
+        .flex()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_size(px(22.0))
+                .text_color(crate::PRIMARY_TEXT())
+                .font_weight(gpui::FontWeight::BOLD)
+                .child(t(lang, Translations::CAPABILITIES)),
+        )
         .child(
             div()
                 .flex()
-                .items_start()
-                .justify_between()
-                .gap_6()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(28.0))
-                                .text_color(crate::PRIMARY_TEXT())
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(match lang {
-                                    crate::i18n::Lang::Zh => "能力市场",
-                                    crate::i18n::Lang::En => "Marketplace",
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(crate::MUTED_TEXT())
-                                .child(t(lang, Translations::SKILLS_HINT)),
-                        ),
-                )
+                .items_center()
+                .gap_3()
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_3()
+                        .gap_2()
+                        .p_1()
+                        .rounded_xl()
+                        .bg(crate::SURFACE_PANEL())
+                        .border_1()
+                        .border_color(crate::BORDER_LIGHT())
                         .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .p_2()
-                                .rounded_xl()
-                                .bg(crate::SURFACE_PANEL())
-                                .border_1()
-                                .border_color(crate::BORDER_LIGHT())
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(
-                                                |this, _: &gpui::MouseDownEvent, _w, cx| {
-                                                    this.skills_market.active_tab =
-                                                        SkillsMarketTab::Market;
-                                                    cx.notify();
-                                                },
-                                            ),
-                                        )
-                                        .child(tab(
-                                            "Market".to_string(),
-                                            active_tab == SkillsMarketTab::Market,
-                                        )),
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(
+                                        |this, _: &gpui::MouseDownEvent, _w, cx| {
+                                            this.skills_market.active_tab =
+                                                SkillsMarketTab::Market;
+                                            cx.notify();
+                                        },
+                                    ),
                                 )
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(
-                                                |this, _: &gpui::MouseDownEvent, _w, cx| {
-                                                    this.skills_market.active_tab =
-                                                        SkillsMarketTab::Installed;
-                                                    cx.notify();
-                                                },
-                                            ),
-                                        )
-                                        .child(tab(
-                                            format!("Installed ({})", state.installed.len()),
-                                            active_tab == SkillsMarketTab::Installed,
-                                        )),
-                                ),
+                                .child(tab(
+                                    "Market".to_string(),
+                                    active_tab == SkillsMarketTab::Market,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(
+                                        |this, _: &gpui::MouseDownEvent, _w, cx| {
+                                            this.skills_market.active_tab =
+                                                SkillsMarketTab::Installed;
+                                            cx.notify();
+                                        },
+                                    ),
+                                )
+                                .child(tab(
+                                    format!("Installed ({})", state.installed.len()),
+                                    active_tab == SkillsMarketTab::Installed,
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(crate::SURFACE_ELEVATED())
+                        .border_1()
+                        .border_color(crate::BORDER_LIGHT())
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(crate::PRIMARY_TEXT())
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title(t(
+                                        this.current_lang,
+                                        Translations::UPLOAD_SKILL_PACKAGE,
+                                    ))
+                                    .add_filter("Skill", &["skill", "zip"])
+                                    .pick_file()
+                                {
+                                    if let Err(err) =
+                                        this.skills_market.install_from_file(path)
+                                    {
+                                        this.skills_market.status_text = None;
+                                        this.skills_market.error_text = Some(err);
+                                    }
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                        .child(t(lang, Translations::UPLOAD)),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                let current = this.skills_market.active_category;
+                                this.skills_market.active_category = (current + 1) % 6;
+                                cx.notify();
+                            }),
                         )
                         .child(
                             div()
                                 .px_4()
                                 .py_2()
                                 .rounded_lg()
-                                .bg(crate::SURFACE_ELEVATED())
+                                .bg(crate::SURFACE_PANEL())
                                 .border_1()
                                 .border_color(crate::BORDER_LIGHT())
-                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .text_sm()
                                 .text_color(crate::PRIMARY_TEXT())
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if let Some(path) = rfd::FileDialog::new()
-                                            .set_title(t(
-                                                this.current_lang,
-                                                Translations::UPLOAD_SKILL_PACKAGE,
-                                            ))
-                                            .add_filter("Skill", &["skill", "zip"])
-                                            .pick_file()
-                                        {
-                                            if let Err(err) =
-                                                this.skills_market.install_from_file(path)
-                                            {
-                                                this.skills_market.status_text = None;
-                                                this.skills_market.error_text = Some(err);
-                                            }
-                                            cx.notify();
-                                        }
-                                    }),
+                                .child(
+                                    div()
+                                        .text_color(crate::MUTED_TEXT())
+                                        .child(category_labels[active_category]),
                                 )
-                                .child(t(lang, Translations::UPLOAD)),
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(crate::MUTED_TEXT())
+                                        .child("▼"),
+                                ),
                         ),
-                ),
-        )
-        .child(
-            div()
-                .pt_4()
-                .flex()
-                .items_center()
-                .gap_2()
-                .id("skills-market-categories")
-                .overflow_x_scroll()
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 0;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[0], active_category == 0)),
-                )
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 1;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[1], active_category == 1)),
-                )
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 2;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[2], active_category == 2)),
-                )
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 3;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[3], active_category == 3)),
-                )
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 4;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[4], active_category == 4)),
-                )
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_category = 5;
-                                cx.notify();
-                            }),
-                        )
-                        .child(chip(categories[5], active_category == 5)),
                 ),
         );
 

@@ -2158,7 +2158,7 @@ impl AppState {
 
     fn render_window_titlebar(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let header_content = match self.main_view {
@@ -2182,22 +2182,7 @@ impl AppState {
                 )
                 .into_any_element()
             }
-            MainView::SkillsMarket => {
-                let lang = self.current_lang;
-                div()
-                    .flex()
-                    .items_center()
-                    .h_full()
-                    .px_8()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(PRIMARY_TEXT())
-                            .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::CAPABILITIES)),
-                    )
-                    .into_any_element()
-            }
+            MainView::SkillsMarket => skills_market::render_skills_market_titlebar(&*self, window, cx)
         };
 
         div()

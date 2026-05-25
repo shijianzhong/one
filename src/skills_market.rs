@@ -224,13 +224,6 @@ pub(crate) fn render_skills_market_titlebar(
                         .gap_4()
                         .child(
                             div()
-                                .pb_3()
-                                .border_b_1()
-                                .border_color(if tab_market_active {
-                                    crate::BRAND_BLUE()
-                                } else {
-                                    gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 }
-                                })
                                 .text_xs()
                                 .text_color(if tab_market_active {
                                     crate::ACCENT_TEXT()
@@ -238,6 +231,7 @@ pub(crate) fn render_skills_market_titlebar(
                                     crate::SECONDARY_TEXT()
                                 })
                                 .font_weight(gpui::FontWeight::BOLD)
+                                .when(tab_market_active, |this| this.pb_3().border_b_1().border_color(crate::BRAND_BLUE()))
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
@@ -250,13 +244,6 @@ pub(crate) fn render_skills_market_titlebar(
                         )
                         .child(
                             div()
-                                .pb_3()
-                                .border_b_1()
-                                .border_color(if tab_installed_active {
-                                    crate::BRAND_BLUE()
-                                } else {
-                                    gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 }
-                                })
                                 .text_xs()
                                 .text_color(if tab_installed_active {
                                     crate::ACCENT_TEXT()
@@ -264,6 +251,7 @@ pub(crate) fn render_skills_market_titlebar(
                                     crate::SECONDARY_TEXT()
                                 })
                                 .font_weight(gpui::FontWeight::BOLD)
+                                .when(tab_installed_active, |this| this.pb_3().border_b_1().border_color(crate::BRAND_BLUE()))
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,

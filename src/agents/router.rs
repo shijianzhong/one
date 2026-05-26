@@ -8,6 +8,7 @@ use crate::memory::types::ChatMessage;
 pub struct AgentRouter {
     business_agents: HashMap<usize, AgentRow>,
     claude_keywords: Vec<String>,
+    system_keywords: Vec<String>,
 }
 
 impl Clone for AgentRouter {
@@ -15,6 +16,7 @@ impl Clone for AgentRouter {
         Self {
             business_agents: self.business_agents.clone(),
             claude_keywords: self.claude_keywords.clone(),
+            system_keywords: self.system_keywords.clone(),
         }
     }
 }
@@ -33,9 +35,28 @@ impl AgentRouter {
         claude_keywords.push("写一个".to_string());
         claude_keywords.push("创建".to_string());
 
+        let mut system_keywords = Vec::new();
+        system_keywords.push("进程".to_string());
+        system_keywords.push("内存".to_string());
+        system_keywords.push("占用".to_string());
+        system_keywords.push("硬盘".to_string());
+        system_keywords.push("磁盘".to_string());
+        system_keywords.push("空间".to_string());
+        system_keywords.push("应用".to_string());
+        system_keywords.push("程序".to_string());
+        system_keywords.push("杀进程".to_string());
+        system_keywords.push("关闭".to_string());
+        system_keywords.push("删除".to_string());
+        system_keywords.push("打开应用".to_string());
+        system_keywords.push("哪个应用".to_string());
+        system_keywords.push("什么应用".to_string());
+        system_keywords.push("为什么".to_string());
+        system_keywords.push("系统".to_string());
+
         Self {
             business_agents: HashMap::new(),
             claude_keywords,
+            system_keywords,
         }
     }
 
@@ -87,6 +108,15 @@ impl AgentRouter {
                 agent_id: 0, // Special ID for generator
                 message: message.to_string(),
             };
+        }
+
+        // Check for System Agent intent
+        for keyword in &self.system_keywords {
+            if message_lower.contains(&keyword.to_lowercase()) {
+                return RoutingDecision::SystemAgent {
+                    task: message.to_string(),
+                };
+            }
         }
 
         // Default to general AI

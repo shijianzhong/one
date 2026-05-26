@@ -35,6 +35,7 @@ pub(crate) mod ui_theme;
 
 use agents::claude_code::ClaudeStreamEvent;
 use agents::router::AgentRouter;
+use system_agent;
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
@@ -236,6 +237,8 @@ struct AppState {
     general_ai_live_text: String,
     general_ai_show_live_bubble: bool,
     titlebar_should_move: bool,
+    // SystemAgent dangerous operation confirmation
+    pending_confirmation_tools: Option<(Vec<system_agent::Tool>, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +258,7 @@ enum GeneralAiStreamEvent {
     Delta(String),
     Finished { result: String },
     Failed { error: String },
+    ConfirmationRequired { tools: Vec<system_agent::Tool> },
 }
 
 #[derive(Debug, Clone)]
@@ -776,8 +780,31 @@ impl AppState {
                 let content = if result.trim().is_empty() {
                     self.general_ai_live_text.clone()
                 } else {
-                    result
+                    result.clone()
                 };
+
+                if content.starts_with("CONFIRM_REQUIRED:") {
+                    let tools_json = content.strip_prefix("CONFIRM_REQUIRED:").unwrap_or("");
+                    let dangerous_msg = "⚠️ 检测到危险操作：\n\n由于包含危险操作，当前已跳过执行。";
+
+                    self.pending_confirmation_tools = Some((Vec::new(), tools_json.to_string()));
+
+                    if run_task_id == self.active_task_id {
+                        self.messages.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: dangerous_msg.to_string(),
+                        });
+                        self.needs_auto_scroll = true;
+                    }
+
+                    self.request_in_flight = false;
+                    self.request_status_text = None;
+                    self.general_ai_run_id = None;
+                    self.general_ai_task_id = None;
+                    self.general_ai_show_live_bubble = false;
+                    self.general_ai_live_text.clear();
+                    return;
+                }
 
                 log_think_boundary_newlines("general_ai:final", &content);
 
@@ -900,6 +927,25 @@ impl AppState {
                         .ok();
                 }
             }
+            GeneralAiStreamEvent::ConfirmationRequired { tools } => {
+                self.request_in_flight = false;
+                self.request_status_text = None;
+                self.general_ai_run_id = None;
+                self.general_ai_task_id = None;
+                self.general_ai_show_live_bubble = false;
+                self.general_ai_live_text.clear();
+
+                self.pending_confirmation_tools = Some((tools, "".to_string()));
+
+                if run_task_id == self.active_task_id {
+                    let msg = "⚠️ 检测到危险操作：\n\n由于包含危险操作，当前已跳过执行。";
+                    self.messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: msg.to_string(),
+                    });
+                    self.needs_auto_scroll = true;
+                }
+            }
         }
     }
 
@@ -1017,25 +1063,257 @@ impl AppState {
         .detach();
     }
 
-    fn slugify_task_title(title: &str) -> String {
-        let mut slug = String::new();
-        let mut prev_dash = false;
-        for ch in title.chars() {
-            if ch.is_ascii_alphanumeric() {
-                slug.push(ch.to_ascii_lowercase());
-                prev_dash = false;
-            } else if !prev_dash {
-                slug.push('-');
-                prev_dash = true;
+    fn spawn_system_agent_run(&mut self, task: String, cx: &mut Context<Self>) {
+        let run_id = self.begin_general_ai_run();
+
+        let base_url = self.model_base_url.clone();
+        let api_key = self.model_api_key.clone();
+        let model = self.model_name.clone();
+
+        let (sender, receiver) = mpsc::channel::<GeneralAiStreamEvent>();
+        let delta_sender = sender.clone();
+        let final_sender = sender.clone();
+
+        let task_for_async = task.clone();
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let tools_result = system_agent::Tool::from_task_llm_async(&task_for_async, &base_url, &api_key, &model).await;
+
+            let tools_with_danger = match tools_result {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[SystemAgent] LLM parsing failed: {}, falling back to keyword", e);
+                    system_agent::Tool::from_task(&task_for_async)
+                        .into_iter()
+                        .map(|t| (t, None))
+                        .collect()
+                }
+            };
+
+            if system_agent::requires_confirmation(&tools_with_danger) {
+                let dangerous_msg = "⚠️ 检测到危险操作：\n".to_string();
+                let mut details = Vec::new();
+                let mut tools_for_save = Vec::new();
+                for (tool, _) in &tools_with_danger {
+                    match tool {
+                        system_agent::Tool::KillProcess(pid) => {
+                            details.push(format!("  - 终止进程 PID={}", pid));
+                            tools_for_save.push(format!("kill:{}", pid));
+                        }
+                        system_agent::Tool::DeleteFile(path) => {
+                            details.push(format!("  - 删除文件 {}", path));
+                            tools_for_save.push(format!("delete:{}", path));
+                        }
+                        _ => {}
+                    }
+                }
+                let msg = dangerous_msg + &details.join("\n") + "\n\n由于包含危险操作，当前已跳过执行。";
+
+                let tools_json = serde_json::to_string(&tools_for_save).unwrap_or_default();
+                let _ = delta_sender.send(GeneralAiStreamEvent::Delta(msg));
+                let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: format!("CONFIRM_REQUIRED:{}", tools_json) });
+                return;
             }
-        }
-        slug.trim_matches('-')
-            .to_string()
-            .chars()
-            .take(32)
-            .collect::<String>()
+
+            let mut results = Vec::new();
+            for (tool, _) in tools_with_danger {
+                match tool.execute() {
+                    Ok(output) => results.push(output),
+                    Err(e) => results.push(format!("Error: {}", e)),
+                }
+            }
+
+            let response = if results.is_empty() {
+                "No operations needed.".to_string()
+            } else {
+                results.join("\n---\n")
+            };
+
+            let _ = delta_sender.send(GeneralAiStreamEvent::Delta(response.clone()));
+            let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: response });
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| loop {
+            let mut disconnected = false;
+
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_general_ai_stream_event(run_id, event, cx);
+                            cx.notify();
+                        });
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+
+            if disconnected {
+                break;
+            }
+
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
+        })
+        .detach();
     }
 
+    fn confirm_system_agent_operation(&mut self, confirmed: bool, cx: &mut Context<Self>) {
+        if !confirmed {
+            self.messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: "操作已取消。".to_string(),
+            });
+            self.pending_confirmation_tools = None;
+            cx.notify();
+            return;
+        }
+
+        let tools_data = self.pending_confirmation_tools.take();
+        if let Some((_tools, task_json)) = tools_data {
+            let tools = parse_tools_from_json(&task_json);
+            if tools.is_empty() {
+                self.messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: "无法解析操作指令。".to_string(),
+                });
+                cx.notify();
+                return;
+            }
+
+            let run_id = self.begin_general_ai_run();
+
+            let (sender, receiver) = mpsc::channel::<GeneralAiStreamEvent>();
+            let delta_sender = sender.clone();
+            let final_sender = sender.clone();
+
+            let tools_for_async = tools;
+            gpui_tokio::Tokio::spawn(cx, async move {
+                let mut results = Vec::new();
+                for tool in &tools_for_async {
+                    match tool.execute() {
+                        Ok(output) => results.push(output),
+                        Err(e) => results.push(format!("Error: {}", e)),
+                    }
+                }
+
+                let response = if results.is_empty() {
+                    "操作完成。".to_string()
+                } else {
+                    results.join("\n")
+                };
+
+                let _ = delta_sender.send(GeneralAiStreamEvent::Delta(response.clone()));
+                let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: response });
+            })
+            .detach();
+
+            cx.spawn(async move |this, cx| loop {
+                let mut disconnected = false;
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(event) => {
+                            let _ = this.update(cx, |this, cx| {
+                                this.apply_general_ai_stream_event(run_id, event, cx);
+                                cx.notify();
+                            });
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnected {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(Duration::from_millis(60))
+                    .await;
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+}
+
+fn parse_tools_from_json(json_str: &str) -> Vec<system_agent::Tool> {
+    let mut tools = Vec::new();
+
+    if json_str.is_empty() {
+        return tools;
+    }
+
+    if let Ok(items) = serde_json::from_str::<Vec<String>>(json_str) {
+        for item in items {
+            let parts: Vec<&str> = item.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let action = parts[0];
+                let value = parts[1];
+                match action {
+                    "kill" => {
+                        if let Ok(pid) = value.parse::<u32>() {
+                            tools.push(system_agent::Tool::KillProcess(pid));
+                        }
+                    }
+                    "delete" => {
+                        tools.push(system_agent::Tool::DeleteFile(value.to_string()));
+                    }
+                    "disk" => {
+                        if value == "free" {
+                            tools.push(system_agent::Tool::DiskFree);
+                        } else {
+                            tools.push(system_agent::Tool::DiskUsage(value.to_string()));
+                        }
+                    }
+                    "list_dir" => {
+                        tools.push(system_agent::Tool::ListDir(value.to_string()));
+                    }
+                    "list_processes" => {
+                        tools.push(system_agent::Tool::ListProcesses);
+                    }
+                    "top_memory" => {
+                        let n = value.parse().unwrap_or(10);
+                        tools.push(system_agent::Tool::TopMemoryProcs(n));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    tools
+}
+
+fn slugify_task_title(title: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    slug.trim_matches('-')
+        .to_string()
+        .chars()
+        .take(32)
+        .collect::<String>()
+}
+
+impl AppState {
     fn get_task_dir_for_ids(
         &self,
         workspace_id: usize,
@@ -1048,7 +1326,7 @@ impl AppState {
             .find(|w| w.id == workspace_id)
             .map(|w| w.path.clone())
             .unwrap_or_else(|| self.default_work_dir.clone());
-        let slug = Self::slugify_task_title(task_title);
+        let slug = slugify_task_title(task_title);
         let dir_name = if slug.is_empty() {
             format!("{}", task_id)
         } else {
@@ -1275,6 +1553,7 @@ impl AppState {
             general_ai_live_text: String::new(),
             general_ai_show_live_bubble: false,
             titlebar_should_move: false,
+            pending_confirmation_tools: None,
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -3771,6 +4050,46 @@ impl AppState {
                                             }
                                         }
                                     }
+
+                                    if !is_user_msg && self.pending_confirmation_tools.is_some() {
+                                        let confirm_buttons = div()
+                                            .flex()
+                                            .gap_3()
+                                            .mt_4()
+                                            .child(
+                                                div()
+                                                    .px_4()
+                                                    .py_2()
+                                                    .rounded_md()
+                                                    .bg(gpui::green())
+                                                    .text_color(gpui::white())
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                        this.confirm_system_agent_operation(true, cx);
+                                                    }))
+                                                    .child("确认执行")
+                                            )
+                                            .child(
+                                                div()
+                                                    .px_4()
+                                                    .py_2()
+                                                    .rounded_md()
+                                                    .border_1()
+                                                    .border_color(BORDER_LIGHT())
+                                                    .text_color(SECONDARY_TEXT())
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                        this.confirm_system_agent_operation(false, cx);
+                                                    }))
+                                                    .child("取消")
+                                            );
+                                        rendered_parts.push(confirm_buttons.into_any_element());
+                                    }
+
                                     rendered_parts
                                 })
                         )
@@ -4312,6 +4631,22 @@ impl AppState {
                                                         cx.notify();
                                                         this.spawn_claude_code_run(instruction, session_id, cx);
                                                     }
+                                                    agents::types::RoutingDecision::SystemAgent { task } => {
+                                                        eprintln!("[ROUTER] Routing to System Agent");
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_system_agent_run(task, cx);
+                                                    }
                                                     _ => {
                                                         this.messages.push(ChatMessage {
                                                             role: "user".to_string(),
@@ -4388,6 +4723,22 @@ impl AppState {
                                                         });
                                                         cx.notify();
                                                         this.spawn_claude_code_run(instruction, session_id, cx);
+                                                    }
+                                                    agents::types::RoutingDecision::SystemAgent { task } => {
+                                                        eprintln!("[ROUTER] Routing to System Agent");
+                                                        this.messages.push(ChatMessage {
+                                                            role: "user".to_string(),
+                                                            content: user_message.clone(),
+                                                        });
+                                                        if let Some(task_id) = this.active_task_id {
+                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
+                                                        }
+                                                        this.needs_auto_scroll = true;
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_text("", _window, cx);
+                                                        });
+                                                        cx.notify();
+                                                        this.spawn_system_agent_run(task, cx);
                                                     }
                                                     _ => {
                                                         this.messages.push(ChatMessage {

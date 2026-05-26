@@ -99,6 +99,9 @@ pub enum RoutingDecision {
         agent_id: usize,
         message: String,
     },
+    SystemAgent {
+        task: String,
+    },
     GeneralAI {
         messages: Vec<crate::memory::types::ChatMessage>,
     },

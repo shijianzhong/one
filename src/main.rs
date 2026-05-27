@@ -2612,19 +2612,21 @@ impl AppState {
     }
 
     fn render_nav(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let task_list = self.render_task_list(cx);
+
         div()
             .flex()
             .flex_col()
             .w(px(NAV_WIDTH))
             .h_full()
             .bg(NAV_BG())
-            .overflow_hidden()
             .child(div().flex_none().child(self.render_nav_buttons(cx)))
             .child(
                 div()
+                    .id("task-list-container")
                     .flex_1()
-                    .overflow_hidden()
-                    .child(self.render_task_list(cx)),
+                    .overflow_y_scroll()
+                    .child(task_list),
             )
             .child(div().flex_none().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(div().flex_none().child(self.render_nav_footer_actions()))
@@ -3000,11 +3002,9 @@ impl AppState {
         let mut result = div()
             .flex()
             .flex_col()
-            .flex_1()
             .px_4()
             .pb_3()
             .id("task-list")
-            .overflow_scroll()
             .gap_3()
             .on_mouse_down(
                 gpui::MouseButton::Left,

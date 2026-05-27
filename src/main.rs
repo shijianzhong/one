@@ -828,16 +828,7 @@ impl AppState {
             *complete = true;
         }
 
-        // Add user message to chat
-        self.messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: user_message.clone(),
-        });
-
-        if let Some(task_id) = self.active_task_id {
-            task_db::insert_message(&self.db.conn, task_id, "user", &user_message).ok();
-        }
-
+        // User message already added in spawn_intent_agent_run, just trigger scroll here
         self.needs_auto_scroll = true;
         cx.notify();
 
@@ -1114,6 +1105,17 @@ impl AppState {
         let base_url = self.model_base_url.clone();
         let api_key = self.model_api_key.clone();
         let model = self.model_name.clone();
+
+        // Immediately add user message to chat for instant display
+        self.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: message.clone(),
+        });
+        if let Some(task_id) = self.active_task_id {
+            task_db::insert_message(&self.db.conn, task_id, "user", &message).ok();
+        }
+        self.needs_auto_scroll = true;
+        cx.notify();
 
         let (sender, receiver) = mpsc::channel::<intent::IntentEvent>();
 

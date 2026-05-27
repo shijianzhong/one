@@ -4217,6 +4217,8 @@ impl AppState {
                                 .max_w(px(780.0))
                                 .min_w(px(35.0))
                                 .w_full()
+                                .pl_8()
+                                .pt_4()
                                 .children({
                                     let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
                                     let mut prev_was_think = false;

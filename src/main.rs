@@ -33,9 +33,8 @@ mod skills_market;
 mod task_db;
 pub(crate) mod ui_theme;
 
-use agents::claude_code::ClaudeStreamEvent;
-use agents::router::AgentRouter;
-use system_agent;
+use agents::{claude_code::ClaudeStreamEvent, intent, types::RoutingDecision};
+use system_tools;
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
 use sandbox::backend::{Backend, SandboxBackend};
@@ -229,7 +228,6 @@ struct AppState {
     request_status_text: Option<String>,
     request_kind: Option<RequestKind>,
     // Agent system
-    agent_router: AgentRouter,
     think_collapsed: HashMap<String, bool>,
     next_general_ai_run_id: u64,
     general_ai_run_id: Option<u64>,
@@ -237,8 +235,11 @@ struct AppState {
     general_ai_live_text: String,
     general_ai_show_live_bubble: bool,
     titlebar_should_move: bool,
-    // SystemAgent dangerous operation confirmation
-    pending_confirmation_tools: Option<(Vec<system_agent::Tool>, String)>,
+    // SystemTools dangerous operation confirmation
+    pending_confirmation_tools: Option<(Vec<system_tools::Tool>, String)>,
+    // Intent understanding
+    intent_thinking: String,
+    intent_content_parts: Vec<ContentPart>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,7 +259,7 @@ enum GeneralAiStreamEvent {
     Delta(String),
     Finished { result: String },
     Failed { error: String },
-    ConfirmationRequired { tools: Vec<system_agent::Tool> },
+    ConfirmationRequired { tools: Vec<system_tools::Tool> },
 }
 
 #[derive(Debug, Clone)]
@@ -568,6 +569,60 @@ fn render_formatted_content(
 enum ContentPart {
     Normal(String),
     Think { text: String, complete: bool },
+    IntentUnderstanding { text: String, complete: bool },
+    ProcessTable { processes: Vec<ProcessDisplayInfo> },
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessDisplayInfo {
+    pub name: String,
+    pub pid: u32,
+    pub cpu_percent: f64,
+    pub memory_mb: f64,
+    pub is_critical: bool,
+}
+
+fn try_parse_process_list(content: &str) -> Option<Vec<ProcessDisplayInfo>> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) else {
+        return None;
+    };
+    if parsed.is_empty() {
+        return None;
+    }
+    let has_expected_fields = parsed.iter().all(|v| {
+        v.get("pid").is_some()
+            && v.get("name").is_some()
+            && v.get("cpu_percent").is_some()
+            && v.get("memory_mb").is_some()
+    });
+    if !has_expected_fields {
+        return None;
+    }
+    let processes: Vec<ProcessDisplayInfo> = parsed
+        .iter()
+        .filter_map(|v| {
+            let name = v.get("name")?.as_str()?.to_string();
+            let pid = v.get("pid")?.as_u64()?.try_into().ok()?;
+            let cpu_percent = v.get("cpu_percent")?.as_f64()?;
+            let memory_mb = v.get("memory_mb")?.as_f64()?;
+            let is_critical = cpu_percent > 60.0;
+            Some(ProcessDisplayInfo {
+                name,
+                pid,
+                cpu_percent,
+                memory_mb,
+                is_critical,
+            })
+        })
+        .collect();
+    if processes.len() < 3 {
+        return None;
+    }
+    Some(processes)
 }
 
 fn strip_think_tags(content: &str) -> String {
@@ -655,6 +710,10 @@ fn parse_think_content(content: &str) -> Vec<ContentPart> {
 
     if parts.is_empty() {
         parts.push(ContentPart::Normal(content.to_string()));
+    } else if let Some(processes) = try_parse_process_list(content) {
+        if !processes.is_empty() {
+            parts.push(ContentPart::ProcessTable { processes });
+        }
     }
 
     parts
@@ -671,6 +730,14 @@ fn escape_visible_snippet(text: &str, max_chars: usize) -> String {
         }
     }
     out
+}
+
+fn format_memory(mb: f64) -> String {
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{:.0} MB", mb)
+    }
 }
 
 fn normalize_single_line_label(text: &str) -> String {
@@ -751,6 +818,46 @@ impl AppState {
         self.general_ai_live_text.clear();
         self.general_ai_show_live_bubble = true;
         run_id
+    }
+
+    fn handle_intent_result(&mut self, decision: RoutingDecision, user_message: String, cx: &mut Context<Self>, _window: Option<&mut Window>) {
+        eprintln!("[DEBUG] handle_intent_result called, user_message='{}', intent_parts.len()={}", user_message, self.intent_content_parts.len());
+
+        // Mark intent understanding as complete
+        if let Some(ContentPart::IntentUnderstanding { complete, .. }) = self.intent_content_parts.first_mut() {
+            *complete = true;
+        }
+
+        // Add user message to chat
+        self.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: user_message.clone(),
+        });
+
+        if let Some(task_id) = self.active_task_id {
+            task_db::insert_message(&self.db.conn, task_id, "user", &user_message).ok();
+        }
+
+        self.needs_auto_scroll = true;
+        cx.notify();
+
+        match decision {
+            RoutingDecision::ClaudeCode { instruction, session_id } => {
+                eprintln!("[ROUTER] Routing to Claude Code");
+                self.request_in_flight = true;
+                self.request_status_text = Some(t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                self.request_kind = Some(RequestKind::ClaudeCode);
+                self.spawn_claude_code_run(instruction, session_id, cx);
+            }
+            RoutingDecision::SystemTools { task } => {
+                eprintln!("[ROUTER] Routing to System Tools");
+                self.spawn_system_tools_run(task, cx);
+            }
+            _ => {
+                eprintln!("[ROUTER] Routing to General AI");
+                self.spawn_general_ai_run(cx);
+            }
+        }
     }
 
     fn apply_general_ai_stream_event(
@@ -1003,6 +1110,99 @@ impl AppState {
         }
     }
 
+    fn spawn_intent_agent_run(&mut self, message: String, cx: &mut Context<Self>) {
+        let base_url = self.model_base_url.clone();
+        let api_key = self.model_api_key.clone();
+        let model = self.model_name.clone();
+
+        let (sender, receiver) = mpsc::channel::<intent::IntentEvent>();
+
+        self.intent_thinking.clear();
+        self.intent_content_parts = vec![ContentPart::IntentUnderstanding {
+            text: String::new(),
+            complete: false,
+        }];
+        cx.notify();
+
+        let message_for_async = message.clone();
+        gpui_tokio::Tokio::spawn(cx, async move {
+            intent::IntentAgent::classify(message_for_async, base_url, api_key, model, sender).await;
+        })
+        .detach();
+
+        let message_for_decision = message.clone();
+        cx.spawn(async move |this, cx| loop {
+            let mut disconnected = false;
+            let mut pending_decision: Option<(RoutingDecision, String)> = None;
+
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        match &event {
+                            intent::IntentEvent::Thinking(text) => {
+                                let _ = this.update(cx, |this, cx| {
+                                    this.intent_thinking.push_str(text);
+                                    this.intent_thinking.push('\n');
+                                    if let Some(ContentPart::IntentUnderstanding { text: intent_text, .. }) = this.intent_content_parts.first_mut() {
+                                        intent_text.push_str(text);
+                                        intent_text.push('\n');
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                            intent::IntentEvent::Decision(decision) => {
+                                pending_decision = Some((decision.clone(), message_for_decision.clone()));
+                            }
+                            intent::IntentEvent::Error(err) => {
+                                let _ = this.update(cx, |this, cx| {
+                                    if let Some(ContentPart::IntentUnderstanding { .. }) = this.intent_content_parts.first_mut() {
+                                        this.intent_content_parts = vec![ContentPart::IntentUnderstanding {
+                                            text: format!("Error: {}", err),
+                                            complete: true,
+                                        }];
+                                    }
+                                    cx.notify();
+                                });
+                                pending_decision = Some((RoutingDecision::GeneralAI {
+                                    messages: vec![ChatMessage {
+                                        role: "user".to_string(),
+                                        content: "".to_string(),
+                                    }],
+                                }, err.clone()));
+                            }
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+
+            // Handle pending decision if any
+            if let Some((decision, user_message)) = pending_decision.take() {
+                let msg = if user_message.is_empty() {
+                    "".to_string()
+                } else {
+                    user_message
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.handle_intent_result(decision, msg, cx, None);
+                });
+            }
+
+            if disconnected {
+                break;
+            }
+
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
+        })
+        .detach();
+    }
+
     fn spawn_general_ai_run(&mut self, cx: &mut Context<Self>) {
         let run_id = self.begin_general_ai_run();
 
@@ -1063,7 +1263,7 @@ impl AppState {
         .detach();
     }
 
-    fn spawn_system_agent_run(&mut self, task: String, cx: &mut Context<Self>) {
+    fn spawn_system_tools_run(&mut self, task: String, cx: &mut Context<Self>) {
         let run_id = self.begin_general_ai_run();
 
         let base_url = self.model_base_url.clone();
@@ -1076,30 +1276,30 @@ impl AppState {
 
         let task_for_async = task.clone();
         gpui_tokio::Tokio::spawn(cx, async move {
-            let tools_result = system_agent::Tool::from_task_llm_async(&task_for_async, &base_url, &api_key, &model).await;
+            let tools_result = system_tools::Tool::from_task_llm_async(&task_for_async, &base_url, &api_key, &model).await;
 
             let tools_with_danger = match tools_result {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("[SystemAgent] LLM parsing failed: {}, falling back to keyword", e);
-                    system_agent::Tool::from_task(&task_for_async)
+                    eprintln!("[SystemTools] LLM parsing failed: {}, falling back to keyword", e);
+                    system_tools::Tool::from_task(&task_for_async)
                         .into_iter()
                         .map(|t| (t, None))
                         .collect()
                 }
             };
 
-            if system_agent::requires_confirmation(&tools_with_danger) {
+            if system_tools::requires_confirmation(&tools_with_danger) {
                 let dangerous_msg = "⚠️ 检测到危险操作：\n".to_string();
                 let mut details = Vec::new();
                 let mut tools_for_save = Vec::new();
                 for (tool, _) in &tools_with_danger {
                     match tool {
-                        system_agent::Tool::KillProcess(pid) => {
+                        system_tools::Tool::KillProcess(pid) => {
                             details.push(format!("  - 终止进程 PID={}", pid));
                             tools_for_save.push(format!("kill:{}", pid));
                         }
-                        system_agent::Tool::DeleteFile(path) => {
+                        system_tools::Tool::DeleteFile(path) => {
                             details.push(format!("  - 删除文件 {}", path));
                             tools_for_save.push(format!("delete:{}", path));
                         }
@@ -1163,7 +1363,7 @@ impl AppState {
         .detach();
     }
 
-    fn confirm_system_agent_operation(&mut self, confirmed: bool, cx: &mut Context<Self>) {
+    fn confirm_system_tools_operation(&mut self, confirmed: bool, cx: &mut Context<Self>) {
         if !confirmed {
             self.messages.push(ChatMessage {
                 role: "assistant".to_string(),
@@ -1246,7 +1446,7 @@ impl AppState {
     }
 }
 
-fn parse_tools_from_json(json_str: &str) -> Vec<system_agent::Tool> {
+fn parse_tools_from_json(json_str: &str) -> Vec<system_tools::Tool> {
     let mut tools = Vec::new();
 
     if json_str.is_empty() {
@@ -1262,28 +1462,28 @@ fn parse_tools_from_json(json_str: &str) -> Vec<system_agent::Tool> {
                 match action {
                     "kill" => {
                         if let Ok(pid) = value.parse::<u32>() {
-                            tools.push(system_agent::Tool::KillProcess(pid));
+                            tools.push(system_tools::Tool::KillProcess(pid));
                         }
                     }
                     "delete" => {
-                        tools.push(system_agent::Tool::DeleteFile(value.to_string()));
+                        tools.push(system_tools::Tool::DeleteFile(value.to_string()));
                     }
                     "disk" => {
                         if value == "free" {
-                            tools.push(system_agent::Tool::DiskFree);
+                            tools.push(system_tools::Tool::DiskFree);
                         } else {
-                            tools.push(system_agent::Tool::DiskUsage(value.to_string()));
+                            tools.push(system_tools::Tool::DiskUsage(value.to_string()));
                         }
                     }
                     "list_dir" => {
-                        tools.push(system_agent::Tool::ListDir(value.to_string()));
+                        tools.push(system_tools::Tool::ListDir(value.to_string()));
                     }
                     "list_processes" => {
-                        tools.push(system_agent::Tool::ListProcesses);
+                        tools.push(system_tools::Tool::ListProcesses);
                     }
                     "top_memory" => {
                         let n = value.parse().unwrap_or(10);
-                        tools.push(system_agent::Tool::TopMemoryProcs(n));
+                        tools.push(system_tools::Tool::TopMemoryProcs(n));
                     }
                     _ => {}
                 }
@@ -1545,7 +1745,6 @@ impl AppState {
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
-            agent_router: AgentRouter::new(),
             think_collapsed: HashMap::new(),
             next_general_ai_run_id: 0,
             general_ai_run_id: None,
@@ -1554,6 +1753,8 @@ impl AppState {
             general_ai_show_live_bubble: false,
             titlebar_should_move: false,
             pending_confirmation_tools: None,
+            intent_thinking: String::new(),
+            intent_content_parts: Vec::new(),
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -3882,13 +4083,12 @@ impl AppState {
             self.needs_auto_scroll = false;
         }
 
-        let task_id = self.active_task_id.unwrap_or_default();
-
         let mut message_list = div()
             .flex_col()
             .gap_8()
             .w_full()
             .children(messages.iter().enumerate().map(|(msg_index, msg)| {
+                let task_id = self.active_task_id.unwrap_or_default();
                 let is_user_msg = is_user(&msg.role);
                 let bubble_bg = if is_user_msg {
                     USER_BUBBLE_BG()
@@ -3899,7 +4099,14 @@ impl AppState {
                 let role_label = if is_user_msg { t(lang, Translations::YOU) } else { "ONE AI" };
 
                 // Parse content for think tags
-                let parts = parse_think_content(&msg.content);
+                let mut parts = parse_think_content(&msg.content);
+
+                // If this is an assistant message and we have intent_content_parts, insert them first
+                if !is_user_msg && !self.intent_content_parts.is_empty() {
+                    let mut intent_parts = self.intent_content_parts.clone();
+                    intent_parts.append(&mut parts);
+                    parts = intent_parts;
+                }
 
                 // User messages: right aligned, Assistant messages: left aligned
                 let message_container = if is_user_msg {
@@ -3982,6 +4189,71 @@ impl AppState {
                                                     .whitespace_normal()
                                                     .child(text.clone());
                                                 let el = if add_top_padding { el.pt_1() } else { el };
+                                                rendered_parts.push(el.into_any_element());
+                                            }
+                                            ContentPart::ProcessTable { processes } => {
+                                                prev_was_think = false;
+                                                let el = self.render_process_table(processes, cx);
+                                                rendered_parts.push(el.into_any_element());
+                                            }
+                                            ContentPart::IntentUnderstanding { text, complete } => {
+                                                prev_was_think = true;
+                                                let key = format!("task:{}:intent", task_id);
+                                                let collapsed = self
+                                                    .think_collapsed
+                                                    .get(&key)
+                                                    .copied()
+                                                    .unwrap_or(*complete);
+                                                let header_text = if *complete {
+                                                    t(lang, Translations::INTENT_UNDERSTOOD)
+                                                } else {
+                                                    t(lang, Translations::UNDERSTANDING_INTENT)
+                                                };
+                                                let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
+
+                                                let el = div()
+                                                    .flex_col()
+                                                    .w_full()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .px_2()
+                                                            .py_1()
+                                                            .rounded_md()
+                                                            .bg(GHOST_SURFACE_BG())
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                                let next = !this.think_collapsed.get(&key).copied().unwrap_or(false);
+                                                                this.think_collapsed.insert(key.clone(), next);
+                                                                cx.notify();
+                                                            }))
+                                                            .child(
+                                                                svg()
+                                                                    .path(icon_path)
+                                                                    .size(px(14.0))
+                                                                    .flex_none()
+                                                                    .text_color(MUTED_TEXT())
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(MUTED_TEXT())
+                                                                    .child(header_text)
+                                                            )
+                                                    )
+                                                    .when(!collapsed, |this| {
+                                                        this.child(
+                                                            div()
+                                                                .pl_3()
+                                                                .pr_2()
+                                                                .text_xs()
+                                                                .text_color(TERTIARY_TEXT())
+                                                                .whitespace_normal()
+                                                                .child(text.clone())
+                                                        )
+                                                    });
                                                 rendered_parts.push(el.into_any_element());
                                             }
                                             ContentPart::Think { text, complete } => {
@@ -4067,7 +4339,7 @@ impl AppState {
                                                     .font_weight(FontWeight::BOLD)
                                                     .cursor_pointer()
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                                        this.confirm_system_agent_operation(true, cx);
+                                                        this.confirm_system_tools_operation(true, cx);
                                                     }))
                                                     .child("确认执行")
                                             )
@@ -4083,7 +4355,7 @@ impl AppState {
                                                     .font_weight(FontWeight::BOLD)
                                                     .cursor_pointer()
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                                        this.confirm_system_agent_operation(false, cx);
+                                                        this.confirm_system_tools_operation(false, cx);
                                                     }))
                                                     .child("取消")
                                             );
@@ -4131,6 +4403,7 @@ impl AppState {
         };
         let mut think_index = 0usize;
         let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
+        let task_id = self.active_task_id.unwrap_or_default();
         if !waiting {
             let mut prev_was_think = false;
             for part in &parts {
@@ -4144,6 +4417,75 @@ impl AppState {
                             .whitespace_normal()
                             .child(text.clone());
                         let el = if add_top_padding { el.pt_1() } else { el };
+                        rendered_parts.push(el.into_any_element());
+                    }
+                    ContentPart::ProcessTable { processes } => {
+                        prev_was_think = false;
+                        let el = self.render_process_table(processes, cx);
+                        rendered_parts.push(el.into_any_element());
+                    }
+                    ContentPart::IntentUnderstanding { text, complete } => {
+                        prev_was_think = true;
+                        let key = format!("task:{}:intent", task_id);
+                        let collapsed = self.think_collapsed.get(&key).copied().unwrap_or(*complete);
+                        let header_text = if *complete {
+                            t(lang, Translations::INTENT_UNDERSTOOD)
+                        } else {
+                            t(lang, Translations::UNDERSTANDING_INTENT)
+                        };
+                        let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
+
+                        let el = div()
+                            .flex_col()
+                            .w_full()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(SURFACE_ELEVATED())
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                let next = !this
+                                                    .think_collapsed
+                                                    .get(&key)
+                                                    .copied()
+                                                    .unwrap_or(false);
+                                                this.think_collapsed.insert(key.clone(), next);
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        svg()
+                                            .path(icon_path)
+                                            .size(px(14.0))
+                                            .flex_none()
+                                            .text_color(MUTED_TEXT()),
+                                    )
+                                    .child(
+                                        div().text_xs().text_color(MUTED_TEXT()).child(header_text),
+                                    ),
+                            )
+                            .when(!collapsed, |this| {
+                                this.child(
+                                    div()
+                                        .pl_3()
+                                        .pr_2()
+                                        .text_xs()
+                                        .text_color(TERTIARY_TEXT())
+                                        .whitespace_normal()
+                                        .child(text.clone()),
+                                )
+                            });
                         rendered_parts.push(el.into_any_element());
                     }
                     ContentPart::Think { text, complete } => {
@@ -4364,7 +4706,8 @@ impl AppState {
                             .children({
                                 let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
                                 let mut prev_was_think = false;
-                                for part in &parts {
+                                let parts_static = parts.clone();
+                                for part in &parts_static {
                                     match part {
                                         ContentPart::Normal(text) => {
                                             let add_top_padding = prev_was_think;
@@ -4376,6 +4719,14 @@ impl AppState {
                                                 .child(text.clone());
                                             let el = if add_top_padding { el.pt_1() } else { el };
                                             rendered_parts.push(el.into_any_element());
+                                        }
+                                        ContentPart::ProcessTable { processes } => {
+                                            prev_was_think = false;
+                                            let el = self.render_process_table(processes, cx);
+                                            rendered_parts.push(el.into_any_element());
+                                        }
+                                        ContentPart::IntentUnderstanding { .. } => {
+                                            continue;
                                         }
                                         ContentPart::Think { text, complete } => {
                                             prev_was_think = true;
@@ -4518,6 +4869,345 @@ impl AppState {
             )
     }
 
+    fn render_process_table(
+        &self,
+        processes: &[ProcessDisplayInfo],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let critical_count = processes.iter().filter(|p| p.is_critical).count();
+        let lang = self.current_lang;
+
+        div()
+            .flex_col()
+            .w_full()
+            .max_w(px(806.0))
+            .rounded_xl()
+            .bg(ASSISTANT_BUBBLE_BG())
+            .border_1()
+            .border_color(BORDER_LIGHT())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_6()
+                    .py_4()
+                    .bg(FLOATING_PANEL_BG())
+                    .border_b_1()
+                    .border_color(BORDER_LIGHT())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                svg()
+                                    .path("activity.svg")
+                                    .size(px(20.0))
+                                    .text_color(BRAND_BLUE()),
+                            )
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(PRIMARY_TEXT())
+                                    .child("System Process Monitor"),
+                            ),
+                    )
+                    .when(critical_count > 0, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(Hsla {
+                                    h: 0.0,
+                                    s: 1.0,
+                                    l: 0.88,
+                                    a: 1.0,
+                                })
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(Hsla {
+                                            h: 0.0,
+                                            s: 1.0,
+                                            l: 0.35,
+                                            a: 1.0,
+                                        })
+                                        .child(format!("{} High Usage Warnings", critical_count)),
+                                ),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px_6()
+                    .py_3()
+                    .bg(FLOATING_PANEL_BG())
+                    .border_b_1()
+                    .border_color(BORDER_LIGHT())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .w(px(245.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(SECONDARY_TEXT())
+                            .child("Process Name"),
+                    )
+                    .child(
+                        div()
+                            .w(px(120.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(SECONDARY_TEXT())
+                            .child("PID"),
+                    )
+                    .child(
+                        div()
+                            .w(px(200.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(SECONDARY_TEXT())
+                            .child("CPU %"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_right()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(SECONDARY_TEXT())
+                            .child("Memory"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("process_table_body")
+                    .flex_1()
+                    .overflow_scroll()
+                    .max_h(px(400.0))
+                    .children(processes.iter().enumerate().map(|(i, proc)| {
+                        let is_first = i == 0;
+                        let row_border = if is_first {
+                            div().border_t_1()
+                        } else {
+                            div().border_t_1().border_color(Hsla {
+                                h: 0.61,
+                                s: 0.14,
+                                l: 0.24,
+                                a: 0.3,
+                            })
+                        };
+                        let cpu_bar_color = if proc.is_critical {
+                            Hsla {
+                                h: 0.0,
+                                s: 1.0,
+                                l: 0.42,
+                                a: 1.0,
+                            }
+                        } else {
+                            BRAND_BLUE()
+                        };
+                        let bg_bar_width = (proc.cpu_percent / 100.0 * 180.0).min(180.0);
+
+                        div()
+                            .flex()
+                            .items_center()
+                            .px_6()
+                            .py_4()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .w(px(245.0))
+                                    .child(
+                                        div()
+                                            .size(px(32.0))
+                                            .rounded_sm()
+                                            .bg(Hsla {
+                                                h: 0.61,
+                                                s: 0.62,
+                                                l: 0.88,
+                                                a: 1.0,
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                svg()
+                                                    .path("cpu.svg")
+                                                    .size(px(16.0))
+                                                    .text_color(BRAND_BLUE()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(PRIMARY_TEXT())
+                                            .text_ellipsis()
+                                            .child(proc.name.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(120.0))
+                                    .text_base()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child(proc.pid.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .h(px(6.0))
+                                            .w(px(180.0))
+                                            .rounded_full()
+                                            .bg(Hsla {
+                                                h: 0.61,
+                                                s: 0.42,
+                                                l: 0.88,
+                                                a: 1.0,
+                                            })
+                                            .overflow_hidden()
+                                            .child(
+                                                div()
+                                                    .h(px(6.0))
+                                                    .w(px(bg_bar_width as f32))
+                                                    .rounded_full()
+                                                    .bg(cpu_bar_color),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if proc.is_critical {
+                                                Hsla {
+                                                    h: 0.0,
+                                                    s: 1.0,
+                                                    l: 0.42,
+                                                    a: 1.0,
+                                                }
+                                            } else {
+                                                SECONDARY_TEXT()
+                                            })
+                                            .child(format!("{:.1}%", proc.cpu_percent)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_right()
+                                    .text_base()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child(format_memory(proc.memory_mb)),
+                            )
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_6()
+                    .py_4()
+                    .bg(FLOATING_PANEL_BG())
+                    .border_t_1()
+                    .border_color(BORDER_LIGHT())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_6()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .size(px(10.0))
+                                            .rounded_full()
+                                            .bg(Hsla {
+                                                h: 0.0,
+                                                s: 1.0,
+                                                l: 0.42,
+                                                a: 1.0,
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT())
+                                            .child("CRITICAL (>60%)"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .size(px(10.0))
+                                            .rounded_full()
+                                            .bg(BRAND_BLUE()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT())
+                                            .child("HEALTHY"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_4()
+                            .py_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(BORDER_LIGHT())
+                            .cursor_pointer()
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                // TODO: Generate full report action
+                            }))
+                            .child(
+                                div()
+                                    .text_base()
+                                    .text_color(BRAND_BLUE())
+                                    .child("Generate Full Report"),
+                            )
+                            .child(
+                                svg()
+                                    .path("external-link.svg")
+                                    .size(px(14.0))
+                                    .text_color(BRAND_BLUE()),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let composer_key = match lang {
@@ -4608,61 +5298,13 @@ impl AppState {
                                                     this.pending_summarize = true;
                                                 }
 
-                                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                                eprintln!("[ROUTER] Decision: {:?}", decision);
+                                                // Clear composer
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
 
-                                                match decision {
-                                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                                        eprintln!("[ROUTER] Routing to Claude Code");
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.request_in_flight = true;
-                                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                                        this.request_kind = Some(RequestKind::ClaudeCode);
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_claude_code_run(instruction, session_id, cx);
-                                                    }
-                                                    agents::types::RoutingDecision::SystemAgent { task } => {
-                                                        eprintln!("[ROUTER] Routing to System Agent");
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_system_agent_run(task, cx);
-                                                    }
-                                                    _ => {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_general_ai_run(cx);
-                                                    }
-                                                }
+                                                // Start intent understanding
+                                                this.spawn_intent_agent_run(user_message, cx);
                                             }
                                         }
                                     }))
@@ -4701,61 +5343,13 @@ impl AppState {
                                                     this.pending_summarize = true;
                                                 }
 
-                                                let decision = this.agent_router.classify_intent(&user_message, &this.messages);
-                                                eprintln!("[ROUTER] Decision: {:?}", decision);
+                                                // Clear composer
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.set_text("", _window, cx);
+                                                });
 
-                                                match decision {
-                                                    agents::types::RoutingDecision::ClaudeCode { instruction, session_id } => {
-                                                        eprintln!("[ROUTER] Routing to Claude Code");
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.request_in_flight = true;
-                                                        this.request_status_text = Some(t(this.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
-                                                        this.request_kind = Some(RequestKind::ClaudeCode);
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_claude_code_run(instruction, session_id, cx);
-                                                    }
-                                                    agents::types::RoutingDecision::SystemAgent { task } => {
-                                                        eprintln!("[ROUTER] Routing to System Agent");
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_system_agent_run(task, cx);
-                                                    }
-                                                    _ => {
-                                                        this.messages.push(ChatMessage {
-                                                            role: "user".to_string(),
-                                                            content: user_message.clone(),
-                                                        });
-                                                        if let Some(task_id) = this.active_task_id {
-                                                            task_db::insert_message(&this.db.conn, task_id, "user", &user_message).ok();
-                                                        }
-                                                        this.needs_auto_scroll = true;
-                                                        editor.update(cx, |editor, cx| {
-                                                            editor.set_text("", _window, cx);
-                                                        });
-                                                        cx.notify();
-                                                        this.spawn_general_ai_run(cx);
-                                                    }
-                                                }
+                                                // Start intent understanding
+                                                this.spawn_intent_agent_run(user_message, cx);
                                             }
                                         }
                                     }))

@@ -81,6 +81,9 @@ impl Translations {
     pub const THINKING_DONE: (&'static str, &'static str) = ("思考完成", "Thought complete");
     pub const AI_IS_THINKING: (&'static str, &'static str) =
         ("AI 正在思考...", "AI is thinking...");
+    pub const UNDERSTANDING_INTENT: (&'static str, &'static str) = ("理解意图中...", "Understanding intent...");
+    pub const INTENT_UNDERSTOOD: (&'static str, &'static str) = ("意图理解完成", "Intent understood");
+    pub const INTENT_FAILED: (&'static str, &'static str) = ("意图理解失败", "Intent understanding failed");
     pub const EXPORT: (&'static str, &'static str) = ("导出", "Export");
 
     // Model config dialog

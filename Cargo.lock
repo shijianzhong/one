@@ -6017,7 +6017,7 @@ dependencies = [
  "serde_yaml",
  "settings",
  "sqlez",
- "system_agent",
+ "system_tools",
  "theme",
  "theme_settings",
  "tokio",
@@ -8930,7 +8930,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "system_agent"
+name = "system_tools"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",

@@ -3,7 +3,7 @@
 pub mod acp_adapter;
 pub mod business;
 pub mod claude_code;
-pub mod router;
+pub mod intent;
 pub mod types;
 
 pub use types::*;

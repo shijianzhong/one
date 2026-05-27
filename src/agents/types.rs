@@ -99,7 +99,7 @@ pub enum RoutingDecision {
         agent_id: usize,
         message: String,
     },
-    SystemAgent {
+    SystemTools {
         task: String,
     },
     GeneralAI {

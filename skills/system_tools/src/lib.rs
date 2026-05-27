@@ -3,9 +3,9 @@ pub mod tools;
 use tools::{process, disk, file};
 
 #[derive(Debug, Clone)]
-pub struct SystemAgent;
+pub struct SystemTools;
 
-impl SystemAgent {
+impl SystemTools {
     pub fn new() -> Self {
         Self
     }

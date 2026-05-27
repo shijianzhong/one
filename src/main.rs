@@ -4143,13 +4143,6 @@ impl AppState {
                 // Parse content for think tags
                 let mut parts = parse_think_content(&msg.content);
 
-                // If this is an assistant message and we have intent_content_parts, insert them first
-                if !is_user_msg && !self.intent_content_parts.is_empty() {
-                    let mut intent_parts = self.intent_content_parts.clone();
-                    intent_parts.append(&mut parts);
-                    parts = intent_parts;
-                }
-
                 // User messages: right aligned, Assistant messages: left aligned
                 let message_container = if is_user_msg {
                     div()

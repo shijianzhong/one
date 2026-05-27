@@ -4290,7 +4290,6 @@ impl AppState {
                                                     .when(!collapsed, |this| {
                                                         this.child(
                                                             div()
-                                                                .pl_3()
                                                                 .pr_2()
                                                                 .text_xs()
                                                                 .text_color(TERTIARY_TEXT())
@@ -4354,7 +4353,6 @@ impl AppState {
                                                     .when(!collapsed, |this| {
                                                         this.child(
                                                             div()
-                                                                .pl_3()
                                                                 .pr_2()
                                                                 .text_xs()
                                                                 .text_color(TERTIARY_TEXT())
@@ -4549,6 +4547,8 @@ impl AppState {
                         let el = div()
                             .flex_col()
                             .w_full()
+                            .pl_8()
+                            .pt_4()
                             .child(
                                 div()
                                     .flex()
@@ -4794,6 +4794,8 @@ impl AppState {
                                             let el = div()
                                                 .flex_col()
                                                 .w_full()
+                                                .pl_8()
+                                                .pt_4()
                                                 .child(
                                                     div()
                                                         .flex()

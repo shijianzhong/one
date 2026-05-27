@@ -698,7 +698,22 @@ fn parse_think_content(content: &str) -> Vec<ContentPart> {
         }
     }
 
-    if pos < content.len() {
+    let processes = if pos < content.len() {
+        let remaining = content[pos..].trim();
+        if !remaining.is_empty() {
+            try_parse_process_list(remaining)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(processes) = processes {
+        if !processes.is_empty() {
+            parts.push(ContentPart::ProcessTable { processes });
+        }
+    } else if pos < content.len() {
         let mut text = content[pos..].to_string();
         if prev_was_think {
             text = text
@@ -712,10 +727,6 @@ fn parse_think_content(content: &str) -> Vec<ContentPart> {
 
     if parts.is_empty() {
         parts.push(ContentPart::Normal(content.to_string()));
-    } else if let Some(processes) = try_parse_process_list(content) {
-        if !processes.is_empty() {
-            parts.push(ContentPart::ProcessTable { processes });
-        }
     }
 
     parts

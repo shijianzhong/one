@@ -237,9 +237,11 @@ struct AppState {
     titlebar_should_move: bool,
     // SystemTools dangerous operation confirmation
     pending_confirmation_tools: Option<(Vec<system_tools::Tool>, String)>,
-    // Intent understanding
+    // Intent understanding (only populated when LLM intent analysis is used)
     intent_thinking: String,
     intent_content_parts: Vec<ContentPart>,
+    // Intent router for fast routing without LLM
+    intent_router: agents::intent_router::IntentRouter,
 }
 
 #[derive(Debug, Clone)]
@@ -820,15 +822,13 @@ impl AppState {
         run_id
     }
 
-    fn handle_intent_result(&mut self, decision: RoutingDecision, user_message: String, cx: &mut Context<Self>, _window: Option<&mut Window>) {
-        eprintln!("[DEBUG] handle_intent_result called, user_message='{}', intent_parts.len()={}", user_message, self.intent_content_parts.len());
-
+    fn handle_intent_result(&mut self, decision: RoutingDecision, _user_message: String, cx: &mut Context<Self>, _window: Option<&mut Window>) {
         // Mark intent understanding as complete
         if let Some(ContentPart::IntentUnderstanding { complete, .. }) = self.intent_content_parts.first_mut() {
             *complete = true;
         }
 
-        // User message already added in spawn_intent_agent_run, just trigger scroll here
+        // User message already added in route_message, just trigger scroll here
         self.needs_auto_scroll = true;
         cx.notify();
 
@@ -1101,11 +1101,8 @@ impl AppState {
         }
     }
 
-    fn spawn_intent_agent_run(&mut self, message: String, cx: &mut Context<Self>) {
-        let base_url = self.model_base_url.clone();
-        let api_key = self.model_api_key.clone();
-        let model = self.model_name.clone();
-
+    /// Route a message using fast rule-based routing, with LLM fallback for complex cases
+    fn route_message(&mut self, message: String, cx: &mut Context<Self>) {
         // Immediately add user message to chat for instant display
         self.messages.push(ChatMessage {
             role: "user".to_string(),
@@ -1116,6 +1113,50 @@ impl AppState {
         }
         self.needs_auto_scroll = true;
         cx.notify();
+
+        // Try fast rule-based routing first
+        if let Some(decision) = self.intent_router.quick_route(&message) {
+            eprintln!("[ROUTER] Fast route matched: {:?}", decision);
+            self.handle_routing_decision(decision, message, cx);
+            return;
+        }
+
+        // Fall back to LLM-based intent analysis for complex cases
+        eprintln!("[ROUTER] No fast match, using LLM intent analysis");
+        self.spawn_intent_agent_run(message, cx);
+    }
+
+    fn handle_routing_decision(&mut self, decision: RoutingDecision, user_message: String, cx: &mut Context<Self>) {
+        match decision {
+            RoutingDecision::ClaudeCode { instruction, session_id } => {
+                eprintln!("[ROUTER] Routing to Claude Code (fast route)");
+                self.request_in_flight = true;
+                self.request_status_text = Some(t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS).to_string());
+                self.request_kind = Some(RequestKind::ClaudeCode);
+                self.spawn_claude_code_run(instruction, session_id, cx);
+            }
+            RoutingDecision::SystemTools { task } => {
+                eprintln!("[ROUTER] Routing to System Tools (fast route)");
+                self.spawn_system_tools_run(task, cx);
+            }
+            RoutingDecision::GeneralAI { messages } => {
+                eprintln!("[ROUTER] Routing to General AI (fast route)");
+                // messages contains the user's message already
+                self.spawn_general_ai_run(cx);
+            }
+            _ => {
+                eprintln!("[ROUTER] Unknown decision, defaulting to General AI");
+                self.spawn_general_ai_run(cx);
+            }
+        }
+    }
+
+    fn spawn_intent_agent_run(&mut self, message: String, cx: &mut Context<Self>) {
+        let base_url = self.model_base_url.clone();
+        let api_key = self.model_api_key.clone();
+        let model = self.model_name.clone();
+
+        // User message already added in route_message, just init intent tracking
 
         let (sender, receiver) = mpsc::channel::<intent::IntentEvent>();
 
@@ -1757,6 +1798,7 @@ impl AppState {
             pending_confirmation_tools: None,
             intent_thinking: String::new(),
             intent_content_parts: Vec::new(),
+            intent_router: agents::intent_router::IntentRouter::new(),
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -5305,8 +5347,8 @@ impl AppState {
                                                     editor.set_text("", _window, cx);
                                                 });
 
-                                                // Start intent understanding
-                                                this.spawn_intent_agent_run(user_message, cx);
+                                                // Route message (fast route or LLM fallback)
+                                                this.route_message(user_message, cx);
                                             }
                                         }
                                     }))
@@ -5350,8 +5392,8 @@ impl AppState {
                                                     editor.set_text("", _window, cx);
                                                 });
 
-                                                // Start intent understanding
-                                                this.spawn_intent_agent_run(user_message, cx);
+                                                // Route message (fast route or LLM fallback)
+                                                this.route_message(user_message, cx);
                                             }
                                         }
                                     }))

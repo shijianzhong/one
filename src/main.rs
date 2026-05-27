@@ -2612,7 +2612,16 @@ impl AppState {
     }
 
     fn render_nav(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let task_list = self.render_task_list(cx);
+        let lang = self.current_lang;
+        let workspaces_heading = div()
+            .px_4()
+            .pt_4()
+            .pb_1()
+            .text_xs()
+            .text_color(MUTED_TEXT())
+            .font_weight(FontWeight::BOLD)
+            .child(t(lang, Translations::WORKSPACES_HEADING))
+            .into_element();
 
         div()
             .flex()
@@ -2621,12 +2630,13 @@ impl AppState {
             .h_full()
             .bg(NAV_BG())
             .child(div().flex_none().child(self.render_nav_buttons(cx)))
+            .child(div().flex_none().child(workspaces_heading).into_element())
             .child(
                 div()
                     .id("task-list-container")
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(task_list),
+                    .child(self.render_task_list(cx)),
             )
             .child(div().flex_none().h(px(1.0)).bg(BORDER_LIGHT()))
             .child(div().flex_none().child(self.render_nav_footer_actions()))
@@ -2994,7 +3004,6 @@ impl AppState {
     fn render_task_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_default_workspace();
 
-        let lang = self.current_lang;
         let workspaces = self.workspaces.clone();
         let active_workspace_id = self.active_workspace_id;
         let active_task_id = self.active_task_id;
@@ -3004,7 +3013,6 @@ impl AppState {
             .flex_col()
             .px_4()
             .pb_3()
-            .id("task-list")
             .gap_3()
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -3012,16 +3020,6 @@ impl AppState {
                     this.delete_confirm_workspace_id = None;
                 }),
             );
-
-        result = result.child(
-            div()
-                .pt_4()
-                .pb_1()
-                .text_xs()
-                .text_color(MUTED_TEXT())
-                .font_weight(FontWeight::BOLD)
-                .child(t(lang, Translations::WORKSPACES_HEADING)),
-        );
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
@@ -3228,7 +3226,7 @@ impl AppState {
                                     } else {
                                         MUTED_TEXT()
                                     })
-                                    .child("TASK"),
+                                    .child(""),
                             )
                             .child(
                                 div()

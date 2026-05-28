@@ -113,6 +113,8 @@ impl Translations {
     pub const CLAUDE_CODE: (&'static str, &'static str) = ("Claude Code", "Claude Code");
     pub const CLAUDE_CODE_RUNNING_ELLIPSIS: (&'static str, &'static str) =
         ("Claude Code 运行中...", "Claude Code is running...");
+    pub const ANALYZING_INTENT: (&'static str, &'static str) =
+        ("分析中...", "Analyzing intent...");
     pub const CLAUDE_CODE_CONTINUING_ELLIPSIS: (&'static str, &'static str) =
         ("Claude Code 继续中...", "Claude Code is continuing...");
     pub const WAITING_FOR_CLAUDE_START: (&'static str, &'static str) = (

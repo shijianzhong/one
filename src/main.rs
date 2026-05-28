@@ -256,6 +256,7 @@ struct TerminalLine {
 enum RequestKind {
     GeneralAi,
     ClaudeCode,
+    IntentAnalysis,
 }
 
 #[derive(Debug, Clone)]
@@ -1209,7 +1210,11 @@ impl AppState {
         let api_key = self.model_api_key.clone();
         let model = self.model_name.clone();
 
-        // User message already added in route_message, just init intent tracking
+        // Immediately disable send button to prevent duplicate submissions
+        self.request_in_flight = true;
+        self.request_status_text = Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string());
+        self.request_kind = Some(RequestKind::IntentAnalysis);
+        cx.notify();
 
         let (sender, receiver) = mpsc::channel::<intent::IntentEvent>();
 

@@ -242,6 +242,8 @@ struct AppState {
     intent_content_parts: Vec<ContentPart>,
     // Intent router for fast routing without LLM
     intent_router: agents::intent_router::IntentRouter,
+    // Subagent messages for displaying in chat
+    subagent_messages: HashMap<u64, SubagentMessageState>,
 }
 
 #[derive(Debug, Clone)]
@@ -406,6 +408,46 @@ struct ClaudeRunPanelState {
 #[derive(Debug)]
 struct PreviewProcessHandle {
     child: Child,
+}
+
+// ============================================================================
+// Subagent Message State - for rendering subagent cards in chat messages
+// ============================================================================
+
+#[derive(Clone)]
+struct SubagentMessageState {
+    run_id: u64,
+    instruction: String,
+    status: SubagentStatus,
+    status_message: String,
+    live_text: String,
+    events: Vec<SubagentEventEntry>,
+    stderr_lines: Vec<String>,
+    collapsed: bool,
+    task_id: Option<usize>,
+}
+
+#[derive(Clone)]
+enum SubagentStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone)]
+struct SubagentEventEntry {
+    timestamp: i64,
+    title: String,
+    detail: String,
+    tone: SubagentEventTone,
+}
+
+#[derive(Clone)]
+enum SubagentEventTone {
+    Info,
+    Success,
+    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1810,6 +1852,7 @@ impl AppState {
             intent_thinking: String::new(),
             intent_content_parts: Vec::new(),
             intent_router: agents::intent_router::IntentRouter::new(),
+            subagent_messages: HashMap::new(),
         };
 
         // Ensure default workspace exists if no workspaces loaded
@@ -1940,6 +1983,7 @@ impl AppState {
             pending_question: None,
         });
         self.persist_current_claude_state();
+        self.insert_subagent_message(run_id, instruction.to_string());
         run_id
     }
 
@@ -1947,6 +1991,118 @@ impl AppState {
         if let Some(mut handle) = self.preview_process.take() {
             let _ = handle.child.kill();
             let _ = handle.child.wait();
+        }
+    }
+
+    // ============================================================================
+    // Subagent Message Methods
+    // ============================================================================
+
+    fn insert_subagent_message(&mut self, run_id: u64, instruction: String) {
+        let task_id = self.active_task_id;
+        self.subagent_messages.insert(
+            run_id,
+            SubagentMessageState {
+                run_id,
+                instruction,
+                status: SubagentStatus::Pending,
+                status_message: t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS)
+                    .to_string(),
+                live_text: String::new(),
+                events: Vec::new(),
+                stderr_lines: Vec::new(),
+                collapsed: false,
+                task_id,
+            },
+        );
+    }
+
+    fn update_subagent_message_event(&mut self, run_id: u64, event: &ClaudeStreamEvent) {
+        let Some(state) = self.subagent_messages.get_mut(&run_id) else {
+            return;
+        };
+
+        let lang = self.current_lang;
+        match event {
+            ClaudeStreamEvent::Started { command: _, workdir } => {
+                state.status = SubagentStatus::Running;
+                state.status_message = t(lang, Translations::CLAUDE_CODE_RUNNING).to_string();
+                state.events.push(SubagentEventEntry {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    title: t(lang, Translations::PROCESS_STARTED).to_string(),
+                    detail: format!(
+                        "{}: {}",
+                        t(lang, Translations::WORKDIR),
+                        workdir
+                    ),
+                    tone: SubagentEventTone::Info,
+                });
+            }
+            ClaudeStreamEvent::AssistantText(text) => {
+                if !state.live_text.is_empty() {
+                    state.live_text.push('\n');
+                }
+                state.live_text.push_str(text);
+            }
+            ClaudeStreamEvent::Progress { label, detail } => {
+                state.status_message = format!("{}...", label);
+                state.events.push(SubagentEventEntry {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    title: label.clone(),
+                    detail: detail.clone(),
+                    tone: SubagentEventTone::Info,
+                });
+            }
+            ClaudeStreamEvent::Stderr(line) => {
+                state.stderr_lines.push(line.clone());
+                let tone = if line.to_lowercase().contains("error") {
+                    SubagentEventTone::Error
+                } else {
+                    SubagentEventTone::Info
+                };
+                state.events.push(SubagentEventEntry {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    title: t(lang, Translations::STDERR).to_string(),
+                    detail: line.clone(),
+                    tone,
+                });
+            }
+            ClaudeStreamEvent::Finished { result } => {
+                state.status = SubagentStatus::Completed;
+                state.status_message = t(lang, Translations::CLAUDE_COMPLETED).to_string();
+                if state.live_text.trim().is_empty() {
+                    state.live_text = result.clone();
+                }
+            }
+            ClaudeStreamEvent::Failed { error } => {
+                state.status = SubagentStatus::Failed;
+                state.status_message = t(lang, Translations::CLAUDE_FAILED).to_string();
+                state.events.push(SubagentEventEntry {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    title: t(lang, Translations::RUN_FAILED).to_string(),
+                    detail: error.clone(),
+                    tone: SubagentEventTone::Error,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_subagent_collapsed(&mut self, run_id: u64) {
+        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
+            state.collapsed = !state.collapsed;
         }
     }
 
@@ -2124,6 +2280,9 @@ impl AppState {
     }
 
     fn apply_claude_run_event(&mut self, run_id: u64, event: ClaudeStreamEvent) {
+        // Update subagent message card if exists
+        self.update_subagent_message_event(run_id, &event);
+
         let lang = self.current_lang;
         let mut final_message: Option<String> = None;
         let mut persist_task_id: Option<usize> = None;
@@ -4428,6 +4587,19 @@ impl AppState {
             message_list = message_list.child(self.render_general_ai_pending_message());
         }
 
+        // Render active subagent cards
+        let current_task_id = self.active_task_id;
+        let active_subagents: Vec<(u64, SubagentMessageState)> = self
+            .subagent_messages
+            .iter()
+            .filter(|(_, state)| state.task_id == current_task_id)
+            .map(|(run_id, state)| (*run_id, state.clone()))
+            .collect();
+
+        for (run_id, state) in active_subagents {
+            message_list = message_list.child(self.render_subagent_card(run_id, &state, cx));
+        }
+
         message_list
     }
 
@@ -4917,6 +5089,253 @@ impl AppState {
                             ),
                     ),
             )
+    }
+
+    fn render_subagent_card(
+        &mut self,
+        run_id: u64,
+        state: &SubagentMessageState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let lang = self.current_lang;
+        let status_color = match state.status {
+            SubagentStatus::Pending => MUTED_TEXT(),
+            SubagentStatus::Running => BRAND_BLUE(),
+            SubagentStatus::Completed => Hsla {
+                h: 0.36,
+                s: 0.65,
+                l: 0.42,
+                a: 1.0,
+            },
+            SubagentStatus::Failed => Hsla {
+                h: 0.0,
+                s: 0.72,
+                l: 0.52,
+                a: 1.0,
+            },
+        };
+        let status_label = match state.status {
+            SubagentStatus::Pending => "PENDING",
+            SubagentStatus::Running => "RUNNING",
+            SubagentStatus::Completed => "COMPLETED",
+            SubagentStatus::Failed => "FAILED",
+        };
+        let collapsed = state.collapsed;
+
+        div()
+            .flex_col()
+            .items_start()
+            .gap_2()
+            .w_full()
+            .mb_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .size(px(22.0))
+                            .rounded_full()
+                            .bg(Hsla {
+                h: 0.55,
+                s: 0.6,
+                l: 0.5,
+                a: 1.0,
+            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(render_icon_element("subagent", gpui::white(), 11.0))
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child("SUBAGENT")
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(GHOST_SURFACE_BG())
+                            .text_xs()
+                            .text_color(status_color)
+                            .child(status_label)
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(TERTIARY_TEXT())
+                            .child(state.status_message.clone())
+                    )
+                    .when(true, |this| {
+                        let icon_path = if collapsed { "expand.svg" } else { "fold.svg" };
+                        let run_id_for_collapse = run_id;
+                        this.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .ml_auto()
+                                .cursor_pointer()
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    this.toggle_subagent_collapsed(run_id_for_collapse);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    svg()
+                                        .path(icon_path)
+                                        .size(px(14.0))
+                                        .flex_none()
+                                        .text_color(MUTED_TEXT())
+                                )
+                        )
+                    })
+            )
+            .when(!collapsed, |this| {
+                this.child(
+                    div()
+                        .flex_col()
+                        .items_start()
+                        .gap_4()
+                        .max_w(px(780.0))
+                        .min_w(px(35.0))
+                        .w_full()
+                        .pl_8()
+                        .pt_4()
+                        .child(
+                            div()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(MUTED_TEXT())
+                                        .child("Instruction:")
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(PRIMARY_TEXT())
+                                        .whitespace_normal()
+                                        .child(state.instruction.clone())
+                                )
+                        )
+                        .when(!state.events.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .flex_col()
+                                    .gap_2()
+                                    .w_full()
+                                    .bg(GHOST_SURFACE_BG())
+                                    .rounded_md()
+                                    .id("events_container")
+                                    .overflow_scroll()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(MUTED_TEXT())
+                                            .child("Events:")
+                                    )
+                                    .children(state.events.iter().map(|event| {
+                                        let event_color = match event.tone {
+                                            SubagentEventTone::Info => TERTIARY_TEXT(),
+                                            SubagentEventTone::Success => Hsla {
+                                                h: 0.36,
+                                                s: 0.65,
+                                                l: 0.42,
+                                                a: 1.0,
+                                            },
+                                            SubagentEventTone::Error => Hsla {
+                                                h: 0.0,
+                                                s: 0.72,
+                                                l: 0.52,
+                                                a: 1.0,
+                                            },
+                                        };
+                                        div()
+                                            .flex_col()
+                                            .gap_1()
+                                            .p_2()
+                                            .w_full()
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(event_color)
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .child(format!("[{}]", event.title))
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(TERTIARY_TEXT())
+                                                            .whitespace_normal()
+                                                            .w_full()
+                                                            .child(event.detail.clone())
+                                                    )
+                                            )
+                                    }))
+                            )
+                        })
+                        .when(!state.live_text.trim().is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(MUTED_TEXT())
+                                            .child("Output:")
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(PRIMARY_TEXT())
+                                            .whitespace_normal()
+                                            .child(state.live_text.clone())
+                                    )
+                            )
+                        })
+                        .when(!state.stderr_lines.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(Hsla {
+                                                h: 0.0,
+                                                s: 0.72,
+                                                l: 0.52,
+                                                a: 1.0,
+                                            })
+                                            .child("Errors:")
+                                    )
+                                    .children(state.stderr_lines.iter().map(|line| {
+                                        div()
+                                            .text_xs()
+                                            .text_color(Hsla {
+                                                h: 0.0,
+                                                s: 0.72,
+                                                l: 0.52,
+                                                a: 1.0,
+                                            })
+                                            .font_family("monospace")
+                                            .child(line.clone())
+                                    }))
+                            )
+                        })
+                )
+            })
     }
 
     fn render_process_table(

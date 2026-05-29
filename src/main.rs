@@ -33,7 +33,7 @@ mod skills_market;
 mod task_db;
 pub(crate) mod ui_theme;
 
-use agents::{claude_code::ClaudeStreamEvent, intent, types::RoutingDecision};
+use agents::{claude_code::ClaudeStreamEvent, intent, keyword_classifier, types::RoutingDecision};
 use system_tools;
 use i18n::{t, Lang, Translations};
 use memory::types::ChatMessage;
@@ -1176,9 +1176,20 @@ impl AppState {
             return;
         }
 
-        // Fall back to LLM-based intent analysis for complex cases
-        eprintln!("[ROUTER] No fast match, using LLM intent analysis");
-        self.spawn_intent_agent_run(message, cx);
+        // Second level: keyword classifier pool
+        // If keywords match, route through LLM intent analysis for deeper classification
+        if let Some(category) = keyword_classifier::KeywordClassifier::classify(&message) {
+            eprintln!(
+                "[ROUTER] Keyword category '{}' matched, routing to LLM intent analysis",
+                category.name
+            );
+            self.spawn_intent_agent_run(message, cx);
+            return;
+        }
+
+        // No match at any level — route directly to main agent (General AI)
+        eprintln!("[ROUTER] No keyword match, routing directly to General AI");
+        self.spawn_general_ai_run(cx);
     }
 
     fn handle_routing_decision(&mut self, decision: RoutingDecision, user_message: String, cx: &mut Context<Self>) {

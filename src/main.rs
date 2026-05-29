@@ -33,6 +33,7 @@ mod skills_market;
 mod task_db;
 pub(crate) mod ui_theme;
 
+use crate::agents::core::{AgentFactory, OrchestratorEvent};
 use agents::{claude_code::ClaudeStreamEvent, intent, keyword_classifier, types::RoutingDecision};
 use system_tools;
 use i18n::{t, Lang, Translations};
@@ -279,6 +280,13 @@ enum SummarizeEvent {
         task_id: usize,
         error: String,
     },
+}
+
+#[derive(Debug, Clone)]
+enum OrchestratorWrapperEvent {
+    Event(OrchestratorEvent),
+    Finished(String),
+    Failed(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -943,10 +951,7 @@ impl AppState {
                     self.pending_confirmation_tools = Some((Vec::new(), tools_json.to_string()));
 
                     if run_task_id == self.active_task_id {
-                        self.messages.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: dangerous_msg.to_string(),
-                        });
+                        self.messages.push(ChatMessage::new("assistant", &dangerous_msg));
                         self.needs_auto_scroll = true;
                     }
 
@@ -970,10 +975,7 @@ impl AppState {
                 self.general_ai_live_text.clear();
 
                 if run_task_id == self.active_task_id {
-                    self.messages.push(ChatMessage {
-                        role: "assistant".to_string(),
-                        content: content.clone(),
-                    });
+                    self.messages.push(ChatMessage::new("assistant", &content));
                     self.needs_auto_scroll = true;
                 }
                 if let Some(task_id) = run_task_id {
@@ -1069,10 +1071,8 @@ impl AppState {
                 self.general_ai_live_text.clear();
 
                 if run_task_id == self.active_task_id {
-                    self.messages.push(ChatMessage {
-                        role: "assistant".to_string(),
-                        content: error_message.clone(),
-                    });
+                    self.messages.push(ChatMessage::new("assistant", &error_message));
+
                     self.needs_auto_scroll = true;
                 }
                 if let Some(task_id) = run_task_id {
@@ -1092,10 +1092,7 @@ impl AppState {
 
                 if run_task_id == self.active_task_id {
                     let msg = "⚠️ 检测到危险操作：\n\n由于包含危险操作，当前已跳过执行。";
-                    self.messages.push(ChatMessage {
-                        role: "assistant".to_string(),
-                        content: msg.to_string(),
-                    });
+                    self.messages.push(ChatMessage::new("assistant", msg));
                     self.needs_auto_scroll = true;
                 }
             }
@@ -1159,10 +1156,7 @@ impl AppState {
     /// Route a message using fast rule-based routing, with LLM fallback for complex cases
     fn route_message(&mut self, message: String, cx: &mut Context<Self>) {
         // Immediately add user message to chat for instant display
-        self.messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: message.clone(),
-        });
+        self.messages.push(ChatMessage::new("user", &message));
         if let Some(task_id) = self.active_task_id {
             task_db::insert_message(&self.db.conn, task_id, "user", &message).ok();
         }
@@ -1176,20 +1170,9 @@ impl AppState {
             return;
         }
 
-        // Second level: keyword classifier pool
-        // If keywords match, route through LLM intent analysis for deeper classification
-        if let Some(category) = keyword_classifier::KeywordClassifier::classify(&message) {
-            eprintln!(
-                "[ROUTER] Keyword category '{}' matched, routing to LLM intent analysis",
-                category.name
-            );
-            self.spawn_intent_agent_run(message, cx);
-            return;
-        }
-
-        // No match at any level — route directly to main agent (General AI)
-        eprintln!("[ROUTER] No keyword match, routing directly to General AI");
-        self.spawn_general_ai_run(cx);
+        // All other messages go through the intelligent Orchestrator
+        eprintln!("[ROUTER] Routing to Orchestrator");
+        self.spawn_orchestrator_run(message, cx);
     }
 
     fn handle_routing_decision(&mut self, decision: RoutingDecision, user_message: String, cx: &mut Context<Self>) {
@@ -1277,10 +1260,7 @@ impl AppState {
                                     cx.notify();
                                 });
                                 pending_decision = Some((RoutingDecision::GeneralAI {
-                                    messages: vec![ChatMessage {
-                                        role: "user".to_string(),
-                                        content: "".to_string(),
-                                    }],
+                                    messages: vec![ChatMessage::new("user", "")],
                                 }, err.clone()));
                             }
                         }
@@ -1330,14 +1310,15 @@ impl AppState {
 
         gpui_tokio::Tokio::spawn(cx, async move {
             let result =
-                call_chat_api_stream(&base_url, &api_key, &model, &messages, move |delta| {
+                call_chat_api_stream(&base_url, &api_key, &model, &messages, None, move |delta| {
                     let _ = delta_sender.send(GeneralAiStreamEvent::Delta(delta));
                 })
                 .await;
 
             match result {
                 Ok(output) => {
-                    let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: output });
+                    let content = output["content"].as_str().unwrap_or_default().to_string();
+                    let _ = final_sender.send(GeneralAiStreamEvent::Finished { result: content });
                 }
                 Err(error) => {
                     let _ = final_sender.send(GeneralAiStreamEvent::Failed { error });
@@ -1478,10 +1459,7 @@ impl AppState {
 
     fn confirm_system_tools_operation(&mut self, confirmed: bool, cx: &mut Context<Self>) {
         if !confirmed {
-            self.messages.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: "操作已取消。".to_string(),
-            });
+            self.messages.push(ChatMessage::new("assistant", "操作已取消。"));
             self.pending_confirmation_tools = None;
             cx.notify();
             return;
@@ -1491,10 +1469,7 @@ impl AppState {
         if let Some((_tools, task_json)) = tools_data {
             let tools = parse_tools_from_json(&task_json);
             if tools.is_empty() {
-                self.messages.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "无法解析操作指令。".to_string(),
-                });
+                self.messages.push(ChatMessage::new("assistant", "无法解析操作指令。"));
                 cx.notify();
                 return;
             }
@@ -1772,10 +1747,7 @@ impl AppState {
             let msgs = task_db::load_messages(&self.db.conn, task_id).unwrap_or_default();
             self.messages = msgs
                 .into_iter()
-                .map(|m| ChatMessage {
-                    role: m.role,
-                    content: m.content,
-                })
+                .map(|m| ChatMessage::new(&m.role, &m.content))
                 .collect();
             self.current_claude_run =
                 self.load_claude_state_for_task(workspace_id, task_id, &title);
@@ -2522,10 +2494,7 @@ impl AppState {
 
         if let Some(message) = final_message {
             if persist_task_id == self.active_task_id {
-                self.messages.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: message.clone(),
-                });
+                self.messages.push(ChatMessage::new("assistant", &message));
                 self.needs_auto_scroll = true;
             }
             if let Some(task_id) = persist_task_id {
@@ -2534,6 +2503,103 @@ impl AppState {
         }
         self.persist_current_claude_state();
     }
+
+fn spawn_orchestrator_run(&mut self, instruction: String, cx: &mut Context<Self>) {
+    let config = crate::services::load_config();
+    let workspace_name = self.get_active_workspace().map(|w| w.name.as_str()).unwrap_or("Default");
+    
+    let orchestrator = match AgentFactory::create_orchestrator(&config, workspace_name) {
+        Ok(o) => o,
+        Err(e) => {
+            self.messages.push(ChatMessage::new("assistant", &format!("Failed to create orchestrator: {}", e)));
+            return;
+        }
+    };
+
+    let run_id = self.next_general_ai_run_id + 1;
+    self.next_general_ai_run_id = run_id;
+    self.request_in_flight = true;
+    self.request_status_text = Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string());
+    self.request_kind = Some(RequestKind::GeneralAi);
+
+    let (sender, receiver) = mpsc::channel::<OrchestratorWrapperEvent>();
+    let event_sender = sender.clone();
+    let final_sender = sender.clone();
+
+    let session_id = format!("orchestrator-{}", run_id);
+    let instruction_for_task = instruction.clone();
+
+    gpui_tokio::Tokio::spawn(cx, async move {
+        let result = orchestrator.run_task(&instruction_for_task, session_id, |event| {
+            let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
+        }).await;
+
+        match result {
+            Ok(res) => {
+                let _ = final_sender.send(OrchestratorWrapperEvent::Finished(res));
+            }
+            Err(e) => {
+                let _ = final_sender.send(OrchestratorWrapperEvent::Failed(e.to_string()));
+            }
+        }
+    }).detach();
+
+    cx.spawn(async move |this, cx| loop {
+        let mut disconnected = false;
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    let _ = this.update(cx, |this, cx| {
+                        match event {
+                            OrchestratorWrapperEvent::Event(e) => {
+                                match e {
+                                    OrchestratorEvent::Plan { plan } => {
+                                        this.request_status_text = Some(format!("📋 Plan: {}", plan));
+                                    }
+                                    OrchestratorEvent::StepStarted { agent_id, agent_name } => {
+                                        this.request_status_text = Some(format!("Agent {} is thinking...", agent_name));
+                                    }
+                                    OrchestratorEvent::ToolCall { name, args } => {
+                                        this.request_status_text = Some(format!("Calling tool {}...", name));
+                                    }
+                                    OrchestratorEvent::ToolResult { name, result: _ } => {
+                                        // Optional: show tool result in log or chat
+                                    }
+                                    OrchestratorEvent::StepFinished { result: _ } => {
+                                        // Optional: process step result
+                                    }
+                                }
+                            }
+                            OrchestratorWrapperEvent::Finished(result) => {
+                                this.request_in_flight = false;
+                                this.request_status_text = None;
+                                this.messages.push(ChatMessage::new("assistant", &result));
+                                if let Some(task_id) = this.active_task_id {
+                                    task_db::insert_message(&this.db.conn, task_id, "assistant", &result).ok();
+                                }
+                                this.needs_auto_scroll = true;
+                            }
+                            OrchestratorWrapperEvent::Failed(error) => {
+                                this.request_in_flight = false;
+                                this.request_status_text = None;
+                                this.messages.push(ChatMessage::new("assistant", &format!("Orchestrator failed: {}", error)));
+                                this.needs_auto_scroll = true;
+                            }
+                        }
+                        cx.notify();
+                    });
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if disconnected { break; }
+        cx.background_executor().timer(Duration::from_millis(60)).await;
+    }).detach();
+}
 
     fn spawn_claude_code_run(
         &mut self,
@@ -2669,6 +2735,9 @@ impl AppState {
             model_base_url: self.model_base_url.clone(),
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
+            light_model: None,
+            coding_model: None,
+            system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
         };
@@ -2695,6 +2764,9 @@ impl AppState {
             model_base_url: self.model_base_url.clone(),
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
+            light_model: None,
+            coding_model: None,
+            system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
         };
@@ -2714,6 +2786,9 @@ impl AppState {
             model_base_url: self.model_base_url.clone(),
             model_api_key: self.model_api_key.clone(),
             model_name: self.model_name.clone(),
+            light_model: None,
+            coding_model: None,
+            system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
         };

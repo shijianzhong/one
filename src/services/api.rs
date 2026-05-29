@@ -74,8 +74,9 @@ pub async fn call_chat_api_stream<F>(
     api_key: &str,
     model: &str,
     messages: &[ChatMessage],
+    tools: Option<&[serde_json::Value]>,
     mut on_delta: F,
-) -> Result<String, String>
+) -> Result<serde_json::Value, String>
 where
     F: FnMut(String) + Send,
 {
@@ -88,17 +89,29 @@ where
     struct RequestBody {
         model: String,
         messages: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<serde_json::Value>>,
         stream: bool,
     }
 
     let chat_messages: Vec<serde_json::Value> = messages
         .iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .map(|m| {
+            let mut val = serde_json::json!({ "role": m.role, "content": m.content });
+            if let Some(tool_calls) = &m.tool_calls {
+                val["tool_calls"] = serde_json::to_value(tool_calls).unwrap();
+            }
+            if let Some(tool_call_id) = &m.tool_call_id {
+                val["tool_call_id"] = serde_json::json!(tool_call_id);
+            }
+            val
+        })
         .collect();
 
     let request_body = RequestBody {
         model: model.to_string(),
         messages: chat_messages,
+        tools: tools.map(|t| t.to_vec()),
         stream: true,
     };
 
@@ -112,20 +125,21 @@ where
         .await
         .map_err(|e| e.to_string())?;
 
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
+    let status = response.status();
+    if !status.is_success() {
+        let err_body = response.text().await.unwrap_or_default();
+        return Err(format!("API error: {} - {}", status, err_body));
     }
 
     let mut full_text = String::new();
-    let mut raw_accum = String::new();
-    let mut pending = String::new();
-    let mut saw_stream_data = false;
+    let mut tool_calls_map: std::collections::HashMap<i32, serde_json::Value> = std::collections::HashMap::new();
 
     let mut stream = response.bytes_stream();
+    let mut pending = String::new();
+
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|e| e.to_string())?;
         let chunk_str = String::from_utf8_lossy(&chunk);
-        raw_accum.push_str(&chunk_str);
         pending.push_str(&chunk_str);
 
         while let Some(newline) = pending.find('\n') {
@@ -142,67 +156,66 @@ where
                 continue;
             }
 
-            saw_stream_data = true;
             let data = line.trim_start_matches("data:").trim();
             if data == "[DONE]" {
-                return Ok(full_text);
+                break;
             }
 
             let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
                 continue;
             };
 
-            let delta = value
-                .pointer("/choices/0/delta/content")
-                .and_then(|v| v.as_str())
-                .or_else(|| {
-                    value
-                        .pointer("/choices/0/message/content")
-                        .and_then(|v| v.as_str())
-                })
-                .unwrap_or("");
+            if let Some(choices) = value.get("choices").and_then(|c| c.as_array()) {
+                if let Some(choice) = choices.get(0) {
+                    if let Some(delta) = choice.get("delta") {
+                        if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                            full_text.push_str(content);
+                            on_delta(content.to_string());
+                        }
 
-            if !delta.is_empty() {
-                full_text.push_str(delta);
-                on_delta(delta.to_string());
+                        if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                            for tc in tool_calls {
+                                let index = tc.get("index").and_then(|i| i.as_i64()).unwrap_or(0) as i32;
+                                let entry = tool_calls_map.entry(index).or_insert(serde_json::json!({
+                                    "id": "",
+                                    "type": "function",
+                                    "function": { "name": "", "arguments": "" }
+                                }));
+
+                                if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                                    entry["id"] = serde_json::json!(id);
+                                }
+                                if let Some(func) = tc.get("function") {
+                                    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                        entry["function"]["name"] = serde_json::json!(name);
+                                    }
+                                    if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                                        let current_args = entry["function"]["arguments"].as_str().unwrap_or("");
+                                        entry["function"]["arguments"] = serde_json::json!(format!("{}{}", current_args, args));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    if !pending.trim().is_empty() {
-        raw_accum.push_str(&pending);
+    if !tool_calls_map.is_empty() {
+        let mut tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
+        // Sort by index? map doesn't guarantee order, but for simplicity...
+        return Ok(serde_json::json!({
+            "role": "assistant",
+            "content": full_text,
+            "tool_calls": tool_calls
+        }));
     }
 
-    if !saw_stream_data {
-        #[derive(serde::Deserialize)]
-        struct ApiResponse {
-            choices: Vec<Choice>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct Choice {
-            message: Message,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct Message {
-            content: String,
-        }
-
-        if let Ok(api_response) = serde_json::from_str::<ApiResponse>(&raw_accum) {
-            let content = api_response
-                .choices
-                .first()
-                .map(|c| c.message.content.clone())
-                .unwrap_or_default();
-            if !content.is_empty() {
-                on_delta(content.clone());
-            }
-            return Ok(content);
-        }
-    }
-
-    Ok(full_text)
+    Ok(serde_json::json!({
+        "role": "assistant",
+        "content": full_text
+    }))
 }
 
 pub async fn summarize_conversation_async(

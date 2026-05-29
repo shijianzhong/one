@@ -6,6 +6,21 @@ use serde::{Deserialize, Serialize};
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn new(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

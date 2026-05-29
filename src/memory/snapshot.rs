@@ -150,10 +150,7 @@ pub fn generate_snapshot_sync(
     if messages.len() < 2 {
         return;
     }
-    let req = vec![ChatMessage {
-        role: "user".to_string(),
-        content: build_snapshot_prompt(messages),
-    }];
+    let req = vec![ChatMessage::new("user", &build_snapshot_prompt(messages))];
     match call_chat_api_sync(base_url, api_key, model, &req) {
         Ok(resp) => match parse_snapshot_from_llm(task_id, task_title, &resp) {
             Some(snap) => {

@@ -52,20 +52,20 @@ impl IntentAgent {
             message
         );
 
-        let system_msg = ChatMessage {
-            role: "system".to_string(),
-            content: "你是一个意图分类助手，负责分析用户意图并决定路由。".to_string(),
-        };
+        let system_msg = ChatMessage::new(
+            "system",
+            "你是一个意图分类助手，负责分析用户意图并决定路由。",
+        );
 
-        let user_msg = ChatMessage {
-            role: "user".to_string(),
-            content: prompt,
-        };
+        let user_msg = ChatMessage::new(
+            "user",
+            &prompt,
+        );
 
         let messages = vec![system_msg, user_msg];
         let sender_for_stream = sender.clone();
 
-        let result = call_chat_api_stream(&base_url, &api_key, &model, &messages, move |delta| {
+        let result = call_chat_api_stream(&base_url, &api_key, &model, &messages, None, move |delta| {
             let trimmed = delta.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('{') {
                 let _ = sender_for_stream.send(IntentEvent::Thinking(trimmed.to_string()));
@@ -74,7 +74,8 @@ impl IntentAgent {
         .await;
 
         match result {
-            Ok(full_text) => {
+            Ok(response_val) => {
+                let full_text = response_val["content"].as_str().unwrap_or_default();
                 if let Some(json_start) = full_text.find('{') {
                     let json_str = &full_text[json_start..];
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -90,10 +91,7 @@ impl IntentAgent {
                                 session_id: None,
                             },
                             _ => RoutingDecision::GeneralAI {
-                                messages: vec![ChatMessage {
-                                    role: "user".to_string(),
-                                    content: task.to_string(),
-                                }],
+                                messages: vec![ChatMessage::new("user", task)],
                             },
                         };
 
@@ -102,19 +100,13 @@ impl IntentAgent {
                     }
                 }
                 let _ = sender.send(IntentEvent::Decision(RoutingDecision::GeneralAI {
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: message,
-                    }],
+                    messages: vec![ChatMessage::new("user", &message)],
                 }));
             }
             Err(error) => {
                 let _ = sender.send(IntentEvent::Error(error));
                 let _ = sender.send(IntentEvent::Decision(RoutingDecision::GeneralAI {
-                    messages: vec![ChatMessage {
-                        role: "user".to_string(),
-                        content: message,
-                    }],
+                    messages: vec![ChatMessage::new("user", &message)],
                 }));
             }
         }

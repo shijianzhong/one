@@ -7,6 +7,7 @@ pub mod intent;
 pub mod intent_router;
 pub mod keyword_classifier;
 pub mod types;
+pub mod core;
 
 pub use types::*;
 

@@ -9,6 +9,15 @@ pub struct Config {
     pub model_base_url: String,
     pub model_api_key: String,
     pub model_name: String,
+    /// 轻量模型，用于快速分类/闲聊 (可选，默认同 model_name)
+    #[serde(default)]
+    pub light_model: Option<String>,
+    /// 代码 Agent 专用模型 (可选，默认同 model_name)
+    #[serde(default)]
+    pub coding_model: Option<String>,
+    /// 系统 Agent 专用模型 (可选，默认同 model_name)
+    #[serde(default)]
+    pub system_model: Option<String>,
     pub lang: Lang,
     #[serde(default)]
     pub theme_mode: ThemeMode,
@@ -20,6 +29,9 @@ impl Default for Config {
             model_base_url: "https://api.openai.com/v1".to_string(),
             model_api_key: "".to_string(),
             model_name: "gpt-4".to_string(),
+            light_model: None,
+            coding_model: None,
+            system_model: None,
             lang: Lang::Zh,
             theme_mode: ThemeMode::Dark,
         }

@@ -141,14 +141,8 @@ impl Tool {
 10. 从问题中提取尽可能精确的参数值"#, task, tools_json);
 
         let messages = vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: "你是一个系统管理助手，根据用户的问题决定调用哪些工具。".to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            },
+            ChatMessage::new("system", "你是一个系统管理助手，根据用户的问题决定调用哪些工具。"),
+            ChatMessage::new("user", &prompt),
         ];
 
         let response = call_llm_sync(base_url, api_key, model, &messages)?;
@@ -198,14 +192,8 @@ impl Tool {
 10. 从问题中提取尽可能精确的参数值"#, task, tools_json);
 
         let messages = vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: "你是一个系统管理助手，根据用户的问题决定调用哪些工具。".to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            },
+            ChatMessage::new("system", "你是一个系统管理助手，根据用户的问题决定调用哪些工具。"),
+            ChatMessage::new("user", &prompt),
         ];
 
         let response = call_llm_async(base_url, api_key, model, &messages).await?;
@@ -390,7 +378,15 @@ fn parse_llm_response(response: &str) -> Result<Vec<(Tool, Option<String>)>, Str
 fn expand_path(path: &str) -> String {
     let expanded = if path.starts_with("~/") || path == "~" {
         dirs::home_dir()
-            .map(|h| h.to_string_lossy().to_string())
+            .map(|home| {
+                if path == "~" {
+                    home.to_string_lossy().to_string()
+                } else {
+                    home.join(path.trim_start_matches("~/"))
+                        .to_string_lossy()
+                        .to_string()
+                }
+            })
             .unwrap_or_else(|| path.to_string())
     } else {
         path.to_string()
@@ -426,6 +422,21 @@ fn expand_path(path: &str) -> String {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn new(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
 }
 
 fn extract_pid(task: &str) -> Option<u32> {

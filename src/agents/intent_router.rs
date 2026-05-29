@@ -30,7 +30,7 @@ impl IntentRouter {
             system_keywords: vec![
                 "进程", "cpu", "内存", "磁盘", "硬盘", "空间", "占用",
                 "process", "memory", "disk",
-                "打开应用", "启动", "关闭程序", "杀进程", "终止",
+                "打开", "打开应用", "启动", "关闭程序", "杀进程", "终止",
                 "文件夹", "目录", "文件", "删除", "复制", "移动",
             ].into_iter().map(String::from).collect(),
             coding_keywords: vec![
@@ -84,16 +84,19 @@ impl IntentRouter {
             return (IntentLevel::Complex, None);
         }
 
-        // Default: general AI
-        (
-            IntentLevel::General,
-            Some(RoutingDecision::GeneralAI {
-                messages: vec![ChatMessage {
-                    role: "user".to_string(),
-                    content: msg_trimmed.to_string(),
-                }],
-            }),
-        )
+        // Only obvious conversational requests are routed directly to the
+        // lightweight general agent. Unknown requests fall through to the
+        // orchestrator so it can decide whether delegation is needed.
+        if Self::matches_any(msg_trimmed, &self.general_keywords) {
+            return (
+                IntentLevel::General,
+                Some(RoutingDecision::GeneralAI {
+                    messages: vec![ChatMessage::new("user", msg_trimmed)],
+                }),
+            );
+        }
+
+        (IntentLevel::Complex, None)
     }
 
     /// Returns true if LLM intent analysis is needed
@@ -123,10 +126,11 @@ mod tests {
     fn test_system_keywords() {
         let router = IntentRouter::new();
 
-        // System tools
-        assert!(router.needs_llm_intent("查看进程"));
-        assert!(router.needs_llm_intent("我电脑的内存使用情况"));
-        assert!(router.needs_llm_intent("打开 Safari"));
+        // System tools are deterministic routes; they do not need the
+        // orchestrator/intent LLM just to decide the destination.
+        assert!(!router.needs_llm_intent("查看进程"));
+        assert!(!router.needs_llm_intent("我电脑的内存使用情况"));
+        assert!(!router.needs_llm_intent("打开 Safari"));
 
         // Should match system tools route
         let (level, _) = router.route("查看进程");
@@ -135,6 +139,7 @@ mod tests {
         // Coding
         let (level, _) = router.route("帮我写个函数");
         assert!(matches!(level, IntentLevel::Coding));
+        assert!(!router.needs_llm_intent("帮我写个函数"));
     }
 
     #[test]
@@ -153,5 +158,7 @@ mod tests {
         // Complex multi-agent tasks need LLM
         assert!(router.needs_llm_intent("帮我用 agent 完成任务"));
         assert!(router.needs_llm_intent("调用 skill 完成这个工作"));
+        assert!(router.needs_llm_intent("帮我整理这个项目接下来要做什么"));
+        assert!(router.quick_route("帮我整理这个项目接下来要做什么").is_none());
     }
 }

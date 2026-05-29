@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::process::Command;
 
 #[derive(Debug, serde::Serialize)]
@@ -13,7 +14,19 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     let output = Command::new("ps")
         .args(["aux"])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            if e.kind() == ErrorKind::PermissionDenied {
+                None
+            } else {
+                Some(e.to_string())
+            }
+        });
+
+    let output = match output {
+        Ok(output) => output,
+        Err(None) => return Ok(Vec::new()),
+        Err(Some(error)) => return Err(error),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut processes = Vec::new();

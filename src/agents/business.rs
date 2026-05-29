@@ -92,10 +92,7 @@ impl Agent for BusinessAgent {
 
         {
             let mut history = self.conversation_history.lock().unwrap();
-            history.push(ChatMessage {
-                role: "user".to_string(),
-                content: msg.to_string(),
-            });
+            history.push(ChatMessage::new("user", msg));
         }
 
         let response = if let Some(cap) = self.match_capability(msg) {
@@ -106,10 +103,7 @@ impl Agent for BusinessAgent {
 
         {
             let mut history = self.conversation_history.lock().unwrap();
-            history.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: response.clone(),
-            });
+            history.push(ChatMessage::new("assistant", &response));
         }
 
         instance.status = AgentStatus::Idle;
@@ -199,10 +193,7 @@ impl BusinessAgentGenerator {
             base_url,
             api_key,
             model,
-            &[ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            }],
+            &[ChatMessage::new("user", &prompt)],
         )
         .map_err(|e| anyhow::anyhow!("API call failed: {}", e))?;
 

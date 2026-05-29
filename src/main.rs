@@ -425,6 +425,7 @@ struct SubagentMessageState {
     events: Vec<SubagentEventEntry>,
     stderr_lines: Vec<String>,
     collapsed: bool,
+    events_collapsed: bool,
     task_id: Option<usize>,
 }
 
@@ -2017,6 +2018,7 @@ impl AppState {
                 events: Vec::new(),
                 stderr_lines: Vec::new(),
                 collapsed: false,
+                events_collapsed: false,
                 task_id,
             },
         );
@@ -2108,6 +2110,12 @@ impl AppState {
     fn toggle_subagent_collapsed(&mut self, run_id: u64) {
         if let Some(state) = self.subagent_messages.get_mut(&run_id) {
             state.collapsed = !state.collapsed;
+        }
+    }
+
+    fn toggle_subagent_events_collapsed(&mut self, run_id: u64) {
+        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
+            state.events_collapsed = !state.events_collapsed;
         }
     }
 
@@ -5230,63 +5238,96 @@ impl AppState {
                                 )
                         )
                         .when(!state.events.is_empty(), |this| {
+                            let events_collapsed = state.events_collapsed;
+                            let run_id_for_toggle = run_id;
                             this.child(
                                 div()
                                     .flex_col()
                                     .gap_2()
                                     .w_full()
-                                    .bg(GHOST_SURFACE_BG())
-                                    .rounded_md()
-                                    .id("events_container")
-                                    .overflow_scroll()
                                     .child(
                                         div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .child("Events:")
-                                    )
-                                    .children(state.events.iter().map(|event| {
-                                        let event_color = match event.tone {
-                                            SubagentEventTone::Info => TERTIARY_TEXT(),
-                                            SubagentEventTone::Success => Hsla {
-                                                h: 0.36,
-                                                s: 0.65,
-                                                l: 0.42,
-                                                a: 1.0,
-                                            },
-                                            SubagentEventTone::Error => Hsla {
-                                                h: 0.0,
-                                                s: 0.72,
-                                                l: 0.52,
-                                                a: 1.0,
-                                            },
-                                        };
-                                        div()
-                                            .flex_col()
-                                            .gap_1()
-                                            .p_2()
-                                            .w_full()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(GHOST_SURFACE_BG())
+                                            .cursor_pointer()
+                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.toggle_subagent_events_collapsed(run_id_for_toggle);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                svg()
+                                                    .path(if events_collapsed { "expand.svg" } else { "fold.svg" })
+                                                    .size(px(14.0))
+                                                    .flex_none()
+                                                    .text_color(MUTED_TEXT())
+                                            )
                                             .child(
                                                 div()
-                                                    .flex()
-                                                    .gap_2()
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(event_color)
-                                                            .font_weight(FontWeight::BOLD)
-                                                            .child(format!("[{}]", event.title))
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(TERTIARY_TEXT())
-                                                            .whitespace_normal()
-                                                            .w_full()
-                                                            .child(event.detail.clone())
-                                                    )
+                                                    .text_xs()
+                                                    .text_color(MUTED_TEXT())
+                                                    .child("Events:")
                                             )
-                                    }))
+                                    )
+                                    .when(!events_collapsed, |this| {
+                                        this.child(
+                                            div()
+                                                .flex_col()
+                                                .gap_2()
+                                                .w_full()
+                                                .bg(GHOST_SURFACE_BG())
+                                                .rounded_md()
+                                                .max_h(px(300.0))
+                                                .id("events_container")
+                                                .overflow_scroll()
+                                                .children(state.events.iter().map(|event| {
+                                                    let event_color = match event.tone {
+                                                        SubagentEventTone::Info => TERTIARY_TEXT(),
+                                                        SubagentEventTone::Success => Hsla {
+                                                            h: 0.36,
+                                                            s: 0.65,
+                                                            l: 0.42,
+                                                            a: 1.0,
+                                                        },
+                                                        SubagentEventTone::Error => Hsla {
+                                                            h: 0.0,
+                                                            s: 0.72,
+                                                            l: 0.52,
+                                                            a: 1.0,
+                                                        },
+                                                    };
+                                                    div()
+                                                        .flex_col()
+                                                        .gap_1()
+                                                        .p_2()
+                                                        .w_full()
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .gap_2()
+                                                                .child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .text_color(event_color)
+                                                                        .font_weight(FontWeight::BOLD)
+                                                                        .child(format!("[{}]", event.title))
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .text_color(TERTIARY_TEXT())
+                                                                        .whitespace_normal()
+                                                                        .w_full()
+                                                                        .child(event.detail.clone())
+                                                                )
+                                                        )
+                                                }))
+                                        )
+                                    })
                             )
                         })
                         .when(!state.live_text.trim().is_empty(), |this| {

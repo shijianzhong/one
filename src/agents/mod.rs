@@ -3,9 +3,8 @@
 pub mod acp_adapter;
 pub mod business;
 pub mod claude_code;
-pub mod intent;
 pub mod intent_router;
-pub mod keyword_classifier;
+pub mod permission;
 pub mod types;
 pub mod core;
 

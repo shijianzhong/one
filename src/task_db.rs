@@ -114,6 +114,37 @@ impl Database {
             )
             .unwrap())();
 
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS task_runs (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+        )",
+            )
+            .unwrap())();
+
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS run_events (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES task_runs(id)
+        )",
+            )
+            .unwrap())();
+
+        let _ = (conn_ref
+            .exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id)")
+            .unwrap())();
+
         Ok(Self { conn })
     }
 }
@@ -754,5 +785,73 @@ pub fn load_agent_conversations(
         let agent_response = s.column_text(2)?.to_string();
         let context_snapshot = s.column_text(3)?.to_string().into();
         Ok((id, user_query, agent_response, context_snapshot))
+    })
+}
+
+// ---------- task_runs / run_events ----------
+
+#[derive(Debug, Clone)]
+pub struct RunEventRow {
+    pub id: usize,
+    pub run_id: usize,
+    pub kind: String,
+    pub payload: String,
+    pub created_at: String,
+}
+
+pub fn insert_task_run(conn: &Connection, task_id: usize, kind: &str) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO task_runs (task_id, kind, status) VALUES (?, ?, 'running')",
+    )?;
+    stmt.with_bindings(&(task_id, kind))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+pub fn finish_task_run(conn: &Connection, run_id: usize, status: &str) -> Result<()> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE task_runs SET status = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(status, run_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn append_run_event(
+    conn: &Connection,
+    run_id: usize,
+    kind: &str,
+    payload: &str,
+) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO run_events (run_id, kind, payload) VALUES (?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(run_id, kind, payload))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+#[allow(dead_code)]
+pub fn load_run_events(conn: &Connection, run_id: usize) -> Result<Vec<RunEventRow>> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, run_id, kind, payload, created_at FROM run_events WHERE run_id = ? ORDER BY id ASC",
+    )?;
+    stmt.with_bindings(&run_id)?;
+    stmt.map(|s| {
+        Ok(RunEventRow {
+            id: s.column_int64(0)? as usize,
+            run_id: s.column_int64(1)? as usize,
+            kind: s.column_text(2)?.to_string(),
+            payload: s.column_text(3)?.to_string(),
+            created_at: s.column_text(4)?.to_string(),
+        })
     })
 }

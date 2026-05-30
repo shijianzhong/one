@@ -205,6 +205,7 @@ impl ClaudeCodeAgent {
         })?;
 
         let binary_path = Self::check_installation().unwrap_or_else(|| PathBuf::from("claude"));
+        let permission_flag = super::permission::global().mode().claude_code_flag();
         let mut cmd = Command::new(&binary_path);
         cmd.args(&[
             "-p",
@@ -213,7 +214,7 @@ impl ClaudeCodeAgent {
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "bypassPermissions",
+            permission_flag,
         ])
         .current_dir(project_dir)
         .stdout(Stdio::piped())
@@ -225,9 +226,10 @@ impl ClaudeCodeAgent {
         }
 
         let command_preview = format!(
-            "{} -p {:?} --output-format stream-json --verbose --permission-mode bypassPermissions{}",
+            "{} -p {:?} --output-format stream-json --verbose --permission-mode {}{}",
             binary_path.display(),
             instruction,
+            permission_flag,
             session_id
                 .map(|sid| format!(" --session-id {}", sid))
                 .unwrap_or_default()

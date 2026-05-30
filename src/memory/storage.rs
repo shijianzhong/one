@@ -5,6 +5,17 @@ use std::fs;
 use std::path::PathBuf;
 
 pub fn get_memory_base_path() -> PathBuf {
+    if let Ok(custom) = std::env::var("ONE_MEMORY_DIR") {
+        if !custom.trim().is_empty() {
+            return PathBuf::from(custom);
+        }
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir.join("one").join("memory");
+    }
+    if let Some(config_dir) = dirs::config_dir() {
+        return config_dir.join(".one").join("memory");
+    }
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("memory")

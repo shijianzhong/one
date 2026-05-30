@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -82,6 +81,18 @@ impl Tool for ShellTool {
     async fn call(&self, arguments: Value) -> Result<Value> {
         let command = arguments["command"].as_str().ok_or_else(|| anyhow::anyhow!("Missing command"))?;
         let cwd = arguments["cwd"].as_str();
+
+        match crate::agents::permission::global()
+            .evaluate(crate::agents::permission::ToolKind::Shell, command)
+        {
+            crate::agents::permission::PermissionDecision::Allow => {}
+            crate::agents::permission::PermissionDecision::Deny(reason) => {
+                return Err(anyhow::anyhow!(
+                    "Shell execution denied by permission policy: {}",
+                    reason
+                ));
+            }
+        }
 
         // Security: limit output to prevent memory issues
         const MAX_OUTPUT_BYTES: usize = 100_000;

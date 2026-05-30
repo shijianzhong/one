@@ -203,7 +203,7 @@ where
     }
 
     if !tool_calls_map.is_empty() {
-        let mut tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
+        let tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
         // Sort by index? map doesn't guarantee order, but for simplicity...
         return Ok(serde_json::json!({
             "role": "assistant",

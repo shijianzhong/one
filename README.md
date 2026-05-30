@@ -99,19 +99,55 @@
 
 ## 构建与运行
 
+> ONE 把 zed 仓库以 git submodule 形式 vendor 在 `vendor/zed/`，并通过 `patches/` 维护本地必须的补丁（例如修复 `svg_renderer` 在零尺寸时的 panic）。第一次拉取请按下面的流程操作。
+
 ```bash
-# 构建
+# 1. 克隆仓库（带子模块）
+git clone --recursive <repo-url> solo3_gpui
+cd solo3_gpui
+# 已经克隆但没拉子模块？执行：
+# git submodule update --init --recursive
+
+# 2. 应用本地维护的 zed 补丁（幂等，重复执行安全）
+bash scripts/apply-zed-patches.sh
+
+# 3. 构建主程序
 cargo build
 
 # 运行
 cargo run
 
-# 构建特定 crate
-cargo build -p one_components
+# 构建子 crate（注意：当前 acpx / components / skills/system_tools 各自独立）
+cargo build --manifest-path components/Cargo.toml
+cargo build --manifest-path acpx/Cargo.toml
+cargo build --manifest-path skills/system_tools/Cargo.toml
 
-# 清量级重建
+# 跑测试（同样需要分别执行）
+cargo test
+cargo test --manifest-path acpx/Cargo.toml
+cargo test --manifest-path skills/system_tools/Cargo.toml
+
+# 清理重建
 cargo clean && cargo build
 ```
+
+### 为什么不是单 workspace？
+
+zed 的所有子 crate 用 `*.workspace = true` 继承自 `vendor/zed/Cargo.toml`。Cargo 不支持嵌套 workspace，一旦外层声明 `[workspace]` 就会"接管" `vendor/zed/crates/...` 路径依赖的 inheritance 解析（`exclude` 对 path dep 无效）。所以 ONE 主仓库目前作为单 crate 工作，把各子模块作为 `path = "..."` 依赖拉入；vendor/zed 保留它自己的 workspace。
+
+### 升级 vendor/zed
+
+```bash
+cd vendor/zed
+git fetch origin
+git checkout <new-commit>
+cd ../..
+bash scripts/apply-zed-patches.sh    # 重新打补丁（如有冲突会报错）
+git add vendor/zed
+git commit -m "chore: bump vendor/zed to <new-commit>"
+```
+
+如果某个 patch 因为上游已经修复而失效，从 `patches/` 目录删除对应文件并提交。
 
 ---
 

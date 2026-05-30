@@ -4,25 +4,22 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[workspace]
-members = ["acpx", ".", "skills/system_tools"]
-
 [dependencies]
-gpui = { path = "/Users/shijianzhong/sking/zed/crates/gpui", default-features = false, features = ["font-kit"] }
-gpui_platform = { path = "/Users/shijianzhong/sking/zed/crates/gpui_platform", features = ["font-kit"] }
-gpui_macros = { path = "/Users/shijianzhong/sking/zed/crates/gpui_macros" }
-gpui_util = { path = "/Users/shijianzhong/sking/zed/crates/gpui_util" }
-gpui_shared_string = { path = "/Users/shijianzhong/sking/zed/crates/gpui_shared_string" }
-gpui_tokio = { path = "/Users/shijianzhong/sking/zed/crates/gpui_tokio" }
-reqwest_client = { path = "/Users/shijianzhong/sking/zed/crates/reqwest_client" }
+gpui = { path = "vendor/zed/crates/gpui", default-features = false, features = ["font-kit"] }
+gpui_platform = { path = "vendor/zed/crates/gpui_platform", features = ["font-kit"] }
+gpui_macros = { path = "vendor/zed/crates/gpui_macros" }
+gpui_util = { path = "vendor/zed/crates/gpui_util" }
+gpui_shared_string = { path = "vendor/zed/crates/gpui_shared_string" }
+gpui_tokio = { path = "vendor/zed/crates/gpui_tokio" }
+reqwest_client = { path = "vendor/zed/crates/reqwest_client" }
 http = "1"
-editor = { path = "/Users/shijianzhong/sking/zed/crates/editor" }
-settings = { path = "/Users/shijianzhong/sking/zed/crates/settings" }
-theme = { path = "/Users/shijianzhong/sking/zed/crates/theme" }
-theme_settings = { path = "/Users/shijianzhong/sking/zed/crates/theme_settings" }
-menu = { path = "/Users/shijianzhong/sking/zed/crates/menu" }
+editor = { path = "vendor/zed/crates/editor" }
+settings = { path = "vendor/zed/crates/settings" }
+theme = { path = "vendor/zed/crates/theme" }
+theme_settings = { path = "vendor/zed/crates/theme_settings" }
+menu = { path = "vendor/zed/crates/menu" }
 one_components = { path = "./components" }
-sqlez = { path = "/Users/shijianzhong/sking/zed/crates/sqlez" }
+sqlez = { path = "vendor/zed/crates/sqlez" }
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
 anyhow = "1"
@@ -50,7 +47,7 @@ default = []
 sandbox = ["bollard"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_linux = { path = "/Users/shijianzhong/sking/zed/crates/gpui_linux" }
+gpui_linux = { path = "vendor/zed/crates/gpui_linux" }
 
 [profile.dev]
 opt-level = 1

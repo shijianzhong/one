@@ -1,0 +1,15 @@
+diff --git a/crates/gpui/src/svg_renderer.rs b/crates/gpui/src/svg_renderer.rs
+index 3b5062f..5dedb9b 100644
+--- a/crates/gpui/src/svg_renderer.rs
++++ b/crates/gpui/src/svg_renderer.rs
+@@ -199,7 +199,9 @@ impl SvgRenderer {
+         params: &RenderSvgParams,
+         bytes: Option<&[u8]>,
+     ) -> Result<Option<(Size<DevicePixels>, Vec<u8>)>> {
+-        anyhow::ensure!(!params.size.is_zero(), "can't render at a zero size");
++        if params.size.is_zero() {
++            return Ok(None);
++        }
+ 
+         let render_pixmap = |bytes| {
+             let pixmap = self.render_pixmap(bytes, SvgSize::Size(params.size))?;

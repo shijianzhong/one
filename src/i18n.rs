@@ -211,6 +211,21 @@ impl Translations {
     pub const PREVIEW_IDLE: (&'static str, &'static str) = ("空闲", "Idle");
     pub const PREVIEW_READY: (&'static str, &'static str) = ("就绪", "Ready");
 
+    // Confirm / tool operations
+    pub const CONFIRM_EXECUTE: (&'static str, &'static str) = ("确认执行", "Confirm");
+    pub const STOP_GENERATING: (&'static str, &'static str) = ("停止", "Stop");
+
+    // Placeholder features
+    pub const COMING_SOON: (&'static str, &'static str) = ("即将推出", "Coming soon");
+
+    // Artifacts count hint
+    pub const ARTIFACTS_SHOWING_PREFIX: (&'static str, &'static str) = ("显示前 12 个，共", "Showing 12 of");
+    pub const ARTIFACTS_TOTAL_SUFFIX: (&'static str, &'static str) = ("个文件", "files");
+    pub const VIEW_ALL: (&'static str, &'static str) = ("查看全部", "View all");
+
+    // Nav footer placeholder
+    pub const FEATURE_IN_PROGRESS: (&'static str, &'static str) = ("功能开发中", "Feature in progress");
+
     // Terminal
     pub const TERMINAL: (&'static str, &'static str) = ("终端", "Terminal");
     pub const TYPE_COMMAND: (&'static str, &'static str) = ("输入命令...", "Type a command...");

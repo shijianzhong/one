@@ -5,8 +5,8 @@ use gpui::{
 };
 use crate::agents::types::FormattedContent;
 use crate::ui_theme::{
-    ASSISTANT_BUBBLE_BG, BORDER_LIGHT, BRAND_BLUE, FLOATING_PANEL_BG, PRIMARY_TEXT, SECONDARY_TEXT,
-    SURFACE_PANEL,
+    ASSISTANT_BUBBLE_BG, BORDER_LIGHT, BRAND_BLUE, CODE_BG, ERROR_TEXT, FLOATING_PANEL_BG,
+    PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_PANEL,
 };
 
 pub use crate::agents::types::ProcessDisplayInfo;
@@ -191,12 +191,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                                 div()
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(Hsla {
-                                        h: 0.0,
-                                        s: 1.0,
-                                        l: 0.35,
-                                        a: 1.0,
-                                    })
+                                    .text_color(ERROR_TEXT())
                                     .child(format!("{} High Usage Warnings", critical_count)),
                             ),
                     )
@@ -256,12 +251,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                 .max_h(px(400.0))
                 .children(processes.iter().map(|proc| {
                     let cpu_bar_color = if proc.is_critical {
-                        Hsla {
-                            h: 0.0,
-                            s: 1.0,
-                            l: 0.42,
-                            a: 1.0,
-                        }
+                        ERROR_TEXT()
                     } else {
                         BRAND_BLUE()
                     };
@@ -438,12 +428,7 @@ pub fn render_formatted_content(
         FormattedContent::Json(text) => div()
             .p_2()
             .rounded_md()
-            .bg(Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.98,
-                a: 1.0,
-            })
+            .bg(CODE_BG())
             .border_1()
             .border_color(BORDER_LIGHT())
             .child(
@@ -458,12 +443,7 @@ pub fn render_formatted_content(
         FormattedContent::Code(text) => div()
             .p_2()
             .rounded_md()
-            .bg(Hsla {
-                h: 0.62,
-                s: 0.15,
-                l: 0.97,
-                a: 1.0,
-            })
+            .bg(CODE_BG())
             .border_1()
             .border_color(BORDER_LIGHT())
             .child(

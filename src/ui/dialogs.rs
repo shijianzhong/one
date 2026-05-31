@@ -1,7 +1,7 @@
 use editor::Editor;
 use gpui::{
     div, px, Context, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Styled, Window,
+    StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::i18n::{t, Translations};
@@ -252,10 +252,21 @@ impl AppState {
         let lang = self.current_lang;
         let ws_id = self.delete_confirm_workspace_id.unwrap_or(0);
         let pos = self.popup_position;
+        // 防止菜单溢出右/下边界（菜单宽 180px，高约 96px）
+        let safe_x = if pos.x.as_f32() + 180.0 > 1400.0 {
+            gpui::px(pos.x.as_f32() - 180.0)
+        } else {
+            pos.x
+        };
+        let safe_y = if pos.y.as_f32() + 100.0 > 900.0 {
+            gpui::px(pos.y.as_f32() - 100.0)
+        } else {
+            pos.y
+        };
         div()
             .absolute()
-            .left(pos.x)
-            .top(pos.y)
+            .left(safe_x)
+            .top(safe_y)
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseDownEvent, _window, _cx| {
@@ -388,7 +399,8 @@ impl AppState {
                                     .bg(CANVAS_BG())
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
-                                    .overflow_hidden()
+                                    .id("export-json-preview")
+                                    .overflow_y_scroll()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT())
                                     .child(format!(
@@ -406,7 +418,8 @@ impl AppState {
                                     .bg(CANVAS_BG())
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
-                                    .overflow_hidden()
+                                    .id("export-md-preview")
+                                    .overflow_y_scroll()
                                     .text_xs()
                                     .text_color(PRIMARY_TEXT())
                                     .child(format!(

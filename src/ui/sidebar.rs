@@ -1,6 +1,6 @@
 use editor::Editor;
 use gpui::{
-    div, prelude::*, px, Context, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
+    div, prelude::*, px, Context, Focusable, FontWeight, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled, Window,
 };
 use menu::Confirm;
@@ -8,7 +8,7 @@ use menu::Confirm;
 use crate::i18n::{t, Translations};
 use crate::ui::render_formatted_content;
 use crate::ui_theme::{
-    BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
+    BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, ERROR_TEXT, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
     SURFACE_ELEVATED, SURFACE_PANEL, WORKSPACE_BG,
 };
 use crate::AppState;
@@ -418,6 +418,41 @@ impl AppState {
                                         .text_color(SECONDARY_TEXT())
                                         .child(t(lang, Translations::NO_ARTIFACTS_YET)),
                                 )
+                            })
+                            .when(run.artifacts.len() > 12, |this| {
+                                let total = run.artifacts.len();
+                                let task_dir_clone = task_dir.clone();
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .mt_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(MUTED_TEXT())
+                                                .child(format!(
+                                                    "{} {} {}",
+                                                    t(lang, Translations::ARTIFACTS_SHOWING_PREFIX),
+                                                    total,
+                                                    t(lang, Translations::ARTIFACTS_TOTAL_SUFFIX)
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(BRAND_BLUE())
+                                                .cursor_pointer()
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                                                        this.open_folder_in_finder(&task_dir_clone);
+                                                    }),
+                                                )
+                                                .child(t(lang, Translations::VIEW_ALL)),
+                                        ),
+                                )
                             }),
                     )
                     .child(
@@ -662,12 +697,7 @@ impl AppState {
                                     .text_color(if run.stderr_lines.is_empty() {
                                         SECONDARY_TEXT()
                                     } else {
-                                        Hsla {
-                                            h: 0.0,
-                                            s: 0.72,
-                                            l: 0.52,
-                                            a: 1.0,
-                                        }
+                                        ERROR_TEXT()
                                     })
                                     .whitespace_normal()
                                     .child(stderr_preview),

@@ -6,7 +6,8 @@ use gpui::{
 use crate::agents::types::{SubagentEventTone, SubagentMessageState, SubagentStatus};
 use crate::ui::render_icon_element;
 use crate::ui_theme::{
-    BRAND_BLUE, GHOST_SURFACE_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT, TERTIARY_TEXT,
+    BRAND_BLUE, ERROR_TEXT, GHOST_SURFACE_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
+    SUCCESS_TEXT, TERTIARY_TEXT,
 };
 use crate::AppState;
 
@@ -20,18 +21,8 @@ impl AppState {
         let status_color = match state.status {
             SubagentStatus::Pending => MUTED_TEXT(),
             SubagentStatus::Running => BRAND_BLUE(),
-            SubagentStatus::Completed => Hsla {
-                h: 0.36,
-                s: 0.65,
-                l: 0.42,
-                a: 1.0,
-            },
-            SubagentStatus::Failed => Hsla {
-                h: 0.0,
-                s: 0.72,
-                l: 0.52,
-                a: 1.0,
-            },
+            SubagentStatus::Completed => SUCCESS_TEXT(),
+            SubagentStatus::Failed => ERROR_TEXT(),
         };
         let status_label = match state.status {
             SubagentStatus::Pending => "PENDING",
@@ -56,12 +47,7 @@ impl AppState {
                         div()
                             .size(px(22.0))
                             .rounded_full()
-                            .bg(Hsla {
-                                h: 0.55,
-                                s: 0.6,
-                                l: 0.5,
-                                a: 1.0,
-                            })
+                            .bg(BRAND_BLUE())
                             .flex()
                             .items_center()
                             .justify_center()
@@ -275,23 +261,13 @@ impl AppState {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(Hsla {
-                                                h: 0.0,
-                                                s: 0.72,
-                                                l: 0.52,
-                                                a: 1.0,
-                                            })
+                                            .text_color(ERROR_TEXT())
                                             .child("Errors:"),
                                     )
                                     .children(state.stderr_lines.iter().map(|line| {
                                         div()
                                             .text_xs()
-                                            .text_color(Hsla {
-                                                h: 0.0,
-                                                s: 0.72,
-                                                l: 0.52,
-                                                a: 1.0,
-                                            })
+                                            .text_color(ERROR_TEXT())
                                             .font_family("monospace")
                                             .child(line.clone())
                                     })),

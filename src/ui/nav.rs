@@ -7,8 +7,8 @@ use crate::i18n::{t, Lang, Translations};
 use crate::task_db;
 use crate::ui::render_icon_element;
 use crate::ui_theme::{
-    get_theme_mode, ThemeMode, BORDER_LIGHT, BRAND_BLUE, GHOST_SURFACE_BG, HEADER_BG, MUTED_TEXT,
-    NAV_BG, PRIMARY_TEXT, SECONDARY_TEXT, TERTIARY_TEXT,
+    get_theme_mode, ThemeMode, BORDER_LIGHT, BRAND_BLUE, GHOST_SURFACE_BG, HEADER_BG, HOVER_BG,
+    MUTED_TEXT, NAV_BG, PRIMARY_TEXT, SECONDARY_TEXT, TERTIARY_TEXT,
 };
 use crate::workspace::TaskItem;
 use crate::{
@@ -47,8 +47,9 @@ impl AppState {
                 .gap_2()
                 .px_2()
                 .py_1()
+                .rounded_md()
                 .cursor_pointer()
-                .hover(|this| this.opacity(0.94))
+                .hover(|this| this.bg(HOVER_BG()))
                 .on_mouse_move(
                     cx.listener(move |this, _: &gpui::MouseMoveEvent, _window, _cx| {
                         this.hovered_workspace_id = Some(ws_id);
@@ -197,13 +198,14 @@ impl AppState {
                         .w_full()
                         .px_2()
                         .py_1()
+                        .rounded_md()
                         .cursor_pointer()
                         .bg(if is_active_task {
                             GHOST_SURFACE_BG()
                         } else {
                             NAV_BG()
                         })
-                        .hover(|this| this.opacity(0.94));
+                        .hover(|this| this.bg(HOVER_BG()));
 
                     let task_id = task.id;
                     let ws_id = workspace.id;
@@ -368,7 +370,7 @@ impl AppState {
                     .child(self.render_task_list(cx)),
             )
             .child(div().flex_none().h(px(1.0)).bg(BORDER_LIGHT()))
-            .child(div().flex_none().child(self.render_nav_footer_actions()))
+            .child(div().flex_none().child(self.render_nav_footer_actions(cx)))
     }
 
     pub(crate) fn render_titlebar_leading(
@@ -626,14 +628,27 @@ impl AppState {
         &mut self,
         title: String,
         icon_key: &'static str,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let lang = self.current_lang;
+        let tip = t(lang, Translations::FEATURE_IN_PROGRESS).to_string();
         div()
             .flex()
             .items_center()
             .gap_3()
             .px_1()
             .py_1()
+            .rounded_md()
             .opacity(0.88)
+            .cursor_pointer()
+            .id(format!("nav-footer-{}", icon_key))
+            .hover(|this| this.opacity(1.0).bg(HOVER_BG()))
+            .tooltip(move |_, cx| {
+                cx.new(|_| crate::HeaderTooltip {
+                    text: tip.clone(),
+                })
+                .into()
+            })
             .child(self.make_icon_slot(icon_key, false))
             .child(
                 div()
@@ -644,7 +659,7 @@ impl AppState {
             )
     }
 
-    fn render_nav_footer_actions(&mut self) -> impl IntoElement {
+    fn render_nav_footer_actions(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         div()
             .flex()
@@ -656,12 +671,14 @@ impl AppState {
                 self.make_footer_action_item(
                     t(lang, Translations::SETTINGS).to_string(),
                     "settings",
+                    cx,
                 ),
             )
             .child(
                 self.make_footer_action_item(
                     t(lang, Translations::SUPPORT).to_string(),
                     "support",
+                    cx,
                 ),
             )
             .child(div().h(px(40.0)))

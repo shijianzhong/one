@@ -408,3 +408,75 @@ pub fn AVATAR_BG() -> Hsla {
         },
     }
 }
+
+/// 代码块背景色（适配深浅色主题）
+pub fn CODE_BG() -> Hsla {
+    match get_theme_mode() {
+        ThemeMode::Dark => Hsla {
+            h: 0.62,
+            s: 0.15,
+            l: 0.14,
+            a: 1.0,
+        },
+        ThemeMode::Light => Hsla {
+            h: 0.62,
+            s: 0.15,
+            l: 0.97,
+            a: 1.0,
+        },
+    }
+}
+
+/// 错误/警告文字色（适配深浅色主题）
+pub fn ERROR_TEXT() -> Hsla {
+    match get_theme_mode() {
+        ThemeMode::Dark => Hsla {
+            h: 0.0,
+            s: 0.72,
+            l: 0.62,
+            a: 1.0,
+        },
+        ThemeMode::Light => Hsla {
+            h: 0.0,
+            s: 0.72,
+            l: 0.45,
+            a: 1.0,
+        },
+    }
+}
+
+/// 成功/完成状态文字色（适配深浅色主题）
+pub fn SUCCESS_TEXT() -> Hsla {
+    match get_theme_mode() {
+        ThemeMode::Dark => Hsla {
+            h: 0.36,
+            s: 0.65,
+            l: 0.52,
+            a: 1.0,
+        },
+        ThemeMode::Light => Hsla {
+            h: 0.36,
+            s: 0.65,
+            l: 0.38,
+            a: 1.0,
+        },
+    }
+}
+
+/// 列表项 hover 背景色（适配深浅色主题）
+pub fn HOVER_BG() -> Hsla {
+    match get_theme_mode() {
+        ThemeMode::Dark => Hsla {
+            h: 0.61,
+            s: 0.26,
+            l: 0.22,
+            a: 1.0,
+        },
+        ThemeMode::Light => Hsla {
+            h: 0.61,
+            s: 0.14,
+            l: 0.91,
+            a: 1.0,
+        },
+    }
+}

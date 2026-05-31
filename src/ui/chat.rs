@@ -207,10 +207,20 @@ impl AppState {
     }
 
     fn make_placeholder_header_tab(&mut self, label: &'static str) -> impl IntoElement {
+        let lang = self.current_lang;
+        let coming_soon = t(lang, Translations::COMING_SOON).to_string();
         div()
             .text_xs()
             .text_color(MUTED_TEXT())
-            .opacity(0.88)
+            .opacity(0.60)
+            .cursor_default()
+            .id("placeholder_header_tab")
+            .tooltip(move |_, cx| {
+                cx.new(|_| HeaderTooltip {
+                    text: coming_soon.clone(),
+                })
+                .into()
+            })
             .child(label)
     }
 
@@ -505,7 +515,7 @@ impl AppState {
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                         this.confirm_system_tools_operation(true, cx);
                                                     }))
-                                                    .child("确认执行")
+                                                    .child(t(lang, Translations::CONFIRM_EXECUTE))
                                             )
                                             .child(
                                                 div()
@@ -521,7 +531,7 @@ impl AppState {
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                         this.confirm_system_tools_operation(false, cx);
                                                     }))
-                                                    .child("取消")
+                                                    .child(t(lang, Translations::CANCEL))
                                             );
                                         rendered_parts.push(confirm_buttons.into_any_element());
                                     }
@@ -1002,18 +1012,9 @@ impl AppState {
         let weak_composer_for_action = weak_composer.clone();
 
         let request_in_flight = self.request_in_flight;
-        let send_bg = if request_in_flight {
-            Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.78,
-                a: 1.0,
-            }
-        } else {
-            BRAND_BLUE()
-        };
+        let send_bg = BRAND_BLUE();
         let send_label = if request_in_flight {
-            t(lang, Translations::SENDING)
+            t(lang, Translations::STOP_GENERATING)
         } else {
             t(lang, Translations::SEND)
         };
@@ -1107,6 +1108,10 @@ impl AppState {
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if this.request_in_flight {
+                                            // 停止生成：重置请求状态
+                                            this.request_in_flight = false;
+                                            this.request_status_text = None;
+                                            cx.notify();
                                             return;
                                         }
                                         if let Some(editor) = weak_composer.upgrade() {
@@ -1146,9 +1151,9 @@ impl AppState {
                                     .text_xs()
                                     .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
                                     .child(if request_in_flight {
-                                        self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::SENDING).to_string())
+                                        self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string())
                                     } else {
-                                        format!("{} Active", self.model_name)
+                                        format!("{} · Active", self.model_name)
                                     })
                             )
                     )

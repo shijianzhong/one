@@ -129,6 +129,7 @@ impl Agent for ClaudeCodeAgent {
                 http: false,
                 sse: false,
             },
+            tools: Vec::new(),
         }
     }
 

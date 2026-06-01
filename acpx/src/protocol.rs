@@ -197,7 +197,21 @@ pub struct TerminalCapabilities {
     pub kill: bool,
 }
 
-/// Agent capabilities
+/// Tool definition following JSON Schema / AI tool standards
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: JsonValue,
+    #[serde(default)]
+    pub strict: bool,
+    #[serde(rename = "isDangerous")]
+    #[serde(default)]
+    pub is_dangerous: bool,
+}
+
+/// Agent capabilities extended for tool support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCapabilities {
     #[serde(rename = "loadSession")]
@@ -208,6 +222,10 @@ pub struct AgentCapabilities {
 
     #[serde(rename = "mcpCapabilities")]
     pub mcp_capabilities: McpCapabilities,
+
+    /// List of tools/skills exposed by this agent
+    #[serde(default)]
+    pub tools: Vec<ToolDefinition>,
 }
 
 /// Prompt capabilities

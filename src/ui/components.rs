@@ -5,9 +5,10 @@ use gpui::{
 };
 use crate::agents::types::FormattedContent;
 use crate::ui_theme::{
-    ASSISTANT_BUBBLE_BG, BORDER_LIGHT, BRAND_BLUE, CODE_BG, ERROR_TEXT, FLOATING_PANEL_BG,
-    PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_PANEL,
+    BORDER_LIGHT, BRAND_BLUE, CODE_BG, ERROR_TEXT, GHOST_SURFACE_BG, HOVER_BG, MUTED_TEXT,
+    PRIMARY_TEXT, SECONDARY_TEXT,
 };
+use crate::{CANVAS_BG, SURFACE_ELEVATED, SURFACE_PANEL};
 
 pub use crate::agents::types::ProcessDisplayInfo;
 
@@ -168,10 +169,11 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
         .flex_col()
         .w_full()
         .max_w(px(806.0))
-        .rounded_xl()
-        .bg(ASSISTANT_BUBBLE_BG())
+        .rounded_2xl()
+        .bg(CANVAS_BG())
         .border_1()
         .border_color(BORDER_LIGHT())
+        .shadow_md()
         .child(
             div()
                 .flex()
@@ -179,24 +181,25 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                 .justify_between()
                 .px_6()
                 .py_4()
-                .bg(FLOATING_PANEL_BG())
+                .bg(SURFACE_PANEL())
+                .rounded_t_2xl()
                 .border_b_1()
                 .border_color(BORDER_LIGHT())
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
+                        .gap_3()
                         .child(
                             svg()
                                 .path("activity.svg")
-                                .size(px(20.0))
+                                .size(px(18.0))
                                 .text_color(BRAND_BLUE()),
                         )
                         .child(
                             div()
-                                .text_base()
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
                                 .text_color(PRIMARY_TEXT())
                                 .child("System Process Monitor"),
                         ),
@@ -209,7 +212,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                             .gap_2()
                             .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_md()
                             .bg(Hsla {
                                 h: 0.0,
                                 s: 1.0,
@@ -219,9 +222,9 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_weight(FontWeight::BOLD)
                                     .text_color(ERROR_TEXT())
-                                    .child(format!("{} High Usage Warnings", critical_count)),
+                                    .child(format!("{} Warnings", critical_count)),
                             ),
                     )
                 }),
@@ -232,17 +235,14 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                 .items_center()
                 .px_6()
                 .py_3()
-                .bg(FLOATING_PANEL_BG())
+                .bg(GHOST_SURFACE_BG())
                 .border_b_1()
                 .border_color(BORDER_LIGHT())
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
                         .w(px(245.0))
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::BOLD)
                         .text_color(SECONDARY_TEXT())
                         .child("Process Name"),
                 )
@@ -250,7 +250,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                     div()
                         .w(px(120.0))
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::BOLD)
                         .text_color(SECONDARY_TEXT())
                         .child("PID"),
                 )
@@ -258,7 +258,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                     div()
                         .w(px(200.0))
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::BOLD)
                         .text_color(SECONDARY_TEXT())
                         .child("CPU %"),
                 )
@@ -267,7 +267,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                         .flex_1()
                         .text_right()
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::BOLD)
                         .text_color(SECONDARY_TEXT())
                         .child("Memory"),
                 ),
@@ -277,7 +277,7 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                 .id("process_table_body")
                 .flex_1()
                 .overflow_scroll()
-                .max_h(px(400.0))
+                .max_h(px(320.0))
                 .children(processes.iter().map(|proc| {
                     let cpu_bar_color = if proc.is_critical {
                         ERROR_TEXT()
@@ -290,7 +290,8 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                         .flex()
                         .items_center()
                         .px_6()
-                        .py_4()
+                        .py_3()
+                        .hover(|this| this.bg(HOVER_BG()))
                         .child(
                             div()
                                 .flex()
@@ -299,34 +300,25 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                                 .w(px(245.0))
                                 .child(
                                     div()
-                                        .size(px(32.0))
-                                        .rounded_sm()
-                                        .bg(Hsla {
-                                            h: 0.61,
-                                            s: 0.62,
-                                            l: 0.88,
-                                            a: 1.0,
-                                        })
+                                        .size(px(28.0))
+                                        .rounded_md()
+                                        .bg(SURFACE_PANEL())
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .child(
                                             svg()
                                                 .path("cpu.svg")
-                                                .size(px(16.0))
+                                                .size(px(14.0))
                                                 .text_color(BRAND_BLUE()),
                                         ),
                                 )
                                 .child(
                                     div()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(PRIMARY_TEXT())
-                                                .child(proc.name.clone()),
-                                        ),
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(PRIMARY_TEXT())
+                                        .child(proc.name.clone()),
                                 ),
                         )
                         .child(
@@ -343,28 +335,17 @@ pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElemen
                                 .gap_1()
                                 .child(
                                     div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(PRIMARY_TEXT())
-                                                .child(format!("{:.1}%", proc.cpu_percent)),
-                                        ),
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(PRIMARY_TEXT())
+                                        .child(format!("{:.1}%", proc.cpu_percent)),
                                 )
                                 .child(
                                     div()
                                         .w(px(180.0))
                                         .h(px(4.0))
                                         .rounded_full()
-                                        .bg(Hsla {
-                                            h: 0.0,
-                                            s: 0.0,
-                                            l: 0.9,
-                                            a: 1.0,
-                                        })
+                                        .bg(SURFACE_ELEVATED())
                                         .child(
                                             div()
                                                 .w(px(bg_bar_width as f32))

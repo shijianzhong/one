@@ -54,6 +54,7 @@ impl Default for AgentCapabilities {
             load_session: true,
             prompt_capabilities: PromptCapabilities::default(),
             mcp_capabilities: McpCapabilities::default(),
+            tools: Vec::new(),
         }
     }
 }

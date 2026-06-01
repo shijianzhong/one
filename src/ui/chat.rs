@@ -1,18 +1,19 @@
 use editor::Editor;
 use gpui::{
-    div, prelude::*, px, svg, Context, Focusable, FontWeight, Hsla, InteractiveElement,
-    IntoElement, ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, relative, svg, Animation, AnimationExt, Context, Focusable,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window,
 };
+use std::time::Duration;
 use menu::Confirm;
 
 use crate::agents::types::{ClaudeRunPanelState, RequestKind, SubagentMessageState};
 use crate::i18n::{t, Lang, Translations};
 use crate::ui::{parse_think_content, render_icon_element, render_process_table, ContentPart};
 use crate::ui_theme::{
-    ACCENT_TEXT, ASSISTANT_BUBBLE_BG, AVATAR_BG, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG,
+    ACCENT_TEXT, ACTIVE_BG, ASSISTANT_BUBBLE_BG, AVATAR_BG, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG,
     FLOATING_PANEL_BG, GHOST_SURFACE_BG, HEADER_BG, INPUT_BG, MUTED_TEXT, PRIMARY_TEXT,
-    SECONDARY_TEXT, SURFACE_ACCENT, SURFACE_ELEVATED, TERTIARY_TEXT,
-    USER_BUBBLE_BG,
+    SECONDARY_TEXT, SURFACE_ELEVATED, TERTIARY_TEXT, USER_BUBBLE_BG,
 };
 use crate::{
     escape_visible_snippet, normalize_single_line_label, AppState, ExportChat, HeaderTooltip,
@@ -347,24 +348,24 @@ impl AppState {
                         .flex()
                         .justify_end()
                         .w_full()
-                        .mb_4()
+                        .mb_6()
                         .child(
                             div()
                                 .flex_col()
                                 .items_end()
                                 .gap_2()
-                                .px_4()
+                                .px_5()
                                 .py_3()
                                 .rounded_xl()
                                 .bg(bubble_bg)
-                                .border_1()
-                                .border_color(SURFACE_ACCENT())
-                                .max_w(px(640.0))
+                                .shadow_md()
+                                .max_w(px(680.0))
                                 .min_w(px(35.0))
                                 .child(
                                     div()
                                         .text_base()
                                         .text_color(text_color)
+                                        .line_height(relative(1.5))
                                         .whitespace_normal()
                                         .child(msg.content.clone())
                                 )
@@ -376,25 +377,27 @@ impl AppState {
                         .items_start()
                         .gap_2()
                         .w_full()
-                        .mb_4()
+                        .mb_8()
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
+                                .mb_1()
                                 .child(
                                     div()
-                                        .size(px(22.0))
+                                        .size(px(26.0))
                                         .rounded_full()
                                         .bg(AVATAR_BG())
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(render_icon_element("assistant", gpui::white(), 11.0))
+                                        .shadow_sm()
+                                        .child(render_icon_element("assistant", gpui::white(), 13.0))
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(SECONDARY_TEXT())
                                         .font_weight(FontWeight::BOLD)
                                         .child(role_label)
@@ -405,11 +408,16 @@ impl AppState {
                                 .flex_col()
                                 .items_start()
                                 .gap_4()
-                                .max_w(px(780.0))
+                                .max_w(px(840.0))
                                 .min_w(px(35.0))
                                 .w_full()
-                                .pl_8()
-                                .pt_4()
+                                .px_6()
+                                .py_5()
+                                .rounded_xl()
+                                .bg(ASSISTANT_BUBBLE_BG())
+                                .border_1()
+                                .border_color(BORDER_LIGHT())
+                                .shadow_sm()
                                 .children({
                                     let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
                                     let mut prev_was_think = false;
@@ -421,15 +429,31 @@ impl AppState {
                                                 let el = div()
                                                     .text_base()
                                                     .text_color(text_color)
+                                                    .line_height(relative(1.6))
                                                     .whitespace_normal()
                                                     .child(text.clone());
-                                                let el = if add_top_padding { el.pt_1() } else { el };
-                                                rendered_parts.push(el.into_any_element());
+                                                let el = if add_top_padding { el.pt_2() } else { el };
+                                                
+                                                let animation_id = format!("msg-{}-part-{}", msg_index, rendered_parts.len());
+                                                rendered_parts.push(
+                                                    el.with_animation(
+                                                        animation_id,
+                                                        Animation::new(Duration::from_millis(400)),
+                                                        |el, delta| el.opacity(0.4 + delta * 0.6)
+                                                    ).into_any_element()
+                                                );
                                             }
                                             ContentPart::ProcessTable { processes } => {
                                                 prev_was_think = false;
                                                 let el = render_process_table(processes);
-                                                rendered_parts.push(el.into_any_element());
+                                                let animation_id = format!("msg-{}-proc-{}", msg_index, rendered_parts.len());
+                                                rendered_parts.push(
+                                                    div().child(el).with_animation(
+                                                        animation_id,
+                                                        Animation::new(Duration::from_millis(500)),
+                                                        |el, delta| el.opacity(0.4 + delta * 0.6)
+                                                    ).into_any_element()
+                                                );
                                             }
                                             ContentPart::Think { text, complete } => {
                                                 prev_was_think = true;
@@ -437,6 +461,7 @@ impl AppState {
                                                 think_index += 1;
                                                 let complete = *complete;
                                                 let key = format!("task:{}:msg:{}:think:{}", task_id, msg_index, current_think_index);
+                                                let key_for_animation = key.clone();
                                                 let collapsed = self
                                                     .think_collapsed
                                                     .get(&key)
@@ -450,19 +475,16 @@ impl AppState {
                                                 let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
                                                 let default_collapsed = complete;
 
-                                                let el = div()
-                                                    .flex_col()
-                                                    .w_full()
-                                                    .child(
-                                                        div()
+                                                let header = div()
                                                             .flex()
                                                             .items_center()
                                                             .gap_2()
-                                                            .px_2()
-                                                            .py_1()
-                                                            .rounded_md()
+                                                            .px_3()
+                                                            .py_1p5()
+                                                            .rounded_lg()
                                                             .bg(GHOST_SURFACE_BG())
                                                             .cursor_pointer()
+                                                            .hover(|this| this.bg(SURFACE_ELEVATED()))
                                                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                                 let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
                                                                 this.think_collapsed.insert(key.clone(), next);
@@ -480,14 +502,30 @@ impl AppState {
                                                                     .text_xs()
                                                                     .text_color(MUTED_TEXT())
                                                                     .child(header_text)
-                                                            )
-                                                    )
+                                                            );
+                                                
+                                                let header_any = if !complete {
+                                                    header.with_animation(
+                                                        format!("thinking-{}", key_for_animation),
+                                                        Animation::new(Duration::from_secs(2)).repeat(),
+                                                        |el, delta| el.opacity(0.6 + gpui::pulsating_between(0.0, 0.4)(delta))
+                                                    ).into_any_element()
+                                                } else {
+                                                    header.into_any_element()
+                                                };
+
+                                                let el = div()
+                                                    .flex_col()
+                                                    .w_full()
+                                                    .child(header_any)
                                                     .when(!collapsed, |this| {
                                                         this.child(
                                                             div()
-                                                                .pr_2()
+                                                                .mt_2()
+                                                                .px_3()
                                                                 .text_xs()
                                                                 .text_color(TERTIARY_TEXT())
+                                                                .line_height(relative(1.5))
                                                                 .whitespace_normal()
                                                                 .child(text.clone())
                                                         )
@@ -599,10 +637,19 @@ impl AppState {
                         let el = div()
                             .text_base()
                             .text_color(PRIMARY_TEXT())
+                            .line_height(relative(1.6))
                             .whitespace_normal()
                             .child(text.clone());
-                        let el = if add_top_padding { el.pt_1() } else { el };
-                        rendered_parts.push(el.into_any_element());
+                        let el = if add_top_padding { el.pt_2() } else { el };
+                        
+                        let animation_id = format!("live-{}-part-{}", run_id, rendered_parts.len());
+                        rendered_parts.push(
+                            el.with_animation(
+                                animation_id,
+                                Animation::new(Duration::from_millis(300)),
+                                |el, delta| el.opacity(0.5 + delta * 0.5)
+                            ).into_any_element()
+                        );
                     }
                     ContentPart::ProcessTable { processes } => {
                         prev_was_think = false;
@@ -626,20 +673,19 @@ impl AppState {
                         let el = div()
                             .flex_col()
                             .w_full()
-                            .pl_8()
-                            .pt_4()
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded_lg()
                                     .bg(SURFACE_ELEVATED())
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
                                     .cursor_pointer()
+                                    .hover(|this| this.bg(ACTIVE_BG()))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(
@@ -668,10 +714,11 @@ impl AppState {
                             .when(!collapsed, |this| {
                                 this.child(
                                     div()
-                                        .pl_3()
-                                        .pr_2()
+                                        .mt_2()
+                                        .px_3()
                                         .text_xs()
                                         .text_color(TERTIARY_TEXT())
+                                        .line_height(relative(1.5))
                                         .whitespace_normal()
                                         .child(text.clone()),
                                 )
@@ -686,9 +733,17 @@ impl AppState {
             .flex_col()
             .items_start()
             .gap_4()
-            .max_w(px(780.0))
+            .max_w(px(840.0))
             .min_w(px(35.0))
-            .w_full();
+            .w_full()
+            .px_6()
+            .py_5()
+            .rounded_xl()
+            .bg(ASSISTANT_BUBBLE_BG())
+            .border_1()
+            .border_color(BORDER_LIGHT())
+            .shadow_sm();
+
         if waiting {
             content = content.child(
                 div()
@@ -698,12 +753,17 @@ impl AppState {
                     .child(
                         div()
                             .px_2()
-                            .py_1()
+                            .py_0p5()
                             .rounded_md()
                             .bg(GHOST_SURFACE_BG())
                             .text_xs()
                             .text_color(BRAND_BLUE())
-                            .child("LIVE"),
+                            .child("LIVE")
+                            .with_animation(
+                                "live-pulse",
+                                Animation::new(Duration::from_secs(2)).repeat(),
+                                |el, delta| el.opacity(0.5 + gpui::pulsating_between(0.0, 0.5)(delta))
+                            ),
                     )
                     .child(
                         div()
@@ -721,25 +781,27 @@ impl AppState {
             .items_start()
             .gap_2()
             .w_full()
-            .mb_4()
+            .mb_8()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .mb_1()
                     .child(
                         div()
-                            .size(px(22.0))
+                            .size(px(26.0))
                             .rounded_full()
                             .bg(AVATAR_BG())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(render_icon_element("assistant", gpui::white(), 11.0)),
+                            .shadow_sm()
+                            .child(render_icon_element("assistant", gpui::white(), 13.0)),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(SECONDARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child("ONE AI"),
@@ -768,25 +830,27 @@ impl AppState {
             .items_start()
             .gap_2()
             .w_full()
-            .mb_4()
+            .mb_8()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .mb_1()
                     .child(
                         div()
-                            .size(px(22.0))
+                            .size(px(26.0))
                             .rounded_full()
                             .bg(AVATAR_BG())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(render_icon_element("assistant", gpui::white(), 11.0))
+                            .shadow_sm()
+                            .child(render_icon_element("assistant", gpui::white(), 13.0))
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(SECONDARY_TEXT())
                             .font_weight(FontWeight::BOLD)
                             .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
@@ -797,23 +861,36 @@ impl AppState {
                     .flex_col()
                     .items_start()
                     .gap_4()
-                    .max_w(px(780.0))
+                    .max_w(px(840.0))
                     .min_w(px(35.0))
                     .w_full()
+                    .px_6()
+                    .py_5()
+                    .rounded_xl()
+                    .bg(ASSISTANT_BUBBLE_BG())
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_sm()
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
+                            .mb_2()
                             .child(
                                 div()
                                     .px_2()
-                                    .py_1()
+                                    .py_0p5()
                                     .rounded_md()
                                     .bg(GHOST_SURFACE_BG())
                                     .text_xs()
                                     .text_color(BRAND_BLUE())
                                     .child("LIVE")
+                                    .with_animation(
+                                        "claude-live-pulse",
+                                        Animation::new(Duration::from_secs(2)).repeat(),
+                                        |el, delta| el.opacity(0.5 + gpui::pulsating_between(0.0, 0.5)(delta))
+                                    )
                             )
                             .child(
                                 div()
@@ -838,9 +915,10 @@ impl AppState {
                                             let el = div()
                                                 .text_base()
                                                 .text_color(PRIMARY_TEXT())
+                                                .line_height(relative(1.6))
                                                 .whitespace_normal()
                                                 .child(text.clone());
-                                            let el = if add_top_padding { el.pt_1() } else { el };
+                                            let el = if add_top_padding { el.pt_2() } else { el };
                                             rendered_parts.push(el.into_any_element());
                                         }
                                         ContentPart::ProcessTable { processes } => {
@@ -870,18 +948,17 @@ impl AppState {
                                             let el = div()
                                                 .flex_col()
                                                 .w_full()
-                                                .pl_8()
-                                                .pt_4()
                                                 .child(
                                                     div()
                                                         .flex()
                                                         .items_center()
                                                         .gap_2()
-                                                        .px_2()
-                                                        .py_1()
-                                                        .rounded_md()
+                                                        .px_3()
+                                                        .py_1p5()
+                                                        .rounded_lg()
                                                         .bg(GHOST_SURFACE_BG())
                                                         .cursor_pointer()
+                                                        .hover(|this| this.bg(ACTIVE_BG()))
                                                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                             let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
                                                             this.think_collapsed.insert(key.clone(), next);
@@ -904,10 +981,11 @@ impl AppState {
                                                 .when(!collapsed, |this| {
                                                     this.child(
                                                         div()
-                                                            .pl_3()
-                                                            .pr_2()
+                                                            .mt_2()
+                                                            .px_3()
                                                             .text_xs()
                                                             .text_color(TERTIARY_TEXT())
+                                                            .line_height(relative(1.5))
                                                             .whitespace_normal()
                                                             .child(text.clone())
                                                     )
@@ -1022,40 +1100,43 @@ impl AppState {
         div()
             .flex()
             .justify_center()
-            .pt_5()
+            .pt_4()
             .pb_10()
             .child(
                 div()
                     .flex_col()
                     .w_full()
                     .max_w(px(940.0))
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_xl()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .rounded_2xl()
                     .bg(FLOATING_PANEL_BG())
                     .border_1()
-                    .border_color(GHOST_SURFACE_BG())
+                    .border_color(BORDER_LIGHT())
+                    .shadow_lg()
                     .child(
                         div()
                             .flex()
                             .items_end()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .rounded_lg()
+                            .gap_3()
+                            .px_4()
+                            .py_3()
+                            .rounded_xl()
                             .bg(INPUT_BG())
                             .border_1()
                             .border_color(BORDER_LIGHT())
                             .child(
                                 div()
-                                    .size(px(30.0))
+                                    .size(px(32.0))
                                     .rounded_full()
                                     .bg(GHOST_SURFACE_BG())
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(render_icon_element("add", MUTED_TEXT(), 14.0))
+                                    .hover(|this| this.bg(ACTIVE_BG()))
+                                    .cursor_pointer()
+                                    .child(render_icon_element("add", MUTED_TEXT(), 16.0))
                             )
                             .child(
                                 div()
@@ -1088,21 +1169,24 @@ impl AppState {
                             )
                             .child(
                                 div()
-                                    .size(px(30.0))
+                                    .size(px(32.0))
                                     .rounded_full()
                                     .bg(GHOST_SURFACE_BG())
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(render_icon_element("mic", MUTED_TEXT(), 14.0))
+                                    .hover(|this| this.bg(ACTIVE_BG()))
+                                    .cursor_pointer()
+                                    .child(render_icon_element("mic", MUTED_TEXT(), 16.0))
                             )
                             .child(
                                 div()
-                                    .px_3()
+                                    .px_5()
                                     .py_2()
                                     .rounded_lg()
                                     .bg(send_bg)
                                     .cursor_pointer()
+                                    .hover(|this| this.opacity(0.9))
                                     .text_color(gpui::white())
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
@@ -1139,7 +1223,7 @@ impl AppState {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .px_2()
+                            .px_3()
                             .child(
                                 div()
                                     .text_xs()

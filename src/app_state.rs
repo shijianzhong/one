@@ -8,6 +8,18 @@ use crate::agents;
 use crate::agents::types::{
     ClaudeRunPanelState, PreviewLaunchResult, RequestKind, SubagentMessageState,
 };
+
+/// A question from Claude Code waiting for user interaction
+#[derive(Debug, Clone)]
+pub(crate) struct PendingClaudeQuestion {
+    pub prompt: String,
+    pub options: Vec<String>,
+    /// Which sub-agent run_id this question belongs to (for answer routing)
+    pub source_run_id: u64,
+    /// session_id for continue_claude_with_answer routing
+    pub session_id: Option<String>,
+}
+
 use crate::i18n::{t, Lang, Translations};
 use crate::memory::types::ChatMessage;
 use crate::sandbox::backend::Backend;
@@ -79,6 +91,10 @@ pub(crate) struct AppState {
     pub(crate) pending_confirmation_tools: Option<(Vec<system_tools::Tool>, String)>,
     pub(crate) intent_router: agents::intent_router::IntentRouter,
     pub(crate) subagent_messages: HashMap<u64, SubagentMessageState>,
+    /// Maps orchestrator agent_id -> subagent card run_id for live stream routing
+    pub(crate) orchestrator_agent_run_map: HashMap<String, u64>,
+    /// Active Claude Code question waiting for user answer (from any path)
+    pub(crate) pending_claude_question: Option<PendingClaudeQuestion>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +109,20 @@ pub(crate) struct PreviewProcessHandle {
 }
 
 impl AppState {
+    pub(crate) fn get_active_references(&self) -> Vec<String> {
+        // 占位：未来扩展为真实属性
+        Vec::new()
+    }
+
+    pub(crate) fn get_active_plan_steps(&self) -> Vec<String> {
+        self.subagent_messages
+            .values()
+            .filter(|s| s.task_id == self.active_task_id)
+            .flat_map(|s| s.events.iter().map(|e| format!("[{}] {}", e.title, e.detail)))
+            .take(30)
+            .collect()
+    }
+
     pub(crate) fn begin_general_ai_run(&mut self) -> u64 {
         self.next_general_ai_run_id += 1;
         let run_id = self.next_general_ai_run_id;
@@ -192,6 +222,8 @@ impl AppState {
             pending_confirmation_tools: None,
             intent_router: agents::intent_router::IntentRouter::new(),
             subagent_messages: HashMap::new(),
+            orchestrator_agent_run_map: HashMap::new(),
+            pending_claude_question: None,
         };
 
         if state.workspaces.is_empty() {

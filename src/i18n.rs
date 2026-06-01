@@ -226,6 +226,13 @@ impl Translations {
     // Nav footer placeholder
     pub const FEATURE_IN_PROGRESS: (&'static str, &'static str) = ("功能开发中", "Feature in progress");
 
+    // Sidebar sections
+    pub const AI_PLAN: (&'static str, &'static str) = ("AI 任务计划", "AI Plan");
+    pub const NO_PLAN_YET: (&'static str, &'static str) = ("暂无任务计划。", "No plan yet.");
+    pub const REFERENCES_SIDEBAR: (&'static str, &'static str) = ("参考资料", "References");
+    pub const NO_REFERENCES_YET: (&'static str, &'static str) = ("暂无参考资料。", "No references yet.");
+    pub const EXPLORER_SIDEBAR: (&'static str, &'static str) = ("资源查看器", "Explorer");
+
     // Terminal
     pub const TERMINAL: (&'static str, &'static str) = ("终端", "Terminal");
     pub const TYPE_COMMAND: (&'static str, &'static str) = ("输入命令...", "Type a command...");

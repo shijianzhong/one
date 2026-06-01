@@ -122,7 +122,7 @@ impl AppState {
     pub(crate) fn begin_claude_run(&mut self, instruction: &str) -> u64 {
         self.next_claude_run_id += 1;
         let run_id = self.next_claude_run_id;
-        self.sidebar_visible = true;
+        // 不再强制打开侧边栏：产物和预览生成后用户可自行打开查看
         self.request_in_flight = true;
         self.request_status_text = Some(
             t(
@@ -478,11 +478,17 @@ impl AppState {
     }
 
     pub(crate) fn update_subagent_message_event(&mut self, run_id: u64, event: &ClaudeStreamEvent) {
+        // 先提取需要的数据，避免后续借用冲突
+        let lang = self.current_lang;
+        let session_id_for_question = self
+            .current_claude_run
+            .as_ref()
+            .and_then(|r| r.session_id.clone());
+
         let Some(state) = self.subagent_messages.get_mut(&run_id) else {
             return;
         };
 
-        let lang = self.current_lang;
         match event {
             ClaudeStreamEvent::Started { command: _, workdir } => {
                 state.status = SubagentStatus::Running;
@@ -540,7 +546,26 @@ impl AppState {
                     tone: SubagentEventTone::Error,
                 });
             }
+            ClaudeStreamEvent::AskUserQuestion { prompt, options } => {
+                state.status_message = "Waiting for your answer...".to_string();
+                state.events.push(SubagentEventEntry {
+                    title: "Question".to_string(),
+                    detail: prompt.clone(),
+                    tone: SubagentEventTone::Info,
+                });
+                // state borrow ends here; set pending question on self below
+            }
             _ => {}
+        }
+
+        // 处理需要修改 self 其他字段的事件（借用已释放）
+        if let ClaudeStreamEvent::AskUserQuestion { prompt, options } = event {
+            self.pending_claude_question = Some(crate::app_state::PendingClaudeQuestion {
+                prompt: prompt.clone(),
+                options: options.clone(),
+                source_run_id: run_id,
+                session_id: session_id_for_question,
+            });
         }
     }
 
@@ -1102,10 +1127,16 @@ impl AppState {
                                         }
                                         this.request_status_text = Some(format!("📋 Plan: {}", plan));
                                     }
-                                    OrchestratorEvent::StepStarted {
-                                        agent_id: _,
+                                OrchestratorEvent::StepStarted {
+                                        agent_id,
                                         agent_name,
                                     } => {
+                                        // 为每个 sub-agent 创建一个 subagent 卡片
+                                        let sub_run_id = this.next_claude_run_id + 1;
+                                        this.next_claude_run_id = sub_run_id;
+                                        this.insert_subagent_message(sub_run_id, format!("{}: thinking...", agent_name));
+                                        // 记录 agent_id -> run_id 的映射供后续 SubAgentStream 使用
+                                        this.orchestrator_agent_run_map.insert(agent_id.clone(), sub_run_id);
                                         this.request_status_text =
                                             Some(format!("Agent {} is thinking...", agent_name));
                                     }
@@ -1140,6 +1171,12 @@ impl AppState {
                                         }
                                     }
                                     OrchestratorEvent::StepFinished { result: _ } => {}
+                                    OrchestratorEvent::SubAgentStream { agent_id, event } => {
+                                        // 通过 agent_id 找到对应的 subagent 卡片 run_id
+                                        if let Some(&sub_run_id) = this.orchestrator_agent_run_map.get(&agent_id) {
+                                            this.update_subagent_message_event(sub_run_id, &event);
+                                        }
+                                    }
                                 },
                                 OrchestratorWrapperEvent::Finished(result) => {
                                     if let Some(rid) = log_run_id {
@@ -1158,6 +1195,7 @@ impl AppState {
                                             "finished",
                                         );
                                     }
+                                    this.orchestrator_agent_run_map.clear();
                                     this.request_in_flight = false;
                                     this.request_status_text = None;
                                     this.messages.push(ChatMessage::new("assistant", &result));
@@ -1189,6 +1227,7 @@ impl AppState {
                                             "failed",
                                         );
                                     }
+                                    this.orchestrator_agent_run_map.clear();
                                     this.request_in_flight = false;
                                     this.request_status_text = None;
                                     this.messages.push(ChatMessage::new(

@@ -215,8 +215,10 @@ impl ClaudeCodeAgent {
             "--verbose",
             "--permission-mode",
             permission_flag,
+            "--dangerously-skip-permissions",
         ])
         .current_dir(project_dir)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -226,7 +228,7 @@ impl ClaudeCodeAgent {
         }
 
         let command_preview = format!(
-            "{} -p {:?} --output-format stream-json --verbose --permission-mode {}{}",
+            "{} -p {:?} --output-format stream-json --verbose --permission-mode {} --dangerously-skip-permissions{}",
             binary_path.display(),
             instruction,
             permission_flag,

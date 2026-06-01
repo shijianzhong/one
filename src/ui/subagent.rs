@@ -1,5 +1,5 @@
 use gpui::{
-    div, prelude::*, px, svg, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
+    div, prelude::*, px, svg, Context, FontWeight, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled,
 };
 
@@ -190,20 +190,13 @@ impl AppState {
                                                 .flex_col()
                                                 .gap_2()
                                                 .w_full()
-                                                .bg(GHOST_SURFACE_BG())
-                                                .rounded_md()
                                                 .max_h(px(300.0))
                                                 .id("events_container")
                                                 .overflow_scroll()
                                                 .children(state.events.iter().map(|event| {
                                                     let event_color = match event.tone {
                                                         SubagentEventTone::Info => TERTIARY_TEXT(),
-                                                        SubagentEventTone::Error => Hsla {
-                                                            h: 0.0,
-                                                            s: 0.72,
-                                                            l: 0.52,
-                                                            a: 1.0,
-                                                        },
+                                                        SubagentEventTone::Error => ERROR_TEXT(),
                                                     };
                                                     div().flex_col().gap_1().p_2().w_full().child(
                                                         div()

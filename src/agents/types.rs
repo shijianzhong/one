@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use gpui::Hsla;
 use crate::i18n::{Lang, Translations, t};
 pub(crate) use crate::ui_theme::{
-    BRAND_BLUE, MUTED_TEXT, SECONDARY_TEXT,
+    BRAND_BLUE, ERROR_TEXT, MUTED_TEXT, SECONDARY_TEXT, SUCCESS_TEXT,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,18 +138,8 @@ impl ClaudeRunStatus {
     pub fn color(&self) -> Hsla {
         match self {
             Self::Running => BRAND_BLUE(),
-            Self::Completed => Hsla {
-                h: 0.36,
-                s: 0.65,
-                l: 0.42,
-                a: 1.0,
-            },
-            Self::Failed => Hsla {
-                h: 0.0,
-                s: 0.72,
-                l: 0.52,
-                a: 1.0,
-            },
+            Self::Completed => SUCCESS_TEXT(),
+            Self::Failed => ERROR_TEXT(),
         }
     }
 }
@@ -165,18 +155,8 @@ impl ClaudeRunTone {
     pub fn color(&self) -> Hsla {
         match self {
             Self::Info => SECONDARY_TEXT(),
-            Self::Success => Hsla {
-                h: 0.36,
-                s: 0.65,
-                l: 0.42,
-                a: 1.0,
-            },
-            Self::Error => Hsla {
-                h: 0.0,
-                s: 0.72,
-                l: 0.52,
-                a: 1.0,
-            },
+            Self::Success => SUCCESS_TEXT(),
+            Self::Error => ERROR_TEXT(),
         }
     }
 }
@@ -301,18 +281,8 @@ impl PreviewStatus {
     pub fn color(&self) -> Hsla {
         match self {
             Self::Idle => MUTED_TEXT(),
-            Self::Ready => Hsla {
-                h: 0.36,
-                s: 0.65,
-                l: 0.42,
-                a: 1.0,
-            },
-            Self::Failed => Hsla {
-                h: 0.0,
-                s: 0.72,
-                l: 0.52,
-                a: 1.0,
-            },
+            Self::Ready => SUCCESS_TEXT(),
+            Self::Failed => ERROR_TEXT(),
         }
     }
 }

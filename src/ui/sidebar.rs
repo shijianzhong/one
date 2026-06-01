@@ -1,45 +1,81 @@
-use editor::Editor;
 use gpui::{
-    div, prelude::*, px, Context, Focusable, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, svg, Context, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Styled, Window,
 };
-use menu::Confirm;
 
 use crate::i18n::{t, Translations};
-use crate::ui::render_formatted_content;
 use crate::ui_theme::{
-    BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, ERROR_TEXT, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
+    BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
     SURFACE_ELEVATED, SURFACE_PANEL, WORKSPACE_BG,
 };
 use crate::AppState;
 
+// ─── Section header helper ────────────────────────────────────────────────────
+
+fn section_header(label: impl Into<String>) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_1()
+        .pb_1()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::BOLD)
+                .text_color(MUTED_TEXT())
+                .child(label.into()),
+        )
+}
+
+// ─── Empty row helper ─────────────────────────────────────────────────────────
+
+fn empty_hint(text: impl Into<String>) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(SECONDARY_TEXT())
+        .px_1()
+        .child(text.into())
+}
+
+// ─── Main render ─────────────────────────────────────────────────────────────
+
 impl AppState {
     pub(crate) fn render_sidebar(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let sidebar_bg = WORKSPACE_BG();
         let lang = self.current_lang;
+
+        // Pull data we need up front (avoid borrow issues inside closures)
         let run = self
             .current_claude_run
             .as_ref()
-            .filter(|run| run.task_id == self.active_task_id)
+            .filter(|r| r.task_id == self.active_task_id)
             .cloned();
 
-        let mut sidebar = div()
+        let artifacts = run.as_ref().map(|r| r.artifacts.clone()).unwrap_or_default();
+        let preview = run.as_ref().and_then(|r| r.preview.clone());
+        let task_dir = run.as_ref().map(|r| r.work_dir.clone()).unwrap_or_default();
+
+        // ── outer container ──────────────────────────────────────────────────
+        div()
             .flex()
             .flex_col()
-            .w(px(340.0))
+            .w(px(300.0))
             .h_full()
-            .bg(sidebar_bg)
-            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
+            .bg(WORKSPACE_BG())
+            .border_l_1()
+            .border_color(BORDER_LIGHT())
+            // ── header bar ───────────────────────────────────────────────────
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .h(px(56.0))
+                    .h(px(48.0))
+                    .flex_none()
                     .px_4()
                     .bg(SURFACE_ELEVATED())
                     .border_b_1()
@@ -47,714 +83,386 @@ impl AppState {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(PRIMARY_TEXT())
                             .font_weight(FontWeight::BOLD)
-                            .child(t(lang, Translations::CLAUDE_CODE_RUN)),
+                            .text_color(PRIMARY_TEXT())
+                            .child(t(lang, Translations::EXPLORER_SIDEBAR)),
                     ),
+            )
+            // ── scrollable body ──────────────────────────────────────────────
+            .child(
+                div()
+                    .id("sidebar-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_5()
+                    .p_4()
+                    // ── § Artifacts ─────────────────────────────────────────
+                    .child(self.render_sidebar_artifacts(
+                        lang,
+                        &artifacts,
+                        &task_dir,
+                        cx,
+                    ))
+                    // ── § Preview ───────────────────────────────────────────
+                    .child(self.render_sidebar_preview(lang, preview.as_ref(), cx))
+                    // ── § References ────────────────────────────────────────
+                    .child(self.render_sidebar_references(lang)),
+            )
+    }
+
+    // ─── Artifacts section ───────────────────────────────────────────────────
+
+    fn render_sidebar_artifacts(
+        &mut self,
+        lang: crate::i18n::Lang,
+        artifacts: &[crate::agents::types::ArtifactEntry],
+        task_dir: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let task_dir = task_dir.to_string();
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_header(t(lang, Translations::ARTIFACTS)))
+                    .when(!task_dir.is_empty(), |this| {
+                        let td = task_dir.clone();
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(BRAND_BLUE())
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                                        this.open_folder_in_finder(&td);
+                                    }),
+                                )
+                                .child(t(lang, Translations::OPEN_TASK_FOLDER)),
+                        )
+                    }),
             );
 
-        if let Some(run) = run {
-            let status_color = run.status.color();
-            let task_dir = run.work_dir.clone();
-            let live_output = if let Some(final_text) = run.final_text.clone() {
-                final_text
-            } else if run.live_text.trim().is_empty() {
-                run.status_message.clone()
-            } else {
-                run.live_text.clone()
-            };
-            let preview = run.preview.clone();
-            let preview_label = preview
-                .as_ref()
-                .map(|preview| preview.status.label(lang).to_string())
-                .unwrap_or_else(|| t(lang, Translations::PREVIEW_IDLE).to_string());
-            let preview_color = preview
-                .as_ref()
-                .map(|preview| preview.status.color())
-                .unwrap_or(MUTED_TEXT());
-            let pending_question = run.pending_question.clone();
-            let question_editor =
-                window.use_keyed_state("claude-question-editor", &mut *cx, |window, cx| {
-                    let mut editor = Editor::single_line(window, cx);
-                    editor.set_placeholder_text(
-                        t(lang, Translations::ANSWER_CLAUDE_QUESTION),
-                        window,
-                        cx,
-                    );
-                    editor
-                });
-            let question_focus = question_editor.read(cx).focus_handle(cx);
-            let weak_question_editor = question_editor.downgrade();
+        if artifacts.is_empty() {
+            section = section.child(empty_hint(t(lang, Translations::NO_ARTIFACTS_YET)));
+        } else {
+            let shown = artifacts.iter().take(12).cloned().collect::<Vec<_>>();
+            let total = artifacts.len();
 
-            let mut timeline = div().flex().flex_col().gap_2();
-            for event in run.events.iter().rev() {
-                let detail_block = render_formatted_content(
-                    &event.formatted_detail,
-                    SECONDARY_TEXT(),
-                    PRIMARY_TEXT(),
-                );
-                timeline = timeline.child(
+            let mut list = div().flex().flex_col().gap_1();
+            for artifact in shown {
+                let abs = artifact.absolute_path.clone();
+                let name = artifact.relative_path.clone();
+                let kind = artifact.kind.clone();
+                list = list.child(
                     div()
-                        .flex_col()
-                        .gap_1()
-                        .p_3()
-                        .rounded_lg()
-                        .bg(SURFACE_ELEVATED())
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .px_2()
+                        .py_2()
+                        .rounded_md()
+                        .bg(CANVAS_BG())
                         .border_1()
                         .border_color(BORDER_LIGHT())
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(event.tone.color())
-                                .font_weight(FontWeight::BOLD)
-                                .child(event.title.clone()),
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .flex_1()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .px_1()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(SURFACE_PANEL())
+                                        .text_xs()
+                                        .text_color(MUTED_TEXT())
+                                        .flex_none()
+                                        .child(kind),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(PRIMARY_TEXT())
+                                        .text_ellipsis()
+                                        .overflow_hidden()
+                                        .child(name),
+                                ),
                         )
-                        .child(detail_block),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(BRAND_BLUE())
+                                .flex_none()
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                                        this.reveal_file_in_finder(&abs);
+                                    }),
+                                )
+                                .child(t(lang, Translations::REVEAL)),
+                        ),
                 );
             }
+            section = section.child(list);
 
-            let stderr_preview = if run.stderr_lines.is_empty() {
-                t(lang, Translations::NO_STDERR_OUTPUT).to_string()
-            } else {
-                run.stderr_lines
-                    .iter()
-                    .rev()
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
+            // overflow hint
+            if total > 12 {
+                let td2 = task_dir.clone();
+                section = section.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .mt_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(MUTED_TEXT())
+                                .child(format!(
+                                    "{} {} {}",
+                                    t(lang, Translations::ARTIFACTS_SHOWING_PREFIX),
+                                    total,
+                                    t(lang, Translations::ARTIFACTS_TOTAL_SUFFIX)
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(BRAND_BLUE())
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                                        this.open_folder_in_finder(&td2);
+                                    }),
+                                )
+                                .child(t(lang, Translations::VIEW_ALL)),
+                        ),
+                );
+            }
+        }
 
-            sidebar = sidebar.child(
+        section
+    }
+
+    // ─── Preview section ─────────────────────────────────────────────────────
+
+    fn render_sidebar_preview(
+        &mut self,
+        lang: crate::i18n::Lang,
+        preview: Option<&crate::agents::types::PreviewState>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section_header(t(lang, Translations::PREVIEW)));
+
+        let Some(preview) = preview else {
+            return section.child(empty_hint(t(lang, Translations::NO_PREVIEW_INFO)));
+        };
+
+        // Status badge
+        section = section.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(CANVAS_BG())
+                        .border_1()
+                        .border_color(BORDER_LIGHT())
+                        .text_xs()
+                        .text_color(preview.status.color())
+                        .font_weight(FontWeight::BOLD)
+                        .child(preview.status.label(lang)),
+                )
+                .when_some(preview.entry_file.clone(), |this, entry| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(MUTED_TEXT())
+                            .text_ellipsis()
+                            .overflow_hidden()
+                            .child(entry),
+                    )
+                }),
+        );
+
+        // URL + open button
+        if let Some(url) = preview.url.clone() {
+            let url_for_btn = url.clone();
+            section = section.child(
                 div()
-                    .id("claude-run-panel-content")
-                    .overflow_scroll()
-                    .flex_1()
-                    .p_4()
                     .flex()
                     .flex_col()
-                    .gap_4()
+                    .gap_2()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(SURFACE_PANEL())
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
                     .child(
                         div()
-                            .flex_col()
-                            .gap_3()
-                            .p_4()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_md()
-                                            .bg(CANVAS_BG())
-                                            .border_1()
-                                            .border_color(BORDER_LIGHT())
-                                            .text_xs()
-                                            .text_color(SECONDARY_TEXT())
-                                            .child("RUN"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(gpui::white())
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_md()
-                                            .bg(status_color)
-                                            .child(run.status.label(lang)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .child(run.status_message.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(PRIMARY_TEXT())
-                                    .font_weight(FontWeight::BOLD)
-                                    .whitespace_normal()
-                                    .child(run.instruction.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .whitespace_normal()
-                                    .child(format!(
-                                        "{}: {}",
-                                        t(lang, Translations::WORKDIR),
-                                        run.work_dir
-                                    )),
-                            ),
+                            .text_xs()
+                            .text_color(BRAND_BLUE())
+                            .whitespace_normal()
+                            .child(url),
                     )
                     .child(
                         div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::PROGRESS)),
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(BRAND_BLUE())
+                            .text_xs()
+                            .text_color(gpui::white())
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                                    this.open_url_in_browser(&url_for_btn);
+                                }),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(PRIMARY_TEXT())
-                                    .whitespace_normal()
-                                    .child(run.status_message.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .child(t(lang, Translations::PREVIEW)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(preview_color)
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(preview_label),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(SECONDARY_TEXT())
-                                    .whitespace_normal()
-                                    .child(
-                                        preview
-                                            .as_ref()
-                                            .map(|preview| preview.note.clone())
-                                            .unwrap_or_else(|| {
-                                                t(lang, Translations::NO_PREVIEW_INFO).to_string()
-                                            }),
-                                    ),
-                            )
-                            .when_some(
-                                preview.clone().and_then(|preview| preview.entry_file),
-                                |this, entry_file| {
-                                    this.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .whitespace_normal()
-                                            .child(format!(
-                                                "{}: {}",
-                                                t(lang, Translations::ENTRY),
-                                                entry_file
-                                            )),
-                                    )
-                                },
-                            )
-                            .when_some(
-                                preview.clone().and_then(|preview| preview.url),
-                                |this, url| {
-                                    this.child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(BRAND_BLUE())
-                                                    .whitespace_normal()
-                                                    .child(url.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .px_3()
-                                                    .py_2()
-                                                    .rounded_md()
-                                                    .bg(BRAND_BLUE())
-                                                    .text_xs()
-                                                    .text_color(gpui::white())
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(
-                                                        gpui::MouseButton::Left,
-                                                        cx.listener({
-                                                            let url = url.clone();
-                                                            move |this,
-                                                                  _: &gpui::MouseDownEvent,
-                                                                  _window,
-                                                                  _cx| {
-                                                                this.open_url_in_browser(&url);
-                                                            }
-                                                        }),
-                                                    )
-                                                    .child(t(lang, Translations::OPEN_IN_BROWSER)),
-                                            ),
-                                    )
-                                },
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(MUTED_TEXT())
-                                            .child(t(lang, Translations::ARTIFACTS)),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_3()
-                                            .py_2()
-                                            .rounded_md()
-                                            .bg(CANVAS_BG())
-                                            .text_xs()
-                                            .text_color(PRIMARY_TEXT())
-                                            .cursor_pointer()
-                                            .on_mouse_down(gpui::MouseButton::Left, {
-                                                let task_dir = task_dir.clone();
-                                                cx.listener(
-                                                    move |this,
-                                                          _: &gpui::MouseDownEvent,
-                                                          _window,
-                                                          _cx| {
-                                                        this.open_folder_in_finder(&task_dir);
-                                                    },
-                                                )
-                                            })
-                                            .child(t(lang, Translations::OPEN_TASK_FOLDER)),
-                                    ),
-                            )
-                            .child(
-                                div().flex_col().gap_2().children(
-                                    run.artifacts.iter().take(12).cloned().map(|artifact| {
-                                        let absolute_path = artifact.absolute_path.clone();
-                                        let label = format!(
-                                            "{} · {}",
-                                            artifact.relative_path, artifact.kind
-                                        );
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_2()
-                                            .px_2()
-                                            .py_2()
-                                            .rounded_md()
-                                            .bg(CANVAS_BG())
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(PRIMARY_TEXT())
-                                                    .whitespace_normal()
-                                                    .child(label),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(BRAND_BLUE())
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(
-                                                        gpui::MouseButton::Left,
-                                                        cx.listener(
-                                                            move |this,
-                                                                  _: &gpui::MouseDownEvent,
-                                                                  _window,
-                                                                  _cx| {
-                                                                this.reveal_file_in_finder(
-                                                                    &absolute_path,
-                                                                );
-                                                            },
-                                                        ),
-                                                    )
-                                                    .child(t(lang, Translations::REVEAL)),
-                                            )
-                                            .into_any_element()
-                                    }),
-                                ),
-                            )
-                            .when(run.artifacts.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(SECONDARY_TEXT())
-                                        .child(t(lang, Translations::NO_ARTIFACTS_YET)),
-                                )
-                            })
-                            .when(run.artifacts.len() > 12, |this| {
-                                let total = run.artifacts.len();
-                                let task_dir_clone = task_dir.clone();
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .mt_1()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(MUTED_TEXT())
-                                                .child(format!(
-                                                    "{} {} {}",
-                                                    t(lang, Translations::ARTIFACTS_SHOWING_PREFIX),
-                                                    total,
-                                                    t(lang, Translations::ARTIFACTS_TOTAL_SUFFIX)
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(BRAND_BLUE())
-                                                .cursor_pointer()
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                                                        this.open_folder_in_finder(&task_dir_clone);
-                                                    }),
-                                                )
-                                                .child(t(lang, Translations::VIEW_ALL)),
-                                        ),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::QUESTIONS)),
-                            )
-                            .when_some(pending_question.clone(), |this, question| {
-                                this.child(
-                                    div()
-                                        .flex_col()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(PRIMARY_TEXT())
-                                                .whitespace_normal()
-                                                .child(question.prompt.clone()),
-                                        )
-                                        .when(!question.options.is_empty(), |this| {
-                                            this.child(div().flex().flex_col().gap_2().children(
-                                                question.options.iter().cloned().map(|option| {
-                                                    let option_label = option.clone();
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .rounded_md()
-                                                        .bg(WORKSPACE_BG())
-                                                        .cursor_pointer()
-                                                        .text_xs()
-                                                        .text_color(PRIMARY_TEXT())
-                                                        .on_mouse_down(
-                                                            gpui::MouseButton::Left,
-                                                            cx.listener(
-                                                                move |this,
-                                                                      _: &gpui::MouseDownEvent,
-                                                                      _window,
-                                                                      cx| {
-                                                                    this.continue_claude_with_answer(
-                                                                        option.clone(),
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            ),
-                                                        )
-                                                        .child(option_label)
-                                                        .into_any_element()
-                                                }),
-                                            ))
-                                        })
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .px_2()
-                                                        .py_2()
-                                                        .rounded_md()
-                                                        .bg(CANVAS_BG())
-                                                        .track_focus(&question_focus)
-                                                        .on_action(cx.listener({
-                                                            let weak_question_editor =
-                                                                weak_question_editor.clone();
-                                                            move |this, _: &Confirm, _window, cx| {
-                                                                if let Some(editor) =
-                                                                    weak_question_editor.upgrade()
-                                                                {
-                                                                    let answer = editor
-                                                                        .read_with(
-                                                                            cx,
-                                                                            |editor, cx| {
-                                                                                editor.text(cx)
-                                                                            },
-                                                                        )
-                                                                        .trim()
-                                                                        .to_string();
-                                                                    if !answer.is_empty() {
-                                                                        editor.update(
-                                                                            cx,
-                                                                            |editor, cx| {
-                                                                                editor.set_text(
-                                                                                    "", _window,
-                                                                                    cx,
-                                                                                )
-                                                                            },
-                                                                        );
-                                                                        this.continue_claude_with_answer(
-                                                                            answer, cx,
-                                                                        );
-                                                                    }
-                                                                }
-                                                            }
-                                                        }))
-                                                        .child(question_editor.clone()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .rounded_md()
-                                                        .bg(BRAND_BLUE())
-                                                        .text_xs()
-                                                        .text_color(gpui::white())
-                                                        .cursor_pointer()
-                                                        .on_mouse_down(
-                                                            gpui::MouseButton::Left,
-                                                            cx.listener({
-                                                                let weak_question_editor =
-                                                                    weak_question_editor.clone();
-                                                                move |this,
-                                                                      _: &gpui::MouseDownEvent,
-                                                                      _window,
-                                                                      cx| {
-                                                                    if let Some(editor) =
-                                                                        weak_question_editor
-                                                                            .upgrade()
-                                                                    {
-                                                                        let answer = editor
-                                                                            .read_with(
-                                                                                cx,
-                                                                                |editor, cx| {
-                                                                                    editor.text(cx)
-                                                                                },
-                                                                            )
-                                                                            .trim()
-                                                                            .to_string();
-                                                                        if !answer.is_empty() {
-                                                                            editor.update(
-                                                                                cx,
-                                                                                |editor, cx| {
-                                                                                    editor
-                                                                                        .set_text(
-                                                                                            "",
-                                                                                            _window,
-                                                                                            cx,
-                                                                                        )
-                                                                                },
-                                                                            );
-                                                                            this.continue_claude_with_answer(
-                                                                                answer, cx,
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }),
-                                                        )
-                                                        .child(t(lang, Translations::SUBMIT)),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when(pending_question.is_none(), |this| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(SECONDARY_TEXT())
-                                        .child(t(lang, Translations::NO_PENDING_QUESTIONS)),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::LIVE_OUTPUT)),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(PRIMARY_TEXT())
-                                    .whitespace_normal()
-                                    .child(live_output),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::COMMAND)),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(SECONDARY_TEXT())
-                                    .whitespace_normal()
-                                    .child(if run.command_preview.is_empty() {
-                                        t(lang, Translations::COMMAND_NOT_STARTED).to_string()
-                                    } else {
-                                        run.command_preview.clone()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::STDERR)),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if run.stderr_lines.is_empty() {
-                                        SECONDARY_TEXT()
-                                    } else {
-                                        ERROR_TEXT()
-                                    })
-                                    .whitespace_normal()
-                                    .child(stderr_preview),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(SURFACE_PANEL())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(t(lang, Translations::TIMELINE)),
-                            )
-                            .child(timeline),
+                            .child(t(lang, Translations::OPEN_IN_BROWSER)),
                     ),
             );
         } else {
-            sidebar = sidebar.child(
+            section = section.child(empty_hint(&preview.note));
+        }
+
+        section
+    }
+
+    // ─── AI Plan / Task Steps section ────────────────────────────────────────
+
+    fn render_sidebar_plan(
+        &self,
+        lang: crate::i18n::Lang,
+        steps: &[String],
+    ) -> impl IntoElement {
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section_header(t(lang, Translations::AI_PLAN)));
+
+        if steps.is_empty() {
+            return section.child(empty_hint(t(lang, Translations::NO_PLAN_YET)));
+        }
+
+        let mut list = div().flex().flex_col().gap_1();
+        for (i, step) in steps.iter().enumerate() {
+            list = list.child(
                 div()
-                    .flex_1()
                     .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
+                    .items_start()
+                    .gap_2()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .bg(CANVAS_BG())
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
                     .child(
                         div()
-                            .flex_col()
-                            .gap_2()
+                            .flex_none()
+                            .size(px(16.0))
+                            .rounded_full()
+                            .bg(SURFACE_PANEL())
+                            .flex()
                             .items_center()
-                            .w_full()
-                            .max_w(px(320.0))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(PRIMARY_TEXT())
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(t(lang, Translations::NO_CLAUDE_RUN_YET)),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .text_center()
-                                    .whitespace_normal()
-                                    .child(t(lang, Translations::CLAUDE_PANEL_HINT)),
-                            ),
+                            .justify_center()
+                            .text_xs()
+                            .text_color(MUTED_TEXT())
+                            .child(format!("{}", i + 1)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .whitespace_normal()
+                            .child(step.clone()),
                     ),
             );
         }
 
-        sidebar
+        section.child(list)
+    }
+
+    // ─── References section ───────────────────────────────────────────────────
+
+    fn render_sidebar_references(
+        &self,
+        lang: crate::i18n::Lang,
+    ) -> impl IntoElement {
+        let refs = self.get_active_references();
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section_header(t(lang, Translations::REFERENCES_SIDEBAR)));
+
+        if refs.is_empty() {
+            return section.child(empty_hint(t(lang, Translations::NO_REFERENCES_YET)));
+        }
+
+        let mut list = div().flex().flex_col().gap_1();
+        for r in &refs {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .bg(CANVAS_BG())
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .child(
+                        svg()
+                            .path("thems/attachment.svg")
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(MUTED_TEXT()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .text_ellipsis()
+                            .overflow_hidden()
+                            .child(r.clone()),
+                    ),
+            );
+        }
+
+        section.child(list)
     }
 }

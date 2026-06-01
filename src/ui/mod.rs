@@ -15,11 +15,6 @@ use crate::AppState;
 
 impl gpui::Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = if self.sidebar_visible {
-            Some(self.render_sidebar(window, cx).into_any_element())
-        } else {
-            None
-        };
         div()
             .flex_col()
             .size_full()
@@ -40,13 +35,31 @@ impl gpui::Render for AppState {
                             .overflow_hidden()
                             .child(self.render_main_content(window, cx)),
                     )
-                    .when_some(sidebar, |this, sidebar| {
-                        this.child(div().w(px(1.0)).bg(BORDER_LIGHT()))
-                            .child(div().h_full().child(sidebar))
-                    })
-                    .when(self.terminal_visible, |this| {
+                    .when(self.sidebar_visible || self.terminal_visible, |this| {
+                        let sidebar_visible = self.sidebar_visible;
+                        let terminal_visible = self.terminal_visible;
+                        let width = self.right_panel_width;
+                        
                         this.child(self.render_terminal_resizer(cx))
-                            .child(self.render_terminal(window, cx))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .w(px(width))
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .when(sidebar_visible && terminal_visible, |this| {
+                                        this.child(div().flex_1().child(self.render_sidebar(window, cx)))
+                                            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
+                                            .child(div().flex_1().child(self.render_terminal(window, cx)))
+                                    })
+                                    .when(sidebar_visible && !terminal_visible, |this| {
+                                        this.child(self.render_sidebar(window, cx))
+                                    })
+                                    .when(!sidebar_visible && terminal_visible, |this| {
+                                        this.child(self.render_terminal(window, cx))
+                                    })
+                            )
                     }),
             )
             .when(self.show_model_config_dialog, |this| {

@@ -63,11 +63,8 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .w(px(300.0))
-            .h_full()
+            .size_full()
             .bg(WORKSPACE_BG())
-            .border_l_1()
-            .border_color(BORDER_LIGHT())
             // ── header bar ───────────────────────────────────────────────────
             .child(
                 div()

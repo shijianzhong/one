@@ -311,11 +311,8 @@ pub(crate) fn render_skills_market(
 
     let window_w: f32 = window.bounds().size.width.into();
     let mut main_w = window_w - crate::NAV_WIDTH - SIDEBAR_W - 1.0;
-    if app.sidebar_visible {
-        main_w -= 340.0 + 1.0;
-    }
-    if app.terminal_visible {
-        main_w -= app.terminal_width + 1.0;
+    if app.terminal_visible || app.sidebar_visible {
+        main_w -= app.right_panel_width + 1.0;
     }
     if main_w < 320.0 {
         main_w = 320.0;

@@ -36,8 +36,8 @@ impl AppState {
             .on_drag_move(
                 cx.listener(|this, e: &DragMoveEvent<DraggedResizer>, _window, _cx| {
                     if let (Some(initial_x), Some(initial_width)) = (
-                        this.terminal_resize_initial_mouse_x,
-                        this.terminal_resize_initial_width,
+                        this.right_panel_resize_initial_mouse_x,
+                        this.right_panel_resize_initial_width,
                     ) {
                         let current_x: f32 = e.event.position.x.into();
                         let delta = initial_x - current_x;
@@ -46,8 +46,8 @@ impl AppState {
                             "drag_move: initial_x={}, current_x={}, delta={}, new_width={}",
                             initial_x, current_x, delta, new_width
                         );
-                        if new_width >= 200.0 && new_width <= 800.0 {
-                            this.terminal_width = new_width;
+                        if new_width >= 200.0 && new_width <= 1000.0 {
+                            this.right_panel_width = new_width;
                         }
                     }
                 }),
@@ -56,11 +56,11 @@ impl AppState {
                 gpui::MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _window, _cx| {
                     let initial_mouse_x: f32 = event.position.x.into();
-                    this.terminal_resize_initial_mouse_x = Some(initial_mouse_x);
-                    this.terminal_resize_initial_width = Some(this.terminal_width);
+                    this.right_panel_resize_initial_mouse_x = Some(initial_mouse_x);
+                    this.right_panel_resize_initial_width = Some(this.right_panel_width);
                     eprintln!(
                         "on_mouse_down: initial_mouse_x={}, initial_width={}",
-                        initial_mouse_x, this.terminal_width
+                        initial_mouse_x, this.right_panel_width
                     );
                 }),
             )
@@ -85,7 +85,6 @@ impl AppState {
             l: 0.45,
             a: 1.0,
         };
-        let width = self.terminal_width;
         let lang = self.current_lang;
 
         let work_dir = self.get_work_dir();
@@ -102,7 +101,7 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .w(px(width))
+            .size_full()
             .bg(terminal_bg)
             .child(
                 div()

@@ -629,9 +629,6 @@ impl AppState {
                         Some(t(self.current_lang, Translations::GENERATING_RESPONSE).to_string());
                 }
                 self.general_ai_live_text.push_str(&delta);
-                if delta.contains("<think>") || delta.contains("</think>") {
-                    log_think_boundary_newlines("general_ai:delta", &self.general_ai_live_text);
-                }
                 self.needs_auto_scroll = run_task_id == self.active_task_id;
             }
             GeneralAiStreamEvent::Finished { result } => {

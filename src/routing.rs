@@ -22,8 +22,9 @@ impl AppState {
             return;
         }
 
-        eprintln!("[ROUTER] Routing to Orchestrator");
-        self.spawn_orchestrator_run(message, cx);
+        // No precise routing matched → default to General AI
+        eprintln!("[ROUTER] No precise route, defaulting to General AI");
+        self.spawn_general_ai_run(cx);
     }
 
     fn handle_routing_decision(&mut self, decision: RoutingDecision, cx: &mut Context<Self>) {

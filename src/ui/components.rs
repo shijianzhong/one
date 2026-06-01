@@ -82,6 +82,7 @@ pub fn parse_think_content(content: &str) -> Vec<ContentPart> {
 
     let mut parts = Vec::new();
     let mut pos = 0;
+    let mut last_was_think = false;
 
     while pos < content.len() {
         let start_rel = match content[pos..].find(open) {
@@ -91,11 +92,16 @@ pub fn parse_think_content(content: &str) -> Vec<ContentPart> {
         let start = pos + start_rel;
 
         if pos < start {
-            let text = content[pos..start].to_string();
-            if let Some(procs) = crate::agents::types::try_parse_process_list(&text) {
-                parts.push(ContentPart::ProcessTable { processes: procs });
-            } else {
-                parts.push(ContentPart::Normal(text));
+            let mut text = content[pos..start].to_string();
+            if last_was_think {
+                text = trim_leading_newlines_with_threshold(&text, 4);
+            }
+            if !text.is_empty() {
+                if let Some(procs) = crate::agents::types::try_parse_process_list(&text) {
+                    parts.push(ContentPart::ProcessTable { processes: procs });
+                } else {
+                    parts.push(ContentPart::Normal(text));
+                }
             }
         }
 
@@ -118,19 +124,42 @@ pub fn parse_think_content(content: &str) -> Vec<ContentPart> {
             complete: true,
         });
 
+        last_was_think = true;
         pos = end + close.len();
     }
 
     if pos < content.len() {
-        let text = content[pos..].to_string();
-        if let Some(procs) = crate::agents::types::try_parse_process_list(&text) {
-            parts.push(ContentPart::ProcessTable { processes: procs });
-        } else {
-            parts.push(ContentPart::Normal(text));
+        let mut text = content[pos..].to_string();
+        if last_was_think {
+            text = trim_leading_newlines_with_threshold(&text, 4);
+        }
+        if !text.is_empty() {
+            if let Some(procs) = crate::agents::types::try_parse_process_list(&text) {
+                parts.push(ContentPart::ProcessTable { processes: procs });
+            } else {
+                parts.push(ContentPart::Normal(text));
+            }
         }
     }
 
     parts
+}
+
+fn trim_leading_newlines_with_threshold(text: &str, threshold: usize) -> String {
+    let mut count = 0;
+    let mut start_idx = 0;
+    for (i, c) in text.char_indices() {
+        if c == '\n' || c == '\r' {
+            count += 1;
+            start_idx = i + c.len_utf8();
+            if count >= threshold {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    text[start_idx..].to_string()
 }
 
 pub fn render_process_table(processes: &[ProcessDisplayInfo]) -> gpui::AnyElement {

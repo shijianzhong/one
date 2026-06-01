@@ -266,22 +266,6 @@ impl AppState {
                         }
                         Some("terminal") => {
                             this.terminal_visible = !this.terminal_visible;
-                            if this.terminal_visible {
-                                // Auto focus terminal editor
-                                let terminal_editor =
-                                    _window.use_keyed_state("terminal_editor", _cx, |window, cx| {
-                                        let mut editor = editor::Editor::single_line(window, cx);
-                                        editor.set_placeholder_text(
-                                            crate::i18n::t(this.current_lang, crate::i18n::Translations::TYPE_COMMAND),
-                                            window,
-                                            cx,
-                                        );
-                                        editor
-                                    });
-                                terminal_editor.update(_cx, |editor, cx| {
-                                    editor.focus_handle(cx).focus(_window, cx);
-                                });
-                            }
                         }
                         Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
                         _ => {}

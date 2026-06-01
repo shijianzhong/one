@@ -50,6 +50,16 @@ impl Translations {
     pub const AUTOMATION: (&'static str, &'static str) = ("自动化", "Automation");
     pub const MODEL_CONFIG: (&'static str, &'static str) = ("模型配置", "Model Config");
     pub const CAPABILITIES: (&'static str, &'static str) = ("能力", "Capabilities");
+    pub const MARKET: (&'static str, &'static str) = ("市场", "Market");
+    pub const INSTALLED: (&'static str, &'static str) = ("已安装", "Installed");
+    pub const ALL: (&'static str, &'static str) = ("全部", "All");
+    pub const DEV_TOOLS: (&'static str, &'static str) = ("开发工具", "Dev Tools");
+    pub const ANALYSIS: (&'static str, &'static str) = ("分析", "Analysis");
+    pub const DESIGN: (&'static str, &'static str) = ("设计", "Design");
+    pub const CONTENT: (&'static str, &'static str) = ("内容", "Content");
+    pub const EFFICIENCY: (&'static str, &'static str) = ("效率", "Efficiency");
+    pub const SECURITY: (&'static str, &'static str) = ("安全", "Security");
+    pub const SOCIAL: (&'static str, &'static str) = ("社交", "Social");
     pub const MODELS: (&'static str, &'static str) = ("模型", "Models");
     pub const SETTINGS: (&'static str, &'static str) = ("设置", "Settings");
     pub const SUPPORT: (&'static str, &'static str) = ("支持", "Support");

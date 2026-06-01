@@ -206,55 +206,57 @@ pub(crate) fn render_skills_market_titlebar(
             div()
                 .flex()
                 .items_center()
-                .p_1()
-                .rounded_xl()
-                .bg(GHOST_SURFACE_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
-                .child(
-                    div()
-                        .px_5()
-                        .py_1p5()
-                        .rounded_lg()
-                        .when(tab_market_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
-                        .text_xs()
-                        .text_color(if tab_market_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_tab = SkillsMarketTab::Market;
-                                cx.notify();
-                            }),
-                        )
-                        .child("Market"),
-                )
-                .child(
-                    div()
-                        .px_5()
-                        .py_1p5()
-                        .rounded_lg()
-                        .when(tab_installed_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
-                        .text_xs()
-                        .text_color(if tab_installed_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.skills_market.active_tab = SkillsMarketTab::Installed;
-                                cx.notify();
-                            }),
-                        )
-                        .child(format!("Installed ({})", installed_count)),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
                 .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .px_4()
+                        .py_0p5()
+                        .rounded_xl()
+                        .bg(GHOST_SURFACE_BG())
+                        .border_1()
+                        .border_color(BORDER_LIGHT())
+                        .child(
+                            div()
+                                .px_4()
+                                .py_1()
+                                .rounded_lg()
+                                .when(tab_market_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
+                                .text_xs()
+                                .text_color(if tab_market_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
+                                        this.skills_market.active_tab = SkillsMarketTab::Market;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(t(lang, Translations::MARKET)),
+                        )
+                        .child(
+                            div()
+                                .px_4()
+                                .py_1()
+                                .rounded_lg()
+                                .when(tab_installed_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
+                                .text_xs()
+                                .text_color(if tab_installed_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
+                                        this.skills_market.active_tab = SkillsMarketTab::Installed;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(format!("{} ({})", t(lang, Translations::INSTALLED), installed_count)),
+                        ),
+                )
                 .child(
                     div()
                         .id("upload-skill-btn")
@@ -324,14 +326,14 @@ pub(crate) fn render_skills_market(
     let card_w = ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
     let category_items: Vec<(&'static str, &'static str)> = vec![
-        ("All", "capabilities"),
-        ("Dev Tools", "terminal"),
-        ("Analysis", "activity"),
-        ("Design", "side-panel"),
-        ("Content", "one-ai"),
-        ("Efficiency", "cpu"),
-        ("Security", "capabilities"),
-        ("Social", "share"),
+        (t(lang, Translations::ALL), "capabilities"),
+        (t(lang, Translations::DEV_TOOLS), "terminal"),
+        (t(lang, Translations::ANALYSIS), "activity"),
+        (t(lang, Translations::DESIGN), "side-panel"),
+        (t(lang, Translations::CONTENT), "one-ai"),
+        (t(lang, Translations::EFFICIENCY), "cpu"),
+        (t(lang, Translations::SECURITY), "capabilities"),
+        (t(lang, Translations::SOCIAL), "share"),
     ];
 
     let render_sidebar = |active_idx: usize, cx: &mut Context<crate::AppState>| {
@@ -472,7 +474,7 @@ pub(crate) fn render_skills_market(
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child("Details →")
                             )
-                    ),
+                                        ),
             )
     };
 
@@ -483,7 +485,7 @@ pub(crate) fn render_skills_market(
         .pt_10()
         .pb_12()
         .flex_col()
-        .gap_8();
+        .gap_12();
 
     if active_tab == SkillsMarketTab::Market {
         let market_cards: Vec<(usize, &'static str, &'static str, &'static str, &'static str)> = vec![
@@ -517,11 +519,11 @@ pub(crate) fn render_skills_market(
                     .child(crate::render_icon_element("capabilities", MUTED_TEXT(), 32.0))
                     .child(div().text_sm().text_color(MUTED_TEXT()).child("No capabilities found.")),
             );
-        } else {
+} else {
             let mut i = 0usize;
             while i < cards.len() {
                 let row_items = &cards[i..cards.len().min(i + cols)];
-                let mut row = div().flex().gap(px(GAP));
+                let mut row = div().flex().gap(px(GAP)).mb_4();
                 for (_, title, tag, desc, icon_path) in row_items {
                     let icon = svg()
                         .path(*icon_path)
@@ -556,7 +558,7 @@ pub(crate) fn render_skills_market(
             let mut i = 0usize;
             while i < skills.len() {
                 let row_items = &skills[i..skills.len().min(i + cols)];
-                let mut row = div().flex().gap(px(GAP));
+                let mut row = div().flex().gap(px(GAP)).mb_4();
                 for skill in row_items {
                     let skill_for_click = skill.clone();
                     let icon = crate::render_icon_element("skill", BRAND_BLUE(), 16.0);

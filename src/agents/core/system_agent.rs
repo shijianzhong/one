@@ -42,4 +42,15 @@ impl Agent for SystemAgent {
     async fn step(&self, context: &mut AgentContext) -> Result<AgentResponse> {
         self.base.step_with_tools(context).await
     }
+
+    async fn step_stream(
+        &self,
+        context: &mut AgentContext,
+        on_delta: Box<dyn FnMut(String) + Send>,
+    ) -> Result<AgentResponse> {
+        // SystemAgent currently uses step_with_tools which handles inner tool loops.
+        // For now, we'll just call call_llm_stream, but in the future we might want
+        // a streaming version of step_with_tools.
+        self.base.call_llm_stream(context, on_delta).await
+    }
 }

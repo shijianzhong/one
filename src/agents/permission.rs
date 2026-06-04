@@ -73,7 +73,7 @@ pub fn global() -> &'static PermissionPolicy {
         let mode = env::var("ONE_PERMISSION_MODE")
             .ok()
             .and_then(|v| PermissionMode::from_env_value(&v))
-            .unwrap_or(PermissionMode::Bypass);
+            .unwrap_or(PermissionMode::Default);
         PermissionPolicy::new(mode)
     })
 }

@@ -147,11 +147,11 @@ impl AppState {
                 .into_iter()
                 .map(|m| ChatMessage::new(&m.role, &m.content))
                 .collect();
-            self.current_claude_run =
+            self.job_manager.current_claude_run =
                 self.load_claude_state_for_task(workspace_id, task_id, &title);
         } else {
             self.messages.clear();
-            self.current_claude_run = None;
+            self.job_manager.current_claude_run = None;
         }
     }
 }

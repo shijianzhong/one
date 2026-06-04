@@ -3,21 +3,19 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-pub mod coordinator;
 pub mod orchestrator;
 pub mod tools;
 pub mod system_agent;
 pub mod coding_agent;
 pub mod factory;
 pub mod memory_agent;
-pub mod general_agent;
+pub mod main_agent;
 
-pub use coordinator::Coordinator;
+pub use main_agent::MainAgent;
 pub use orchestrator::{Orchestrator, OrchestratorEvent};
 pub use system_agent::SystemAgent;
 pub use coding_agent::CodingAgent;
 pub use memory_agent::MemoryAgent;
-pub use general_agent::GeneralAgent;
 pub use factory::AgentFactory;
 
 /// Trait for tools that agents can use
@@ -91,6 +89,13 @@ pub trait Agent: Send + Sync {
     
     /// Handle a single turn of interaction
     async fn step(&self, context: &mut AgentContext) -> Result<AgentResponse>;
+
+    /// Handle a single turn of interaction with streaming output
+    async fn step_stream(
+        &self,
+        context: &mut AgentContext,
+        on_delta: Box<dyn FnMut(String) + Send>,
+    ) -> Result<AgentResponse>;
 }
 
 pub struct BaseAgent {
@@ -105,6 +110,14 @@ pub struct BaseAgent {
 
 impl BaseAgent {
     pub async fn call_llm(&self, context: &AgentContext) -> Result<AgentResponse> {
+        self.call_llm_stream(context, Box::new(|_| {})).await
+    }
+
+    pub async fn call_llm_stream(
+        &self,
+        context: &AgentContext,
+        on_delta: Box<dyn FnMut(String) + Send>,
+    ) -> Result<AgentResponse> {
         let mut messages = vec![crate::memory::types::ChatMessage::new("system", &self.system_prompt)];
         messages.extend(context.history.clone());
 
@@ -131,7 +144,7 @@ impl BaseAgent {
             &self.model,
             &messages,
             tool_defs_opt,
-            |_| {}
+            on_delta
         ).await.map_err(|e| anyhow::anyhow!(e))?;
 
         if let Some(tool_calls) = response.get("tool_calls").and_then(|v| v.as_array()) {

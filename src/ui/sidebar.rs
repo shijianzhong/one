@@ -50,6 +50,7 @@ impl AppState {
 
         // Pull data we need up front (avoid borrow issues inside closures)
         let run = self
+            .job_manager
             .current_claude_run
             .as_ref()
             .filter(|r| r.task_id == self.active_task_id)

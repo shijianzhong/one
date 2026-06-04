@@ -43,4 +43,12 @@ impl Agent for MemoryAgent {
     async fn step(&self, context: &mut AgentContext) -> Result<AgentResponse> {
         self.base.call_llm(context).await
     }
+
+    async fn step_stream(
+        &self,
+        context: &mut AgentContext,
+        on_delta: Box<dyn FnMut(String) + Send>,
+    ) -> Result<AgentResponse> {
+        self.base.call_llm_stream(context, on_delta).await
+    }
 }

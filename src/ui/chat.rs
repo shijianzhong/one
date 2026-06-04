@@ -309,15 +309,17 @@ impl AppState {
     ) -> impl IntoElement {
         let messages = self.messages.clone();
         let live_run = self
+            .job_manager
             .current_claude_run
             .as_ref()
             .filter(|run| run.task_id == self.active_task_id && run.show_live_bubble)
             .cloned();
-        let general_ai_live_run_id = self.general_ai_run_id.filter(|_| {
-            self.general_ai_show_live_bubble && self.general_ai_task_id == self.active_task_id
+        let general_ai_live_run_id = self.job_manager.general_ai_run_id.filter(|_| {
+            self.job_manager.general_ai_show_live_bubble
+                && self.job_manager.general_ai_task_id == self.active_task_id
         });
-        let general_ai_pending = self.request_in_flight
-            && matches!(self.request_kind, Some(RequestKind::GeneralAi))
+        let general_ai_pending = self.job_manager.request_in_flight
+            && matches!(self.job_manager.request_kind, Some(RequestKind::GeneralAi))
             && live_run.is_none()
             && general_ai_live_run_id.is_none();
         let is_user = |role: &str| role == "user";
@@ -447,7 +449,7 @@ impl AppState {
                                             }
                                             ContentPart::ProcessTable { processes } => {
                                                 prev_was_think = false;
-                                                let el = render_process_table(processes);
+                                                let el = render_process_table(&processes);
                                                 let animation_id = format!("msg-{}-proc-{}", msg_index, rendered_parts.len());
                                                 rendered_parts.push(
                                                     div().child(el).with_animation(
@@ -537,7 +539,7 @@ impl AppState {
                                         }
                                     }
 
-                                    if !is_user_msg && self.pending_confirmation_tools.is_some() {
+                                    if !is_user_msg && self.job_manager.pending_confirmation_tools.is_some() {
                                         let confirm_buttons = div()
                                             .flex()
                                             .gap_3()
@@ -598,6 +600,7 @@ impl AppState {
 
         let current_task_id = self.active_task_id;
         let active_subagents: Vec<(u64, SubagentMessageState)> = self
+            .job_manager
             .subagent_messages
             .iter()
             .filter(|(_, state)| state.task_id == current_task_id)
@@ -618,14 +621,15 @@ impl AppState {
     ) -> impl IntoElement {
         let lang = self.current_lang;
         let status_text = self
+            .job_manager
             .request_status_text
             .clone()
             .unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string());
-        let waiting = self.general_ai_live_text.trim().is_empty();
+        let waiting = self.job_manager.general_ai_live_text.trim().is_empty();
         let parts = if waiting {
             Vec::new()
         } else {
-            parse_think_content(&self.general_ai_live_text)
+            parse_think_content(&self.job_manager.general_ai_live_text)
         };
         let mut think_index = 0usize;
         let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
@@ -655,7 +659,7 @@ impl AppState {
                     }
                     ContentPart::ProcessTable { processes } => {
                         prev_was_think = false;
-                        let el = render_process_table(processes);
+                        let el = render_process_table(&processes);
                         rendered_parts.push(el.into_any_element());
                     }
                     ContentPart::Think { text, complete } => {
@@ -1005,6 +1009,7 @@ impl AppState {
     fn render_general_ai_pending_message(&self) -> impl IntoElement {
         let lang = self.current_lang;
         let status_text = self
+            .job_manager
             .request_status_text
             .clone()
             .unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string());
@@ -1091,7 +1096,7 @@ impl AppState {
         let weak_composer = composer_editor.downgrade();
         let weak_composer_for_action = weak_composer.clone();
 
-        let request_in_flight = self.request_in_flight;
+        let request_in_flight = self.job_manager.request_in_flight;
         let send_bg = BRAND_BLUE();
         let send_label = if request_in_flight {
             t(lang, Translations::STOP_GENERATING)
@@ -1147,7 +1152,7 @@ impl AppState {
                                     .pb_1()
                                     .track_focus(&composer_focus)
                                     .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
-                                        if this.request_in_flight {
+                                        if this.job_manager.request_in_flight {
                                             return;
                                         }
                                         if let Some(editor) = weak_composer_for_action.upgrade() {
@@ -1193,10 +1198,10 @@ impl AppState {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        if this.request_in_flight {
+                                        if this.job_manager.request_in_flight {
                                             // 停止生成：重置请求状态
-                                            this.request_in_flight = false;
-                                            this.request_status_text = None;
+                                            this.job_manager.request_in_flight = false;
+                                            this.job_manager.request_status_text = None;
                                             cx.notify();
                                             return;
                                         }
@@ -1237,7 +1242,7 @@ impl AppState {
                                     .text_xs()
                                     .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
                                     .child(if request_in_flight {
-                                        self.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string())
+                                        self.job_manager.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string())
                                     } else {
                                         format!("{} · Active", self.model_name)
                                     })

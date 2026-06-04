@@ -75,26 +75,11 @@ pub(crate) struct AppState {
     pub(crate) delete_confirm_workspace_id: Option<usize>,
     pub(crate) popup_position: Point<Pixels>,
     pub(crate) terminal_output: Vec<TerminalLine>,
-    pub(crate) current_claude_run: Option<ClaudeRunPanelState>,
     pub(crate) preview_process: Option<PreviewProcessHandle>,
-    pub(crate) next_claude_run_id: u64,
-    pub(crate) request_in_flight: bool,
-    pub(crate) request_status_text: Option<String>,
-    pub(crate) request_kind: Option<RequestKind>,
     pub(crate) think_collapsed: HashMap<String, bool>,
-    pub(crate) next_general_ai_run_id: u64,
-    pub(crate) general_ai_run_id: Option<u64>,
-    pub(crate) general_ai_task_id: Option<usize>,
-    pub(crate) general_ai_live_text: String,
-    pub(crate) general_ai_show_live_bubble: bool,
     pub(crate) titlebar_should_move: bool,
-    pub(crate) pending_confirmation_tools: Option<(Vec<system_tools::Tool>, String)>,
     pub(crate) intent_router: agents::intent_router::IntentRouter,
-    pub(crate) subagent_messages: HashMap<u64, SubagentMessageState>,
-    /// Maps orchestrator agent_id -> subagent card run_id for live stream routing
-    pub(crate) orchestrator_agent_run_map: HashMap<String, u64>,
-    /// Active Claude Code question waiting for user answer (from any path)
-    pub(crate) pending_claude_question: Option<PendingClaudeQuestion>,
+    pub(crate) job_manager: crate::runtime::JobManager,
 }
 
 #[derive(Debug, Clone)]
@@ -112,29 +97,6 @@ impl AppState {
     pub(crate) fn get_active_references(&self) -> Vec<String> {
         // 占位：未来扩展为真实属性
         Vec::new()
-    }
-
-    pub(crate) fn get_active_plan_steps(&self) -> Vec<String> {
-        self.subagent_messages
-            .values()
-            .filter(|s| s.task_id == self.active_task_id)
-            .flat_map(|s| s.events.iter().map(|e| format!("[{}] {}", e.title, e.detail)))
-            .take(30)
-            .collect()
-    }
-
-    pub(crate) fn begin_general_ai_run(&mut self) -> u64 {
-        self.next_general_ai_run_id += 1;
-        let run_id = self.next_general_ai_run_id;
-        self.request_in_flight = true;
-        self.request_status_text =
-            Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string());
-        self.request_kind = Some(RequestKind::GeneralAi);
-        self.general_ai_run_id = Some(run_id);
-        self.general_ai_task_id = self.active_task_id;
-        self.general_ai_live_text.clear();
-        self.general_ai_show_live_bubble = true;
-        run_id
     }
 }
 
@@ -203,27 +165,14 @@ impl AppState {
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
-            current_claude_run: None,
             preview_process: None,
-            next_claude_run_id: 0,
-            request_in_flight: false,
-            request_status_text: None,
-            request_kind: None,
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
             think_collapsed: HashMap::new(),
-            next_general_ai_run_id: 0,
-            general_ai_run_id: None,
-            general_ai_task_id: None,
-            general_ai_live_text: String::new(),
-            general_ai_show_live_bubble: false,
             titlebar_should_move: false,
-            pending_confirmation_tools: None,
             intent_router: agents::intent_router::IntentRouter::new(),
-            subagent_messages: HashMap::new(),
-            orchestrator_agent_run_map: HashMap::new(),
-            pending_claude_question: None,
+            job_manager: crate::runtime::JobManager::new(),
         };
 
         if state.workspaces.is_empty() {

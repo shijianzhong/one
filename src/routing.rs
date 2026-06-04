@@ -22,9 +22,9 @@ impl AppState {
             return;
         }
 
-        // No precise routing matched → default to General AI
-        eprintln!("[ROUTER] No precise route, defaulting to General AI");
-        self.spawn_general_ai_run(cx);
+        // No precise routing matched → use Orchestrator (MainAgent)
+        eprintln!("[ROUTER] No precise route, switching to Orchestrator");
+        self.spawn_orchestrator_run(message, cx);
     }
 
     fn handle_routing_decision(&mut self, decision: RoutingDecision, cx: &mut Context<Self>) {
@@ -34,15 +34,15 @@ impl AppState {
                 session_id,
             } => {
                 eprintln!("[ROUTER] Routing to Claude Code (fast route)");
-                self.request_in_flight = true;
-                self.request_status_text = Some(
+                self.job_manager.request_in_flight = true;
+                self.job_manager.request_status_text = Some(
                     t(
                         self.current_lang,
                         Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
                     )
                     .to_string(),
                 );
-                self.request_kind = Some(RequestKind::ClaudeCode);
+                self.job_manager.request_kind = Some(RequestKind::ClaudeCode);
                 self.spawn_claude_code_run(instruction, session_id, cx);
             }
             RoutingDecision::SystemTools { task } => {
@@ -50,12 +50,16 @@ impl AppState {
                 self.spawn_system_tools_run(task, cx);
             }
             RoutingDecision::GeneralAI { .. } => {
-                eprintln!("[ROUTER] Routing to General AI (fast route)");
-                self.spawn_general_ai_run(cx);
-            }
-            _ => {
-                eprintln!("[ROUTER] Unknown decision, defaulting to General AI");
-                self.spawn_general_ai_run(cx);
+                eprintln!("[ROUTER] Routing to General AI (via Orchestrator)");
+                // We could pass the messages, but Orchestrator currently takes a task string.
+                // Since route_message already added the latest message to self.messages,
+                // and spawn_orchestrator_run will use self.messages (indirectly or directly)?
+                // Wait, spawn_orchestrator_run takes instruction.
+                
+                // If it was a GeneralAI decision, we might want to just let it fall through.
+                // But for now, let's just use the last message.
+                let last_msg = self.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+                self.spawn_orchestrator_run(last_msg, cx);
             }
         }
     }

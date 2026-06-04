@@ -7,8 +7,8 @@ use gpui_platform::application;
 use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 
 mod agents;
-mod agent_jobs;
 mod app_state;
+mod runtime;
 mod assets;
 mod i18n;
 mod memory;

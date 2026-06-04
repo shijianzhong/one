@@ -7,9 +7,6 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
-
-use super::{Agent, AgentConfig, AgentInstance, AgentStatus};
 
 #[derive(Debug, Clone)]
 pub enum ClaudeStreamEvent {
@@ -206,8 +203,7 @@ impl ClaudeCodeAgent {
 
         let binary_path = Self::check_installation().unwrap_or_else(|| PathBuf::from("claude"));
         let permission_flag = super::permission::global().mode().claude_code_flag();
-        let mut cmd = Command::new(&binary_path);
-        cmd.args(&[
+        let mut args = vec![
             "-p",
             instruction,
             "--output-format",
@@ -215,9 +211,15 @@ impl ClaudeCodeAgent {
             "--verbose",
             "--permission-mode",
             permission_flag,
-            "--dangerously-skip-permissions",
-        ])
-        .current_dir(project_dir)
+        ];
+
+        if super::permission::global().mode() == super::permission::PermissionMode::Bypass {
+            args.push("--dangerously-skip-permissions");
+        }
+
+        let mut cmd = Command::new(&binary_path);
+        cmd.args(&args)
+            .current_dir(project_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -227,15 +229,19 @@ impl ClaudeCodeAgent {
             cmd.arg(sid);
         }
 
-        let command_preview = format!(
-            "{} -p {:?} --output-format stream-json --verbose --permission-mode {} --dangerously-skip-permissions{}",
-            binary_path.display(),
-            instruction,
-            permission_flag,
-            session_id
-                .map(|sid| format!(" --session-id {}", sid))
-                .unwrap_or_default()
-        );
+        let mut preview_args = vec![
+            format!("-p {:?}", instruction),
+            "--output-format stream-json".to_string(),
+            "--verbose".to_string(),
+            format!("--permission-mode {}", permission_flag),
+        ];
+        if super::permission::global().mode() == super::permission::PermissionMode::Bypass {
+            preview_args.push("--dangerously-skip-permissions".to_string());
+        }
+        if let Some(sid) = session_id {
+            preview_args.push(format!("--session-id {}", sid));
+        }
+        let command_preview = format!("{} {}", binary_path.display(), preview_args.join(" "));
         let _ = sender.send(ClaudeStreamEvent::Started {
             command: command_preview,
             workdir: project_dir.to_string_lossy().to_string(),
@@ -310,83 +316,6 @@ impl ClaudeCodeAgent {
         };
 
         Ok(final_text)
-    }
-}
-
-#[async_trait]
-impl Agent for ClaudeCodeAgent {
-    fn agent_type(&self) -> &str {
-        "claude_code"
-    }
-
-    fn agent_name(&self) -> &str {
-        "Claude Code"
-    }
-
-    async fn spawn(&self, config: AgentConfig) -> Result<AgentInstance> {
-        let task_id = config
-            .session_id
-            .as_ref()
-            .and_then(|s| s.split('_').last()?.parse().ok())
-            .unwrap_or(0);
-
-        let project_dir = Self::get_project_dir(task_id);
-        std::fs::create_dir_all(&project_dir).context("Failed to create project directory")?;
-
-        let instance = AgentInstance {
-            id: 0,
-            agent_id: 0,
-            task_id: Some(task_id),
-            status: AgentStatus::Idle,
-            session_state: serde_json::json!({
-                "project_dir": project_dir.to_string_lossy(),
-                "session_id": config.session_id,
-            }),
-        };
-
-        Ok(instance)
-    }
-
-    async fn send_message(&self, instance: &mut AgentInstance, msg: &str) -> Result<String> {
-        instance.status = AgentStatus::Running;
-
-        let project_dir = instance
-            .session_state
-            .get("project_dir")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-
-        let session_id = instance
-            .session_state
-            .get("session_id")
-            .and_then(|v| v.as_str());
-
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        let result = Self::execute_instruction_stream(&project_dir, msg, session_id, sender)?;
-
-        instance.status = AgentStatus::Idle;
-
-        Ok(result)
-    }
-
-    async fn get_status(&self, instance: &AgentInstance) -> AgentStatus {
-        instance.status
-    }
-
-    async fn pause(&self, instance: &mut AgentInstance) -> Result<()> {
-        instance.status = AgentStatus::Paused;
-        Ok(())
-    }
-
-    async fn resume(&self, instance: &mut AgentInstance) -> Result<()> {
-        instance.status = AgentStatus::Running;
-        Ok(())
-    }
-
-    async fn destroy(&self, instance: &mut AgentInstance) -> Result<()> {
-        instance.status = AgentStatus::Terminated;
-        Ok(())
     }
 }
 

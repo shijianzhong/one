@@ -152,6 +152,13 @@ impl AppState {
                         Some(work_dir.clone()),
                         cx,
                     ))
+                    .child(self.make_chat_header_button(
+                        "skill",
+                        false,
+                        Some("skill-cleaner"),
+                        Some("系统清理（system.cleaner）".to_string()),
+                        cx,
+                    ))
                     .child(self.make_chat_header_button("share", false, None, None, cx))
                     .child(self.make_chat_header_button(
                         "terminal",
@@ -256,7 +263,7 @@ impl AppState {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this, _: &gpui::MouseDownEvent, _window, _cx| match action {
+                    move |this, _: &gpui::MouseDownEvent, _window, cx| match action {
                         Some("open-work-dir") => {
                             if let Some(path) = tooltip.as_deref() {
                                 if !path.trim().is_empty() {
@@ -268,6 +275,13 @@ impl AppState {
                             this.terminal_visible = !this.terminal_visible;
                         }
                         Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
+                        Some("skill-cleaner") => {
+                            this.launch_skill_card(
+                                "system.cleaner",
+                                serde_json::json!({}),
+                                cx,
+                            );
+                        }
                         _ => {}
                     },
                 ),

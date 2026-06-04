@@ -8,7 +8,7 @@ use crate::services::config::Config;
 pub struct AgentFactory;
 
 impl AgentFactory {
-    pub fn create_orchestrator(config: &Config, _workspace_name: &str) -> Result<Orchestrator> {
+    pub fn create_orchestrator(config: &Config, workspace_name: &str) -> Result<Orchestrator> {
         let mut sub_agents: HashMap<String, Arc<dyn Agent>> = HashMap::new();
 
         // Sub-agents are now used as "specialized tools" called by MainAgent
@@ -30,7 +30,7 @@ impl AgentFactory {
             config.model_name.clone(),
             config.model_base_url.clone(),
             config.model_api_key.clone(),
-            ".".to_string(), // Use root for global profile or adjust as needed
+            workspace_name.to_string(),
         ));
 
         sub_agents.insert(system_agent.id().to_string(), system_agent);
@@ -38,10 +38,11 @@ impl AgentFactory {
         sub_agents.insert(memory_agent.id().to_string(), memory_agent);
 
         // MainAgent owns the primary conversation and calls specialized tools/sub-agents.
-        let main_agent = Arc::new(MainAgent::new(
+        let main_agent = Arc::new(MainAgent::with_workspace(
             config.model_name.clone(),
             config.model_base_url.clone(),
             config.model_api_key.clone(),
+            workspace_name.to_string(),
         ));
 
         Ok(Orchestrator::new(main_agent, sub_agents))

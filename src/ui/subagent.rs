@@ -90,7 +90,7 @@ impl AppState {
                                     gpui::MouseButton::Left,
                                     cx.listener(
                                         move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                            this.toggle_subagent_collapsed(run_id_for_collapse);
+                                            this.job_manager.toggle_subagent_collapsed(run_id_for_collapse);
                                             cx.notify();
                                         },
                                     ),
@@ -159,7 +159,7 @@ impl AppState {
                                                           _: &gpui::MouseDownEvent,
                                                           _window,
                                                           cx| {
-                                                        this.toggle_subagent_events_collapsed(
+                                                        this.job_manager.toggle_subagent_events_collapsed(
                                                             run_id_for_toggle,
                                                         );
                                                         cx.notify();

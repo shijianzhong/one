@@ -176,16 +176,86 @@ impl Orchestrator {
                 }
                 "run_system_task" => {
                     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-                    let sub_task = args["task"].as_str().unwrap_or_default();
-                    if let Some(agent) = self.sub_agents.get("system") {
-                        self.run_sub_agent(
-                            agent.clone(),
-                            sub_task,
-                            &context.session_id,
-                            on_event,
-                        ).await?
+                    let skill_id = args
+                        .get("skill_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty());
+                    if let Some(skill_id) = skill_id {
+                        if let Some(skill) = crate::skills::registry().find(skill_id) {
+                            let apply = args
+                                .get("apply")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let skill_args = args
+                                .get("args")
+                                .cloned()
+                                .unwrap_or(Value::Object(Default::default()));
+                            if apply {
+                                match skill.execute(skill_args).await {
+                                    Ok(exec) => serde_json::json!({
+                                        "stage": "execute",
+                                        "skill_id": skill_id,
+                                        "denied": exec.denied,
+                                        "summary": exec.summary,
+                                        "freed_bytes": exec.freed_bytes,
+                                        "success": exec.success_items,
+                                        "failed": exec.failed_items
+                                            .iter()
+                                            .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
+                                            .collect::<Vec<_>>(),
+                                    })
+                                    .to_string(),
+                                    Err(err) => format!("Error: skill execute failed: {}", err),
+                                }
+                            } else {
+                                match skill.preview(skill_args).await {
+                                    Ok(preview) => serde_json::json!({
+                                        "stage": "preview",
+                                        "skill_id": skill_id,
+                                        "summary": preview.summary,
+                                        "estimated_bytes": preview.estimated_bytes,
+                                        "items": preview.items
+                                            .iter()
+                                            .map(|it| serde_json::json!({
+                                                "label": it.label,
+                                                "detail": it.detail,
+                                                "bytes": it.bytes,
+                                            }))
+                                            .collect::<Vec<_>>(),
+                                        "warnings": preview.warnings,
+                                        "hint": "若用户同意继续，再次调用 run_system_task 时把 apply 设为 true。",
+                                    })
+                                    .to_string(),
+                                    Err(err) => format!("Error: skill preview failed: {}", err),
+                                }
+                            }
+                        } else {
+                            let known: Vec<String> = crate::skills::registry()
+                                .manifests()
+                                .into_iter()
+                                .map(|m| m.id)
+                                .collect();
+                            format!(
+                                "Error: skill_id '{}' not found. Available skills: {:?}",
+                                skill_id, known
+                            )
+                        }
                     } else {
-                        "Error: System agent not found".to_string()
+                        let sub_task = args
+                            .get("task")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        if let Some(agent) = self.sub_agents.get("system") {
+                            self.run_sub_agent(
+                                agent.clone(),
+                                sub_task,
+                                &context.session_id,
+                                on_event,
+                            ).await?
+                        } else {
+                            "Error: System agent not found".to_string()
+                        }
                     }
                 }
                 // Generic tool execution for tools owned by the MainAgent itself (e.g. remember, update_soul)

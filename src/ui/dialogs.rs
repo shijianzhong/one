@@ -1,7 +1,7 @@
 use editor::Editor;
 use gpui::{
-    div, px, Context, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window,
+    div, prelude::FluentBuilder, px, Context, Focusable, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::i18n::{t, Translations};
@@ -545,4 +545,546 @@ impl AppState {
                     ),
             )
     }
+
+    pub(crate) fn render_approval_dialog(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(req) = self.pending_approval.as_ref() else {
+            return div().into_any_element();
+        };
+        let kind_label = req.kind.label().to_string();
+        let detail = req.detail.clone();
+        let queue_more = crate::agents::permission::pending_count();
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(460.0))
+                    .p_5()
+                    .bg(SURFACE_PANEL())
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_md()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("需要授权：{}", kind_label)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .child("AI 正请求执行下面的操作。请确认是否允许。"),
+                    )
+                    .child(
+                        div()
+                            .max_h(px(220.0))
+                            .p_3()
+                            .rounded_lg()
+                            .bg(CANVAS_BG())
+                            .border_1()
+                            .border_color(BORDER_LIGHT())
+                            .id("approval-detail")
+                            .overflow_y_scroll()
+                            .text_xs()
+                            .text_color(PRIMARY_TEXT())
+                            .child(detail),
+                    )
+                    .when(queue_more > 0, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(SECONDARY_TEXT())
+                                .child(format!("队列中还有 {} 个待审批请求", queue_more)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.deny_pending_permission(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child("拒绝"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .bg(BRAND_BLUE())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.approve_pending_permission(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(gpui::white())
+                                            .child("允许执行"),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn render_soul_proposal_dialog(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(prop) = self.pending_soul_proposal.as_ref() else {
+            return div().into_any_element();
+        };
+        let rationale = prop.rationale.clone();
+        let new_content = prop.new_content.clone();
+        let previous_content = prop.previous_content.clone();
+        let queue_more = crate::agents::soul::pending_count();
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(640.0))
+                    .p_5()
+                    .bg(SURFACE_PANEL())
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_md()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child("人格草案待审核（soul.md）"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .child(
+                                "AI 提议改写它自己的人格设定。务必先阅读改动内容，确认无误再批准。",
+                            ),
+                    )
+                    .when(!rationale.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .p_3()
+                                .rounded_lg()
+                                .bg(CANVAS_BG())
+                                .border_1()
+                                .border_color(BORDER_LIGHT())
+                                .text_xs()
+                                .text_color(PRIMARY_TEXT())
+                                .child(format!("理由：{}", rationale)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT())
+                                            .child("当前 soul.md"),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(260.0))
+                                            .p_3()
+                                            .rounded_lg()
+                                            .bg(CANVAS_BG())
+                                            .border_1()
+                                            .border_color(BORDER_LIGHT())
+                                            .id("soul-prev")
+                                            .overflow_y_scroll()
+                                            .text_xs()
+                                            .text_color(PRIMARY_TEXT())
+                                            .child(previous_content),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT())
+                                            .child("草案内容"),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(260.0))
+                                            .p_3()
+                                            .rounded_lg()
+                                            .bg(CANVAS_BG())
+                                            .border_1()
+                                            .border_color(BORDER_LIGHT())
+                                            .id("soul-next")
+                                            .overflow_y_scroll()
+                                            .text_xs()
+                                            .text_color(PRIMARY_TEXT())
+                                            .child(new_content),
+                                    ),
+                            ),
+                    )
+                    .when(queue_more > 0, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(SECONDARY_TEXT())
+                                .child(format!("队列中还有 {} 份草案待审核", queue_more)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.deny_soul_proposal(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child("拒绝"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .bg(BRAND_BLUE())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.approve_soul_proposal(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(gpui::white())
+                                            .child("应用草案"),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn render_skill_card_dialog(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(card) = self.skill_card.as_ref() else {
+            return div().into_any_element();
+        };
+        let manifest = card.manifest.clone();
+        let stage = card.stage.clone();
+
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_base()
+                    .text_color(PRIMARY_TEXT())
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!(
+                        "Skill · {} ({})",
+                        manifest.name,
+                        manifest.category.label()
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(SECONDARY_TEXT())
+                    .child(manifest.description.clone()),
+            );
+
+        match stage.clone() {
+            crate::app_state::SkillCardStage::Previewing => {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(SECONDARY_TEXT())
+                        .child("正在扫描可清理项..."),
+                );
+            }
+            crate::app_state::SkillCardStage::PreviewReady(preview) => {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(PRIMARY_TEXT())
+                        .child(preview.summary.clone()),
+                );
+                if !preview.items.is_empty() {
+                    let mut list = div()
+                        .max_h(px(220.0))
+                        .p_3()
+                        .rounded_lg()
+                        .bg(CANVAS_BG())
+                        .border_1()
+                        .border_color(BORDER_LIGHT())
+                        .id("skill-preview-list")
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_2();
+                    for item in preview.items.iter() {
+                        list = list.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_xs()
+                                .text_color(PRIMARY_TEXT())
+                                .child(format!("• {} · {}", item.label, human_bytes(item.bytes)))
+                                .child(
+                                    div()
+                                        .text_color(SECONDARY_TEXT())
+                                        .child(item.detail.clone()),
+                                ),
+                        );
+                    }
+                    body = body.child(list);
+                }
+                for w in preview.warnings.iter() {
+                    body = body.child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .child(format!("⚠️ {}", w)),
+                    );
+                }
+            }
+            crate::app_state::SkillCardStage::Executing => {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(SECONDARY_TEXT())
+                        .child("Skill 正在执行... 如果是高风险操作，会先弹窗征求授权。"),
+                );
+            }
+            crate::app_state::SkillCardStage::Done(exec) => {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(PRIMARY_TEXT())
+                        .child(exec.summary.clone()),
+                );
+                if !exec.success_items.is_empty() {
+                    let mut list = div()
+                        .max_h(px(160.0))
+                        .p_3()
+                        .rounded_lg()
+                        .bg(CANVAS_BG())
+                        .border_1()
+                        .border_color(BORDER_LIGHT())
+                        .id("skill-result-list")
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1();
+                    for ok in exec.success_items.iter() {
+                        list = list.child(
+                            div()
+                                .text_xs()
+                                .text_color(PRIMARY_TEXT())
+                                .child(format!("✅ {}", ok)),
+                        );
+                    }
+                    for (label, err) in exec.failed_items.iter() {
+                        list = list.child(
+                            div()
+                                .text_xs()
+                                .text_color(SECONDARY_TEXT())
+                                .child(format!("❌ {} — {}", label, err)),
+                        );
+                    }
+                    body = body.child(list);
+                }
+            }
+            crate::app_state::SkillCardStage::Failed(err) => {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(SECONDARY_TEXT())
+                        .child(err.clone()),
+                );
+            }
+        }
+
+        let buttons = div()
+            .flex()
+            .gap_3()
+            .mt_2()
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(36.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .bg(CANVAS_BG())
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                            this.cancel_skill_card(cx);
+                        }),
+                    )
+                    .child(match stage {
+                        crate::app_state::SkillCardStage::Done(_)
+                        | crate::app_state::SkillCardStage::Failed(_) => "关闭",
+                        _ => "取消",
+                    }),
+            )
+            .when(
+                matches!(card.stage, crate::app_state::SkillCardStage::PreviewReady(_)),
+                |this| {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_lg()
+                            .bg(BRAND_BLUE())
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                                    this.approve_skill_card(cx);
+                                }),
+                            )
+                            .child(div().text_color(gpui::white()).child("应用 Skill")),
+                    )
+                },
+            );
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(520.0))
+                    .p_5()
+                    .bg(SURFACE_PANEL())
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_md()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
+                    .child(body)
+                    .child(buttons),
+            )
+            .into_any_element()
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut idx = 0;
+    while size >= 1024.0 && idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        idx += 1;
+    }
+    format!("{:.1} {}", size, UNITS[idx])
 }

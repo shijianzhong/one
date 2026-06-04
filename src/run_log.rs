@@ -96,6 +96,30 @@ impl<'a> RunRecorder<'a> {
         Self { conn, run_id }
     }
 
+    /// Re-attach to an existing `task_runs.id` for incremental event recording.
+    pub fn attach(conn: &'a Connection, run_id: usize) -> Self {
+        Self {
+            conn,
+            run_id: Some(run_id),
+        }
+    }
+
+    /// Open a recorder, emit a `Started` event, and return the persisted
+    /// `task_runs.id` so callers can carry it across async boundaries.
+    pub fn begin(
+        conn: &'a Connection,
+        task_id: usize,
+        kind: RunKind,
+        detail: impl Into<String>,
+    ) -> Option<usize> {
+        let recorder = Self::start(conn, task_id, kind);
+        recorder.record(&RunEvent::Started {
+            kind: kind.as_str().to_string(),
+            detail: detail.into(),
+        });
+        recorder.run_id()
+    }
+
     pub fn run_id(&self) -> Option<usize> {
         self.run_id
     }

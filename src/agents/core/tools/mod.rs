@@ -18,6 +18,27 @@ impl Tool for ProcessListTool {
     }
 
     async fn call(&self, _arguments: Value) -> Result<Value> {
+        match crate::agents::permission::global()
+            .request_async(
+                crate::agents::permission::ToolKind::Process,
+                "list_processes",
+            )
+            .await
+        {
+            crate::agents::permission::PermissionDecision::Allow => {}
+            crate::agents::permission::PermissionDecision::Deny(reason) => {
+                return Err(anyhow::anyhow!(
+                    "Process list denied by permission policy: {}",
+                    reason
+                ));
+            }
+            crate::agents::permission::PermissionDecision::Ask => {
+                return Err(anyhow::anyhow!(
+                    "Process list requires explicit user approval but no UI handler resolved it"
+                ));
+            }
+        }
+
         let procs = system_tools::tools::process::list_processes()
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(json!(procs))
@@ -45,6 +66,23 @@ impl Tool for FileListTool {
 
     async fn call(&self, arguments: Value) -> Result<Value> {
         let path = arguments["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path"))?;
+        match crate::agents::permission::global()
+            .request_async(crate::agents::permission::ToolKind::File, path)
+            .await
+        {
+            crate::agents::permission::PermissionDecision::Allow => {}
+            crate::agents::permission::PermissionDecision::Deny(reason) => {
+                return Err(anyhow::anyhow!(
+                    "File listing denied by permission policy: {}",
+                    reason
+                ));
+            }
+            crate::agents::permission::PermissionDecision::Ask => {
+                return Err(anyhow::anyhow!(
+                    "File listing requires explicit user approval but no UI handler resolved it"
+                ));
+            }
+        }
         let files = system_tools::tools::file::list_dir(path)
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(json!(files))
@@ -83,13 +121,19 @@ impl Tool for ShellTool {
         let cwd = arguments["cwd"].as_str();
 
         match crate::agents::permission::global()
-            .evaluate(crate::agents::permission::ToolKind::Shell, command)
+            .request_async(crate::agents::permission::ToolKind::Shell, command)
+            .await
         {
             crate::agents::permission::PermissionDecision::Allow => {}
             crate::agents::permission::PermissionDecision::Deny(reason) => {
                 return Err(anyhow::anyhow!(
                     "Shell execution denied by permission policy: {}",
                     reason
+                ));
+            }
+            crate::agents::permission::PermissionDecision::Ask => {
+                return Err(anyhow::anyhow!(
+                    "Shell execution requires explicit user approval but no UI handler resolved it"
                 ));
             }
         }

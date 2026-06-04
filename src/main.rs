@@ -17,7 +17,9 @@ mod run_log;
 mod sandbox;
 mod services;
 mod skills_market;
+mod skills;
 mod task_db;
+mod triggers;
 pub(crate) mod ui_theme;
 mod util;
 mod workspace;
@@ -189,6 +191,24 @@ fn main() {
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);
             gpui_tokio::init(cx);
+
+            if let Some(trigger) = triggers::telegram::TelegramTrigger::from_env() {
+                std::thread::spawn(move || {
+                    let rt = match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            log::error!("[telegram] 无法创建 tokio runtime: {:?}", e);
+                            return;
+                        }
+                    };
+                    rt.block_on(async move {
+                        use crate::triggers::Trigger;
+                        if let Err(e) = trigger.run().await {
+                            log::error!("[telegram] trigger 退出：{:?}", e);
+                        }
+                    });
+                });
+            }
 
             cx.bind_keys(
                 KeymapFile::load_asset_allow_partial_failure(DEFAULT_KEYMAP_PATH, cx)

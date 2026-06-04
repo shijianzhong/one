@@ -12,6 +12,15 @@ pub struct MainAgent {
 
 impl MainAgent {
     pub fn new(model: String, api_base: String, api_key: String) -> Self {
+        Self::with_workspace(model, api_base, api_key, "Default".to_string())
+    }
+
+    pub fn with_workspace(
+        model: String,
+        api_base: String,
+        api_key: String,
+        workspace: String,
+    ) -> Self {
         let soul_content = fs::read_to_string("soul.md").unwrap_or_else(|_| {
             "你是一个通用的 AI 助手。".to_string()
         });
@@ -26,9 +35,9 @@ impl MainAgent {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(RunClaudeCodeTool),
             Arc::new(RunSystemTaskTool),
-            Arc::new(RememberTool),
-            Arc::new(RecallTool),
-            Arc::new(UpdateSoulTool),
+            Arc::new(RememberTool { workspace: workspace.clone() }),
+            Arc::new(RecallTool { workspace: workspace.clone() }),
+            Arc::new(ProposeSoulUpdateTool),
         ];
 
         Self {
@@ -87,19 +96,37 @@ impl Tool for RunClaudeCodeTool {
     }
 }
 
-/// 标识工具：触发 SystemAgent 执行系统任务。由 Orchestrator 拦截。
+/// 标识工具：触发 SkillRegistry / SystemAgent 执行系统任务。由 Orchestrator 拦截。
 struct RunSystemTaskTool;
 #[async_trait]
 impl Tool for RunSystemTaskTool {
     fn name(&self) -> &str { "run_system_task" }
-    fn description(&self) -> &str { "涉及查询系统进程、磁盘空间、列出文件等基础系统管理任务时使用。" }
+    fn description(&self) -> &str {
+        "执行系统级任务。优先用 `skill_id` 直接调用已注册 Skill（当前可用：system.cleaner, desktop.organizer, app.uninstaller, doc.summarizer, media.dedup）；\
+         若调用 Skill，请先 `apply=false` 看 preview，再 `apply=true` 触发执行（执行时会经用户授权弹窗）。\
+         若没有合适的 Skill，可只填 `task` 字段，由系统专家 Agent 走通用路径（列进程/磁盘/文件等）。"
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "task": { "type": "string", "description": "要执行的系统管理任务描述" }
-            },
-            "required": ["task"]
+                "skill_id": {
+                    "type": "string",
+                    "description": "目标 Skill 的 id，例如 \"system.cleaner\"。命中则走 Skill Registry 直调，否则回落到通用 SystemAgent。"
+                },
+                "apply": {
+                    "type": "boolean",
+                    "description": "仅当填了 skill_id 时有效：false 仅做 preview（只读、可重复），true 才执行 execute（需用户授权）。默认 false。"
+                },
+                "args": {
+                    "type": "object",
+                    "description": "传给 Skill preview/execute 的参数（结构由 Skill 自身决定）。"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "未命中 Skill 时的自然语言任务描述，会交给 SystemAgent 处理。"
+                }
+            }
         })
     }
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
@@ -108,7 +135,9 @@ impl Tool for RunSystemTaskTool {
 }
 
 /// 记忆存储工具
-struct RememberTool;
+struct RememberTool {
+    workspace: String,
+}
 #[async_trait]
 impl Tool for RememberTool {
     fn name(&self) -> &str { "remember" }
@@ -124,13 +153,15 @@ impl Tool for RememberTool {
     }
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
         let fact = args["fact"].as_str().unwrap_or_default();
-        crate::memory::profile::save_fact(".", fact)?;
+        crate::memory::profile::save_fact(&self.workspace, fact)?;
         Ok(json!({ "status": "success", "message": "Fact remembered" }))
     }
 }
 
 /// 记忆检索工具
-struct RecallTool;
+struct RecallTool {
+    workspace: String,
+}
 #[async_trait]
 impl Tool for RecallTool {
     fn name(&self) -> &str { "recall" }
@@ -139,32 +170,41 @@ impl Tool for RecallTool {
         json!({ "type": "object", "properties": {} })
     }
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
-        let facts = crate::memory::profile::get_all_facts(".");
+        let facts = crate::memory::profile::get_all_facts(&self.workspace);
         Ok(json!(facts))
     }
 }
 
-/// 灵魂进化工具：修改 soul.md
-struct UpdateSoulTool;
+/// 灵魂草案工具：把"修改 soul.md"的请求写入审核队列，等待用户在 GUI 中确认。
+/// 不再允许 LLM 直接覆盖 soul.md（避免自我改写人格）。
+struct ProposeSoulUpdateTool;
 #[async_trait]
-impl Tool for UpdateSoulTool {
-    fn name(&self) -> &str { "update_soul" }
-    fn description(&self) -> &str { "修改你的人格设定、价值观或行为准则（即更新 soul.md）。当你意识到需要调整自己的交流风格或行为逻辑以更好地服务用户时使用。" }
+impl Tool for ProposeSoulUpdateTool {
+    fn name(&self) -> &str { "propose_soul_update" }
+    fn description(&self) -> &str { "提交一份对你自身人格设定（soul.md）的修订草案。仅写入审核队列，必须经用户在界面上确认后才会真正生效。" }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "new_soul_content": { "type": "string", "description": "完整的、更新后的 soul.md 内容" }
+                "rationale": { "type": "string", "description": "为什么需要更新人格设定的简要说明" },
+                "new_soul_content": { "type": "string", "description": "完整的、更新后的 soul.md 内容（草案）" }
             },
-            "required": ["new_soul_content"]
+            "required": ["rationale", "new_soul_content"]
         })
     }
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
-        let content = args["new_soul_content"].as_str().unwrap_or_default();
+        let rationale = args["rationale"].as_str().unwrap_or_default().to_string();
+        let content = args["new_soul_content"].as_str().unwrap_or_default().to_string();
         if content.is_empty() {
             return Err(anyhow::anyhow!("New soul content cannot be empty"));
         }
-        fs::write("soul.md", content)?;
-        Ok(json!({ "status": "success", "message": "Soul evolved. Please restart or refresh to apply changes." }))
+        match crate::agents::soul::submit_proposal(rationale, content) {
+            Some(id) => Ok(json!({
+                "status": "queued",
+                "proposal_id": id,
+                "message": "草案已提交，等待用户在界面上审核确认后才会写入 soul.md"
+            })),
+            None => Err(anyhow::anyhow!("soul proposal queue unavailable")),
+        }
     }
 }

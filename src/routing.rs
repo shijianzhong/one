@@ -34,15 +34,16 @@ impl AppState {
                 session_id,
             } => {
                 eprintln!("[ROUTER] Routing to Claude Code (fast route)");
-                self.job_manager.request_in_flight = true;
-                self.job_manager.request_status_text = Some(
-                    t(
-                        self.current_lang,
-                        Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
-                    )
-                    .to_string(),
+                self.job_manager.set_request(
+                    RequestKind::ClaudeCode,
+                    Some(
+                        t(
+                            self.current_lang,
+                            Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
+                        )
+                        .to_string(),
+                    ),
                 );
-                self.job_manager.request_kind = Some(RequestKind::ClaudeCode);
                 self.spawn_claude_code_run(instruction, session_id, cx);
             }
             RoutingDecision::SystemTools { task } => {

@@ -13,7 +13,7 @@ use crate::agents::types::{
 };
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
-use crate::run_log::{RunEvent, RunKind};
+use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
 use crate::services::api::call_chat_api_stream;
 use crate::services::summarize_conversation_async;
 use crate::{
@@ -66,6 +66,57 @@ impl JobManager {
             pending_confirmation_tools: None,
         }
     }
+
+    pub(crate) fn allocate_claude_run_id(&mut self) -> u64 {
+        self.next_claude_run_id += 1;
+        self.next_claude_run_id
+    }
+
+    pub(crate) fn allocate_general_ai_run_id(&mut self) -> u64 {
+        self.next_general_ai_run_id += 1;
+        self.next_general_ai_run_id
+    }
+
+    pub(crate) fn allocate_summarize_job_id(&mut self) -> u64 {
+        self.next_summarize_job_id += 1;
+        self.next_summarize_job_id
+    }
+
+    pub(crate) fn set_request(&mut self, kind: RequestKind, status_text: Option<String>) {
+        self.request_in_flight = true;
+        self.request_kind = Some(kind);
+        self.request_status_text = status_text;
+    }
+
+    pub(crate) fn clear_request(&mut self) {
+        self.request_in_flight = false;
+        self.request_status_text = None;
+    }
+
+    pub(crate) fn clear_request_full(&mut self) {
+        self.request_in_flight = false;
+        self.request_status_text = None;
+        self.request_kind = None;
+    }
+
+    pub(crate) fn reset_general_ai_run(&mut self) {
+        self.general_ai_run_id = None;
+        self.general_ai_task_id = None;
+        self.general_ai_show_live_bubble = false;
+        self.general_ai_live_text.clear();
+    }
+
+    pub(crate) fn toggle_subagent_collapsed(&mut self, run_id: u64) {
+        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
+            state.collapsed = !state.collapsed;
+        }
+    }
+
+    pub(crate) fn toggle_subagent_events_collapsed(&mut self, run_id: u64) {
+        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
+            state.events_collapsed = !state.events_collapsed;
+        }
+    }
 }
 
 impl AppState {
@@ -110,17 +161,17 @@ impl AppState {
     }
 
     pub(crate) fn begin_claude_run(&mut self, instruction: &str) -> u64 {
-        self.job_manager.next_claude_run_id += 1;
-        let run_id = self.job_manager.next_claude_run_id;
-        self.job_manager.request_in_flight = true;
-        self.job_manager.request_status_text = Some(
-            t(
-                self.current_lang,
-                Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
-            )
-            .to_string(),
+        let run_id = self.job_manager.allocate_claude_run_id();
+        self.job_manager.set_request(
+            RequestKind::ClaudeCode,
+            Some(
+                t(
+                    self.current_lang,
+                    Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
+                )
+                .to_string(),
+            ),
         );
-        self.job_manager.request_kind = Some(RequestKind::ClaudeCode);
         let lang = self.current_lang;
         self.job_manager.current_claude_run = Some(ClaudeRunPanelState {
             run_id,
@@ -175,25 +226,12 @@ impl AppState {
             };
 
         let log_run_id = self.active_task_id.and_then(|task_id| {
-            let id = task_db::insert_task_run(
+            RunRecorder::begin(
                 &self.db.conn,
                 task_id,
-                RunKind::ClaudeCode.as_str(),
+                RunKind::ClaudeCode,
+                instruction.clone(),
             )
-            .ok();
-            if let Some(rid) = id {
-                let _ = task_db::append_run_event(
-                    &self.db.conn,
-                    rid,
-                    "started",
-                    &serde_json::to_string(&RunEvent::Started {
-                        kind: RunKind::ClaudeCode.as_str().to_string(),
-                        detail: instruction.clone(),
-                    })
-                    .unwrap_or_default(),
-                );
-            }
-            id
         });
 
         let (sender, receiver) = mpsc::channel::<ClaudeStreamEvent>();
@@ -241,29 +279,16 @@ impl AppState {
                         let _ = this.update(cx, |this, cx| {
                             if let Some(rid) = log_run_id {
                                 if let Some(mapped) = map_claude_to_run_event(&event) {
-                                    if let Ok(payload) = serde_json::to_string(&mapped) {
-                                        let _ = task_db::append_run_event(
-                                            &this.db.conn,
-                                            rid,
-                                            mapped.kind_str(),
-                                            &payload,
-                                        );
-                                    }
-                                    if matches!(
-                                        mapped,
-                                        RunEvent::Finished { .. } | RunEvent::Failed { .. }
-                                    ) {
-                                        let status = if matches!(mapped, RunEvent::Finished { .. })
-                                        {
-                                            "finished"
-                                        } else {
-                                            "failed"
-                                        };
-                                        let _ = task_db::finish_task_run(
-                                            &this.db.conn,
-                                            rid,
-                                            status,
-                                        );
+                                    let recorder = RunRecorder::attach(&this.db.conn, rid);
+                                    recorder.record(&mapped);
+                                    match mapped {
+                                        RunEvent::Finished { .. } => {
+                                            recorder.finish(RunStatus::Finished);
+                                        }
+                                        RunEvent::Failed { .. } => {
+                                            recorder.finish(RunStatus::Failed);
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -371,8 +396,7 @@ impl AppState {
                     final_message = Some(result);
                     persist_task_id = run.task_id;
                     finished_work_dir = Some(run.work_dir.clone());
-                    self.job_manager.request_in_flight = false;
-                    self.job_manager.request_status_text = None;
+                    self.job_manager.clear_request();
                 }
                 ClaudeStreamEvent::Failed { error } => {
                     run.status = ClaudeRunStatus::Failed;
@@ -388,8 +412,7 @@ impl AppState {
                         error
                     ));
                     persist_task_id = run.task_id;
-                    self.job_manager.request_in_flight = false;
-                    self.job_manager.request_status_text = None;
+                    self.job_manager.clear_request();
                 }
                 ClaudeStreamEvent::Session { session_id } => {
                     run.session_id = Some(session_id.clone());
@@ -451,18 +474,6 @@ impl AppState {
         }
 
         self.persist_current_claude_state();
-    }
-
-    pub(crate) fn toggle_subagent_collapsed(&mut self, run_id: u64) {
-        if let Some(state) = self.job_manager.subagent_messages.get_mut(&run_id) {
-            state.collapsed = !state.collapsed;
-        }
-    }
-
-    pub(crate) fn toggle_subagent_events_collapsed(&mut self, run_id: u64) {
-        if let Some(state) = self.job_manager.subagent_messages.get_mut(&run_id) {
-            state.events_collapsed = !state.events_collapsed;
-        }
     }
 
     pub(crate) fn update_subagent_message_event(&mut self, run_id: u64, event: &ClaudeStreamEvent) {
@@ -569,10 +580,10 @@ impl AppState {
                 answer.clone(),
             ));
         }
-        self.job_manager.request_in_flight = true;
-        self.job_manager.request_kind = Some(RequestKind::ClaudeCode);
-        self.job_manager.request_status_text =
-            Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string());
+        self.job_manager.set_request(
+            RequestKind::ClaudeCode,
+            Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string()),
+        );
 
         self.spawn_claude_code_run(answer, session_id, cx);
     }
@@ -635,24 +646,15 @@ impl AppState {
                         self.needs_auto_scroll = true;
                     }
 
-                    self.job_manager.request_in_flight = false;
-                    self.job_manager.request_status_text = None;
-                    self.job_manager.general_ai_run_id = None;
-                    self.job_manager.general_ai_task_id = None;
-                    self.job_manager.general_ai_show_live_bubble = false;
-                    self.job_manager.general_ai_live_text.clear();
+                    self.job_manager.clear_request();
+                    self.job_manager.reset_general_ai_run();
                     return;
                 }
 
                 log_think_boundary_newlines("general_ai:final", &content);
 
-                self.job_manager.request_in_flight = false;
-                self.job_manager.request_status_text = None;
-                self.job_manager.request_kind = None;
-                self.job_manager.general_ai_run_id = None;
-                self.job_manager.general_ai_task_id = None;
-                self.job_manager.general_ai_show_live_bubble = false;
-                self.job_manager.general_ai_live_text.clear();
+                self.job_manager.clear_request_full();
+                self.job_manager.reset_general_ai_run();
 
                 if run_task_id == self.active_task_id {
                     self.messages.push(ChatMessage::new("assistant", &content));
@@ -673,13 +675,8 @@ impl AppState {
                     error
                 );
 
-                self.job_manager.request_in_flight = false;
-                self.job_manager.request_status_text = None;
-                self.job_manager.request_kind = None;
-                self.job_manager.general_ai_run_id = None;
-                self.job_manager.general_ai_task_id = None;
-                self.job_manager.general_ai_show_live_bubble = false;
-                self.job_manager.general_ai_live_text.clear();
+                self.job_manager.clear_request_full();
+                self.job_manager.reset_general_ai_run();
 
                 if run_task_id == self.active_task_id {
                     self.messages.push(ChatMessage::new("assistant", &error_message));
@@ -703,8 +700,7 @@ impl AppState {
             return;
         };
 
-        self.job_manager.next_summarize_job_id += 1;
-        let job_id = self.job_manager.next_summarize_job_id;
+        let job_id = self.job_manager.allocate_summarize_job_id();
         self.job_manager.summarize_job_id = Some(job_id);
 
         let (sender, receiver) = mpsc::channel::<SummarizeEvent>();
@@ -803,12 +799,11 @@ impl AppState {
     }
 
     pub(crate) fn begin_general_ai_run(&mut self) -> u64 {
-        self.job_manager.next_general_ai_run_id += 1;
-        let run_id = self.job_manager.next_general_ai_run_id;
-        self.job_manager.request_in_flight = true;
-        self.job_manager.request_status_text =
-            Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string());
-        self.job_manager.request_kind = Some(RequestKind::GeneralAi);
+        let run_id = self.job_manager.allocate_general_ai_run_id();
+        self.job_manager.set_request(
+            RequestKind::GeneralAi,
+            Some(t(self.current_lang, Translations::WAITING_FOR_AI_RESPONSE).to_string()),
+        );
         self.job_manager.general_ai_run_id = Some(run_id);
         self.job_manager.general_ai_task_id = self.active_task_id;
         self.job_manager.general_ai_live_text.clear();
@@ -1002,30 +997,19 @@ impl AppState {
             }
         };
 
-        let run_id = self.job_manager.next_general_ai_run_id + 1;
-        self.job_manager.next_general_ai_run_id = run_id;
-        self.job_manager.request_in_flight = true;
-        self.job_manager.request_status_text =
-            Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string());
-        self.job_manager.request_kind = Some(RequestKind::GeneralAi);
+        let run_id = self.job_manager.allocate_general_ai_run_id();
+        self.job_manager.set_request(
+            RequestKind::GeneralAi,
+            Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string()),
+        );
 
         let log_run_id = self.active_task_id.and_then(|task_id| {
-            let id =
-                task_db::insert_task_run(&self.db.conn, task_id, RunKind::Orchestrator.as_str())
-                    .ok();
-            if let Some(rid) = id {
-                let _ = task_db::append_run_event(
-                    &self.db.conn,
-                    rid,
-                    "started",
-                    &serde_json::to_string(&RunEvent::Started {
-                        kind: RunKind::Orchestrator.as_str().to_string(),
-                        detail: instruction.clone(),
-                    })
-                    .unwrap_or_default(),
-                );
-            }
-            id
+            RunRecorder::begin(
+                &self.db.conn,
+                task_id,
+                RunKind::Orchestrator,
+                instruction.clone(),
+            )
         });
 
         let (sender, receiver) = mpsc::channel::<OrchestratorWrapperEvent>();
@@ -1063,14 +1047,10 @@ impl AppState {
                                 OrchestratorWrapperEvent::Event(e) => match e {
                                     OrchestratorEvent::Plan { plan } => {
                                         if let Some(rid) = log_run_id {
-                                            let _ = task_db::append_run_event(
-                                                &this.db.conn,
-                                                rid,
-                                                "message_delta",
-                                                &serde_json::to_string(&RunEvent::MessageDelta {
+                                            RunRecorder::attach(&this.db.conn, rid).record(
+                                                &RunEvent::MessageDelta {
                                                     text: plan.clone(),
-                                                })
-                                                .unwrap_or_default(),
+                                                },
                                             );
                                         }
                                         this.job_manager.request_status_text = Some(format!("📋 Plan: {}", plan));
@@ -1091,15 +1071,11 @@ impl AppState {
                                     }
                                     OrchestratorEvent::ToolCall { name, args } => {
                                         if let Some(rid) = log_run_id {
-                                            let _ = task_db::append_run_event(
-                                                &this.db.conn,
-                                                rid,
-                                                "tool_call",
-                                                &serde_json::to_string(&RunEvent::ToolCall {
+                                            RunRecorder::attach(&this.db.conn, rid).record(
+                                                &RunEvent::ToolCall {
                                                     name: name.clone(),
                                                     args: args.clone(),
-                                                })
-                                                .unwrap_or_default(),
+                                                },
                                             );
                                         }
                                         this.job_manager.request_status_text =
@@ -1107,15 +1083,8 @@ impl AppState {
                                     }
                                     OrchestratorEvent::ToolResult { name, result } => {
                                         if let Some(rid) = log_run_id {
-                                            let _ = task_db::append_run_event(
-                                                &this.db.conn,
-                                                rid,
-                                                "tool_result",
-                                                &serde_json::to_string(&RunEvent::ToolResult {
-                                                    name,
-                                                    result,
-                                                })
-                                                .unwrap_or_default(),
+                                            RunRecorder::attach(&this.db.conn, rid).record(
+                                                &RunEvent::ToolResult { name, result },
                                             );
                                         }
                                     }
@@ -1128,20 +1097,12 @@ impl AppState {
                                 },
                                 OrchestratorWrapperEvent::Finished(result) => {
                                     if let Some(rid) = log_run_id {
-                                        let _ = task_db::append_run_event(
-                                            &this.db.conn,
-                                            rid,
-                                            "finished",
-                                            &serde_json::to_string(&RunEvent::Finished {
-                                                result: result.clone(),
-                                            })
-                                            .unwrap_or_default(),
-                                        );
-                                        let _ = task_db::finish_task_run(
-                                            &this.db.conn,
-                                            rid,
-                                            "finished",
-                                        );
+                                        let recorder =
+                                            RunRecorder::attach(&this.db.conn, rid);
+                                        recorder.record(&RunEvent::Finished {
+                                            result: result.clone(),
+                                        });
+                                        recorder.finish(RunStatus::Finished);
                                     }
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;
@@ -1160,20 +1121,12 @@ impl AppState {
                                 }
                                 OrchestratorWrapperEvent::Failed(error) => {
                                     if let Some(rid) = log_run_id {
-                                        let _ = task_db::append_run_event(
-                                            &this.db.conn,
-                                            rid,
-                                            "failed",
-                                            &serde_json::to_string(&RunEvent::Failed {
-                                                error: error.clone(),
-                                            })
-                                            .unwrap_or_default(),
-                                        );
-                                        let _ = task_db::finish_task_run(
-                                            &this.db.conn,
-                                            rid,
-                                            "failed",
-                                        );
+                                        let recorder =
+                                            RunRecorder::attach(&this.db.conn, rid);
+                                        recorder.record(&RunEvent::Failed {
+                                            error: error.clone(),
+                                        });
+                                        recorder.finish(RunStatus::Failed);
                                     }
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;

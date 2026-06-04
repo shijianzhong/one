@@ -789,17 +789,17 @@ pub fn load_agent_conversations(
 }
 
 // ---------- task_runs / run_events ----------
+//
+// All call sites must go through `crate::run_log::RunRecorder`, which is the
+// only consumer of these helpers. Keeping them at `pub(crate)` prevents a new
+// caller from re-introducing the duplicated audit-write pattern this crate
+// just consolidated.
 
-#[derive(Debug, Clone)]
-pub struct RunEventRow {
-    pub id: usize,
-    pub run_id: usize,
-    pub kind: String,
-    pub payload: String,
-    pub created_at: String,
-}
-
-pub fn insert_task_run(conn: &Connection, task_id: usize, kind: &str) -> Result<usize> {
+pub(crate) fn insert_task_run(
+    conn: &Connection,
+    task_id: usize,
+    kind: &str,
+) -> Result<usize> {
     let mut stmt = Statement::prepare(
         conn,
         "INSERT INTO task_runs (task_id, kind, status) VALUES (?, ?, 'running')",
@@ -811,7 +811,7 @@ pub fn insert_task_run(conn: &Connection, task_id: usize, kind: &str) -> Result<
     Ok(id as usize)
 }
 
-pub fn finish_task_run(conn: &Connection, run_id: usize, status: &str) -> Result<()> {
+pub(crate) fn finish_task_run(conn: &Connection, run_id: usize, status: &str) -> Result<()> {
     let mut stmt = Statement::prepare(
         conn,
         "UPDATE task_runs SET status = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -821,7 +821,7 @@ pub fn finish_task_run(conn: &Connection, run_id: usize, status: &str) -> Result
     Ok(())
 }
 
-pub fn append_run_event(
+pub(crate) fn append_run_event(
     conn: &Connection,
     run_id: usize,
     kind: &str,
@@ -838,20 +838,38 @@ pub fn append_run_event(
     Ok(id as usize)
 }
 
-#[allow(dead_code)]
-pub fn load_run_events(conn: &Connection, run_id: usize) -> Result<Vec<RunEventRow>> {
+#[derive(Debug, Clone)]
+pub struct RunEventRow {
+    pub id: usize,
+    pub run_id: usize,
+    pub kind: String,
+    pub payload: String,
+    pub created_at: String,
+}
+
+/// 拉取最近 `limit` 条 RunEvent（按 id 倒序）。供远程触达 `/audit` 命令使用。
+pub fn load_recent_run_events(limit: usize) -> Result<Vec<RunEventRow>> {
+    let limit = limit.clamp(1, 200) as i64;
+    let db_path = get_db_path();
+    let conn = Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     let mut stmt = Statement::prepare(
-        conn,
-        "SELECT id, run_id, kind, payload, created_at FROM run_events WHERE run_id = ? ORDER BY id ASC",
+        &conn,
+        "SELECT id, run_id, kind, payload, created_at FROM run_events ORDER BY id DESC LIMIT ?",
     )?;
-    stmt.with_bindings(&run_id)?;
-    stmt.map(|s| {
+    stmt.with_bindings(&limit)?;
+    let rows = stmt.map(|s| {
+        let id = s.column_int64(0)? as usize;
+        let run_id = s.column_int64(1)? as usize;
+        let kind = s.column_text(2)?.to_string();
+        let payload = s.column_text(3)?.to_string();
+        let created_at = s.column_text(4)?.to_string();
         Ok(RunEventRow {
-            id: s.column_int64(0)? as usize,
-            run_id: s.column_int64(1)? as usize,
-            kind: s.column_text(2)?.to_string(),
-            payload: s.column_text(3)?.to_string(),
-            created_at: s.column_text(4)?.to_string(),
+            id,
+            run_id,
+            kind,
+            payload,
+            created_at,
         })
-    })
+    })?;
+    Ok(rows)
 }

@@ -80,6 +80,26 @@ pub(crate) struct AppState {
     pub(crate) titlebar_should_move: bool,
     pub(crate) intent_router: agents::intent_router::IntentRouter,
     pub(crate) job_manager: crate::runtime::JobManager,
+    /// Approval request currently shown to the user (if any).
+    pub(crate) pending_approval: Option<crate::agents::permission::ApprovalRequest>,
+    pub(crate) pending_soul_proposal: Option<crate::agents::soul::SoulProposal>,
+    pub(crate) skill_card: Option<SkillCardState>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SkillCardStage {
+    Previewing,
+    PreviewReady(crate::skills::SkillPreview),
+    Executing,
+    Done(crate::skills::SkillExecution),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SkillCardState {
+    pub manifest: crate::skills::SkillManifest,
+    pub args: serde_json::Value,
+    pub stage: SkillCardStage,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +121,7 @@ impl AppState {
 }
 
 impl AppState {
-    pub(crate) fn new(_window: &mut Window, _cx: &mut Context<Self>, config: Config) -> Self {
+    pub(crate) fn new(_window: &mut Window, cx: &mut Context<Self>, config: Config) -> Self {
         let db = task_db::Database::new().expect("Failed to initialize database");
         let theme_mode = config.theme_mode;
         set_theme_mode(theme_mode);
@@ -173,6 +193,9 @@ impl AppState {
             titlebar_should_move: false,
             intent_router: agents::intent_router::IntentRouter::new(),
             job_manager: crate::runtime::JobManager::new(),
+            pending_approval: None,
+            pending_soul_proposal: None,
+            skill_card: None,
         };
 
         if state.workspaces.is_empty() {
@@ -186,7 +209,164 @@ impl AppState {
             state.workspaces.push(default_ws);
         }
 
+        state.start_approval_pump(cx);
         state
+    }
+
+    /// Spin up a background pump that periodically drains the global
+    /// permission approval queue and surfaces the next request as a dialog.
+    fn start_approval_pump(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            let _ = this.update(cx, |state, cx| {
+                if state.pending_approval.is_none() {
+                    if let Some(req) = crate::agents::permission::drain_next() {
+                        state.pending_approval = Some(req);
+                        cx.notify();
+                    }
+                }
+                if state.pending_soul_proposal.is_none() {
+                    if let Some(prop) = crate::agents::soul::drain_next() {
+                        state.pending_soul_proposal = Some(prop);
+                        cx.notify();
+                    }
+                }
+            });
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+        })
+        .detach();
+    }
+
+    pub(crate) fn approve_pending_permission(&mut self, cx: &mut Context<Self>) {
+        if let Some(req) = self.pending_approval.take() {
+            req.approve();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn deny_pending_permission(&mut self, cx: &mut Context<Self>) {
+        if let Some(req) = self.pending_approval.take() {
+            req.deny();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn approve_soul_proposal(&mut self, cx: &mut Context<Self>) {
+        if let Some(prop) = self.pending_soul_proposal.take() {
+            match crate::agents::soul::commit_proposal(&prop) {
+                Ok(()) => {
+                    self.messages.push(ChatMessage::new(
+                        "assistant",
+                        "✅ 已应用新的 soul.md 草案，重启或刷新后生效。",
+                    ));
+                }
+                Err(e) => {
+                    self.messages.push(ChatMessage::new(
+                        "assistant",
+                        &format!("⚠️ 写入 soul.md 失败：{}", e),
+                    ));
+                }
+            }
+            self.needs_auto_scroll = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn deny_soul_proposal(&mut self, cx: &mut Context<Self>) {
+        if self.pending_soul_proposal.take().is_some() {
+            self.messages.push(ChatMessage::new(
+                "assistant",
+                "❌ 已拒绝 soul.md 草案，未做任何改动。",
+            ));
+            self.needs_auto_scroll = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn launch_skill_card(
+        &mut self,
+        skill_id: &str,
+        args: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(skill) = crate::skills::registry().find(skill_id) else {
+            self.messages.push(ChatMessage::new(
+                "assistant",
+                &format!("⚠️ Skill `{}` 不存在", skill_id),
+            ));
+            self.needs_auto_scroll = true;
+            cx.notify();
+            return;
+        };
+        let manifest = skill.manifest();
+        self.skill_card = Some(SkillCardState {
+            manifest: manifest.clone(),
+            args: args.clone(),
+            stage: SkillCardStage::Previewing,
+        });
+        cx.notify();
+
+        let skill_id = manifest.id.clone();
+        let args_for_preview = args.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match crate::skills::registry().find(&skill_id) {
+                Some(s) => s.preview(args_for_preview).await,
+                None => Err(anyhow::anyhow!("skill disappeared")),
+            };
+            let _ = this.update(cx, |state, cx| {
+                if let Some(card) = state.skill_card.as_mut() {
+                    if card.manifest.id != skill_id {
+                        return;
+                    }
+                    card.stage = match result {
+                        Ok(p) => SkillCardStage::PreviewReady(p),
+                        Err(e) => SkillCardStage::Failed(format!("预览失败：{}", e)),
+                    };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn approve_skill_card(&mut self, cx: &mut Context<Self>) {
+        let Some(card) = self.skill_card.as_mut() else {
+            return;
+        };
+        if !matches!(card.stage, SkillCardStage::PreviewReady(_)) {
+            return;
+        }
+        let skill_id = card.manifest.id.clone();
+        let args = card.args.clone();
+        card.stage = SkillCardStage::Executing;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = match crate::skills::registry().find(&skill_id) {
+                Some(s) => s.execute(args).await,
+                None => Err(anyhow::anyhow!("skill disappeared")),
+            };
+            let _ = this.update(cx, |state, cx| {
+                if let Some(card) = state.skill_card.as_mut() {
+                    if card.manifest.id != skill_id {
+                        return;
+                    }
+                    card.stage = match result {
+                        Ok(exec) => SkillCardStage::Done(exec),
+                        Err(e) => SkillCardStage::Failed(format!("执行失败：{}", e)),
+                    };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn cancel_skill_card(&mut self, cx: &mut Context<Self>) {
+        if self.skill_card.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub(crate) fn get_active_workspace(&self) -> Option<&Workspace> {

@@ -87,5 +87,14 @@ impl gpui::Render for AppState {
             .when(self.delete_confirm_workspace_id.is_some(), |this| {
                 this.child(self.render_workspace_popup(cx))
             })
+            .when(self.pending_approval.is_some(), |this| {
+                this.child(self.render_approval_dialog(cx))
+            })
+            .when(self.pending_soul_proposal.is_some(), |this| {
+                this.child(self.render_soul_proposal_dialog(cx))
+            })
+            .when(self.skill_card.is_some(), |this| {
+                this.child(self.render_skill_card_dialog(cx))
+            })
     }
 }

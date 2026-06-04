@@ -171,7 +171,11 @@ impl Skill for AppUninstallerSkill {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
         let parsed: UninstallArgs = serde_json::from_value(args).unwrap_or_default();
         let Some(target) = parsed.app else {
             return Ok(SkillExecution {
@@ -197,7 +201,7 @@ impl Skill for AppUninstallerSkill {
                 .join("\n")
         );
 
-        match permission().request_async(ToolKind::File, detail).await {
+        match permission().request_async(ToolKind::File, detail, source).await {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

@@ -148,6 +148,10 @@ async fn run_skill(id: &str, args: Value) -> String {
             short_label(id)
         );
     };
+
+    // 远程执行自动进入 Strict 权限模式
+    let _guard = crate::agents::permission::RemoteScopeGuard::enter();
+
     let result = skill.execute(args).await;
     match result {
         Ok(exec) if exec.denied => format!("[run] {}：用户在本机拒绝。{}", id, exec.summary),

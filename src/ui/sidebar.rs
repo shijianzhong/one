@@ -121,7 +121,7 @@ impl AppState {
     ) -> impl IntoElement {
         let task_dir = task_dir.to_string();
 
-        let mut section = div()
+        let section = div()
             .flex()
             .flex_col()
             .gap_2()

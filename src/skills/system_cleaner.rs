@@ -152,7 +152,11 @@ impl Skill for SystemCleanerSkill {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
         let parsed: CleanerArgs = serde_json::from_value(args).unwrap_or_default();
         let allow_set = parsed.targets;
 
@@ -185,6 +189,7 @@ impl Skill for SystemCleanerSkill {
             .request_async(
                 ToolKind::File,
                 format!("system.cleaner 即将清理：\n{}", detail),
+                source,
             )
             .await
         {

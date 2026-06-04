@@ -334,7 +334,7 @@ impl AppState {
     pub(crate) fn render_main_content(
         &mut self,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.main_view {
             MainView::Chat => self.render_chat(window, cx).into_any_element(),

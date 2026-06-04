@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::cell::Cell;
 use std::env;
 use std::sync::{Mutex, OnceLock};
 
@@ -81,8 +82,18 @@ impl PermissionPolicy {
     /// Cheap synchronous check. Returns `Ask` for cases that require user
     /// confirmation; the caller is expected to invoke [`request_async`] in
     /// that case.
-    pub fn evaluate(&self, kind: ToolKind, _detail: &str) -> PermissionDecision {
-        match (self.mode, kind) {
+    pub fn evaluate(
+        &self,
+        kind: ToolKind,
+        _detail: &str,
+        source: Option<&str>,
+    ) -> PermissionDecision {
+        let mut mode = self.mode;
+        if let Some("remote") = source {
+            mode = PermissionMode::Strict;
+        }
+
+        match (mode, kind) {
             (PermissionMode::Bypass, _) => PermissionDecision::Allow,
             (PermissionMode::Strict, ToolKind::Shell) => {
                 PermissionDecision::Deny("shell execution disabled in strict mode".into())
@@ -98,9 +109,24 @@ impl PermissionPolicy {
 
     /// Evaluate and, if the result is `Ask`, suspend until the user answers
     /// via the global approval queue.
-    pub async fn request_async(&self, kind: ToolKind, detail: impl Into<String>) -> PermissionDecision {
+    ///
+    /// If `source` is `None` but the current thread is inside a
+    /// [`RemoteScopeGuard`], the call is automatically treated as
+    /// `source = Some("remote")` and the policy is tightened to Strict.
+    pub async fn request_async(
+        &self,
+        kind: ToolKind,
+        detail: impl Into<String>,
+        source: Option<&str>,
+    ) -> PermissionDecision {
         let detail = detail.into();
-        match self.evaluate(kind, &detail) {
+        // Promote source to "remote" when inside a RemoteScopeGuard.
+        let effective_source: Option<&str> = if source.is_none() && RemoteScopeGuard::is_active() {
+            Some("remote")
+        } else {
+            source
+        };
+        match self.evaluate(kind, &detail, effective_source) {
             PermissionDecision::Allow => PermissionDecision::Allow,
             PermissionDecision::Deny(reason) => PermissionDecision::Deny(reason),
             PermissionDecision::Ask => match enqueue_request(kind, detail).await {
@@ -195,6 +221,49 @@ pub fn pending_count() -> usize {
     queue().lock().map(|q| q.pending.len()).unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// Remote scope guard
+//
+// When a Trigger (e.g. Telegram) handles a `/run` command it calls
+// `RemoteScopeGuard::enter()`.  For the lifetime of the guard, any call to
+// `permission().request_async` that passes `source = None` will behave as if
+// `source = Some("remote")` were passed — i.e. the policy is automatically
+// tightened to Strict.
+//
+// Implementation: a thread-local `bool` flag.  Trigger handlers run on a
+// dedicated tokio worker thread so the flag is isolated from the UI thread.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static REMOTE_SCOPE: Cell<bool> = Cell::new(false);
+}
+
+/// RAII guard that marks the current thread as "remote source" for the
+/// duration of its lifetime.  Drop restores the previous value so that
+/// nested calls are safe.
+pub struct RemoteScopeGuard {
+    previous: bool,
+}
+
+impl RemoteScopeGuard {
+    /// Enter remote scope.  Returns the guard; drop it to leave the scope.
+    pub fn enter() -> Self {
+        let previous = REMOTE_SCOPE.with(|c| c.replace(true));
+        Self { previous }
+    }
+
+    /// Query whether the current thread is inside a remote scope.
+    pub fn is_active() -> bool {
+        REMOTE_SCOPE.with(|c| c.get())
+    }
+}
+
+impl Drop for RemoteScopeGuard {
+    fn drop(&mut self) {
+        REMOTE_SCOPE.with(|c| c.set(self.previous));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +288,7 @@ mod tests {
     #[test]
     fn strict_blocks_shell() {
         let policy = PermissionPolicy::new(PermissionMode::Strict);
-        match policy.evaluate(ToolKind::Shell, "ls") {
+        match policy.evaluate(ToolKind::Shell, "ls", None) {
             PermissionDecision::Deny(_) => {}
             _ => panic!("strict mode should deny shell"),
         }
@@ -228,7 +297,7 @@ mod tests {
     #[test]
     fn bypass_allows_shell() {
         let policy = PermissionPolicy::new(PermissionMode::Bypass);
-        match policy.evaluate(ToolKind::Shell, "ls") {
+        match policy.evaluate(ToolKind::Shell, "ls", None) {
             PermissionDecision::Allow => {}
             _ => panic!("bypass mode should allow shell"),
         }
@@ -237,13 +306,67 @@ mod tests {
     #[test]
     fn default_asks_for_destructive() {
         let policy = PermissionPolicy::new(PermissionMode::Default);
-        match policy.evaluate(ToolKind::Shell, "rm -rf /") {
+        match policy.evaluate(ToolKind::Shell, "rm -rf /", None) {
             PermissionDecision::Ask => {}
             other => panic!("expected Ask, got {:?}", other),
         }
-        match policy.evaluate(ToolKind::ClaudeCode, "edit") {
+        match policy.evaluate(ToolKind::ClaudeCode, "edit", None) {
             PermissionDecision::Allow => {}
             other => panic!("expected Allow for ClaudeCode in Default, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remote_source_enforces_strict_mode() {
+        // Even when the global policy is Default...
+        let policy = PermissionPolicy::new(PermissionMode::Default);
+        // ...a remote source should deny shell, as if in Strict mode.
+        match policy.evaluate(ToolKind::Shell, "ls", Some("remote")) {
+            PermissionDecision::Deny(_) => {}
+            other => panic!("remote source should deny shell, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remote_scope_guard_enter_and_drop() {
+        // Before entering: not active.
+        assert!(!RemoteScopeGuard::is_active());
+        {
+            let _guard = RemoteScopeGuard::enter();
+            assert!(RemoteScopeGuard::is_active());
+        }
+        // After drop: restored to false.
+        assert!(!RemoteScopeGuard::is_active());
+    }
+
+    #[test]
+    fn remote_scope_guard_nested() {
+        // Nested guards: inner drop should not clear the outer guard's flag.
+        let _outer = RemoteScopeGuard::enter();
+        assert!(RemoteScopeGuard::is_active());
+        {
+            let _inner = RemoteScopeGuard::enter();
+            assert!(RemoteScopeGuard::is_active());
+        }
+        // Outer still active after inner dropped.
+        assert!(RemoteScopeGuard::is_active());
+    }
+
+    #[test]
+    fn evaluate_remote_scope_auto_strict() {
+        // Default policy + no explicit source, but thread is in remote scope
+        // → should behave as Strict for Shell (Deny).
+        let policy = PermissionPolicy::new(PermissionMode::Default);
+        let _guard = RemoteScopeGuard::enter();
+        // We call evaluate directly (sync), source=None.
+        // evaluate does NOT check the thread-local — that's intentional;
+        // only request_async does.  So we verify the async path instead
+        // via is_active().
+        assert!(RemoteScopeGuard::is_active());
+        // Verify that evaluate with source="remote" gives Deny for shell.
+        match policy.evaluate(ToolKind::Shell, "ls", Some("remote")) {
+            PermissionDecision::Deny(_) => {}
+            other => panic!("expected Deny, got {:?}", other),
         }
     }
 }

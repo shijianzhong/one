@@ -70,7 +70,11 @@ pub trait Skill: Send + Sync {
 
     async fn preview(&self, args: serde_json::Value) -> anyhow::Result<SkillPreview>;
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution>;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution>;
 }
 
 pub struct SkillRegistry {

@@ -120,7 +120,7 @@ impl Skill for DesktopOrganizerSkill {
 
         let items = groups
             .into_iter()
-            .map(|(cat, (count, size))| SkillPreviewItem {
+            .map(|(cat, (_count, size))| SkillPreviewItem {
                 label: cat.clone(),
                 detail: format!("将移动到 {}/{}", folder.display(), cat),
                 bytes: size,
@@ -149,7 +149,11 @@ impl Skill for DesktopOrganizerSkill {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
         let parsed: OrganizerArgs = serde_json::from_value(args).unwrap_or_default();
         let folder = match Self::target_folder(&parsed) {
             Some(f) => f,
@@ -170,8 +174,15 @@ impl Skill for DesktopOrganizerSkill {
             });
         }
 
-        let detail = format!("desktop.organizer 即将整理 {} 个文件到 {} 下的分类目录", files.len(), folder.display());
-        match permission().request_async(ToolKind::File, detail).await {
+        let detail = format!(
+            "desktop.organizer 即将整理 {} 个文件到 {} 下的分类目录",
+            files.len(),
+            folder.display()
+        );
+        match permission()
+            .request_async(ToolKind::File, detail, source)
+            .await
+        {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

@@ -998,6 +998,10 @@ impl AppState {
         };
 
         let run_id = self.job_manager.allocate_general_ai_run_id();
+        self.job_manager.general_ai_run_id = Some(run_id);
+        self.job_manager.general_ai_show_live_bubble = true;
+        self.job_manager.general_ai_task_id = self.active_task_id;
+        self.job_manager.general_ai_live_text.clear();
         self.job_manager.set_request(
             RequestKind::GeneralAi,
             Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string()),
@@ -1056,7 +1060,10 @@ impl AppState {
                                         this.job_manager.request_status_text = Some(format!("📋 Plan: {}", plan));
                                     }
                                     OrchestratorEvent::AssistantDelta(delta) => {
-                                        this.job_manager.request_status_text = Some(delta);
+                                        this.job_manager.general_ai_live_text.push_str(&delta);
+                                        this.job_manager.request_status_text =
+                                            Some(t(this.current_lang, Translations::GENERATING_RESPONSE).to_string());
+                                        this.needs_auto_scroll = true;
                                     }
                                     OrchestratorEvent::StepStarted {
                                         agent_id,
@@ -1128,6 +1135,9 @@ impl AppState {
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;
                                     this.job_manager.request_status_text = None;
+                                    this.job_manager.general_ai_live_text.clear();
+                                    this.job_manager.general_ai_run_id = None;
+                                    this.job_manager.general_ai_show_live_bubble = false;
                                     this.messages.push(ChatMessage::new("assistant", &result));
                                     if let Some(task_id) = this.active_task_id {
                                         task_db::insert_message(
@@ -1173,6 +1183,9 @@ impl AppState {
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;
                                     this.job_manager.request_status_text = None;
+                                    this.job_manager.general_ai_live_text.clear();
+                                    this.job_manager.general_ai_run_id = None;
+                                    this.job_manager.general_ai_show_live_bubble = false;
                                     this.messages.push(ChatMessage::new(
                                         "assistant",
                                         &format!("Orchestrator failed: {}", error),

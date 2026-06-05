@@ -6,6 +6,7 @@ pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
     pub memory_mb: f64,
+    pub mem_percent: f64,
     pub cpu_percent: f64,
     pub command: String,
 }
@@ -36,14 +37,18 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
         if parts.len() >= 11 {
             let pid: u32 = parts[1].parse().unwrap_or(0);
             let cpu = parts[2].parse().unwrap_or(0.0);
-            let mem = parts[3].parse().unwrap_or(0.0);
+            let mem_pct = parts[3].parse().unwrap_or(0.0);
+            // RSS (parts[5]) 单位 KB，转为 MB
+            let rss_kb: f64 = parts[5].parse().unwrap_or(0.0);
+            let mem_mb = rss_kb / 1024.0;
             let command = parts[10..].join(" ");
             let name = parts[10].split('/').last().unwrap_or(parts[10]).to_string();
 
             processes.push(ProcessInfo {
                 pid,
                 name,
-                memory_mb: mem,
+                memory_mb: (mem_mb * 100.0).round() / 100.0, // 保留两位小数
+                mem_percent: mem_pct,
                 cpu_percent: cpu,
                 command,
             });

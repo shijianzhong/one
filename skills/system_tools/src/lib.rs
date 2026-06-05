@@ -305,11 +305,31 @@ fn call_llm_sync(base_url: &str, api_key: &str, model: &str, messages: &[ChatMes
 fn parse_llm_response(response: &str) -> Result<Vec<(Tool, Option<String>)>, String> {
     let response = response.trim();
 
-    let json_start = response.find('{').unwrap_or(0);
+    // 尝试从响应中提取 JSON 对象（从第一个 { 到最后一个匹配的 }）
+    let json_start = match response.find('{') {
+        Some(idx) => idx,
+        None => return Err(format!("No JSON found in response: {}", response)),
+    };
     let json_str = &response[json_start..];
 
-    let parsed: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("Failed to parse JSON: {} - Response: {}", e, response))?;
+    // 尝试找到匹配的闭合括号（处理嵌套 JSON）
+    let mut depth = 0;
+    let json_end = json_str.char_indices()
+        .find(|&(_, c)| {
+            match c {
+                '{' => { depth += 1; false }
+                '}' => { depth -= 1; depth == 0 }
+                _ => false,
+            }
+        })
+        .map(|(idx, _)| idx + 1) // 包含 closing }
+        .unwrap_or(json_str.len());
+
+    let json_portion = &json_str[..json_end];
+
+    // 尝试解析 JSON
+    let parsed: serde_json::Value = serde_json::from_str(json_portion)
+        .map_err(|e| format!("Failed to parse JSON: {} - JSON portion: {}", e, json_portion))?;
 
     let tools_array = parsed["tools"]
         .as_array()

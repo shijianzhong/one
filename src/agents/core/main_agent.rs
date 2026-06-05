@@ -39,6 +39,8 @@ impl MainAgent {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(RunClaudeCodeTool),
             Arc::new(RunSystemTaskTool),
+            Arc::new(AnalyzeDiskTool),
+            Arc::new(CleanDiskTool),
             Arc::new(RememberTool { workspace: workspace.clone() }),
             Arc::new(RecallTool { workspace: workspace.clone() }),
             Arc::new(ProposeSoulUpdateTool),
@@ -211,4 +213,248 @@ impl Tool for ProposeSoulUpdateTool {
             None => Err(anyhow::anyhow!("soul proposal queue unavailable")),
         }
     }
+}
+
+/// 磁盘分析工具：分析指定目录的磁盘占用情况
+struct AnalyzeDiskTool;
+#[async_trait]
+impl Tool for AnalyzeDiskTool {
+    fn name(&self) -> &str { "analyze_disk" }
+    fn description(&self) -> &str {
+        "分析指定目录或整个磁盘的空间使用情况，列出占用空间最大的子目录和文件。\
+         返回分析结果，包括总使用量、大目录列表、可清理建议。\
+         用户确认后可以使用 clean_disk 工具进行清理。\
+         不传 path 时默认分析用户主目录。"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "要分析的目录路径，默认为用户主目录" }
+            }
+        })
+    }
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
+        let path = args["path"].as_str()
+            .map(|p| expand_path_for_disk(p))
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string())
+            });
+
+        // 1. 查看磁盘总体使用情况
+        let disk_free_result = system_tools::tools::disk::disk_free().unwrap_or_default();
+
+        // 2. 分析目录深度1的子目录占用
+        let usage_detail = system_tools::tools::disk::disk_usage_detailed(&path, 1)
+            .unwrap_or_else(|_| "无法获取磁盘使用详情".to_string());
+
+        // 3. 深度分析几个常见大目录
+        let home = dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let big_dirs = ["Downloads", "Desktop", "Documents", ".Trash", "Library/Caches"];
+        let mut deep_analysis = String::new();
+        for dir in &big_dirs {
+            let full_path = format!("{}/{}", home, dir);
+            if std::path::Path::new(&full_path).exists() {
+                if let Ok(size) = system_tools::tools::disk::disk_usage_detailed(&full_path, 0) {
+                    deep_analysis.push_str(&format!("{}: {}", dir, size.trim()));
+                    deep_analysis.push('\n');
+                }
+            }
+        }
+
+        Ok(json!({
+            "path": path,
+            "disk_free": disk_free_result,
+            "directory_analysis": usage_detail,
+            "key_directories": deep_analysis,
+            "hint": "如需清理，请调用 clean_disk 工具并提供清理路径。"
+        }))
+    }
+}
+
+/// 磁盘清理工具：清理指定路径下的文件
+struct CleanDiskTool;
+#[async_trait]
+impl Tool for CleanDiskTool {
+    fn name(&self) -> &str { "clean_disk" }
+    fn description(&self) -> &str {
+        "清理指定路径下的文件或目录。调用前应先用 analyze_disk 分析磁盘占用，\
+         并向用户展示结果获得确认后再执行。\
+         支持清空废纸篓、清理下载文件夹、清理缓存等。"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "清理目标：trash（废纸篓）、downloads（下载文件夹）、caches（用户缓存）、custom（自定义路径）"
+                },
+                "path": { "type": "string", "description": "当 target=custom 时，指定要删除的具体文件或目录路径" }
+            },
+            "required": ["target"]
+        })
+    }
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
+        let target = args["target"].as_str().unwrap_or("").to_string();
+        let custom_path = args["path"].as_str().map(|p| expand_path_for_disk(p));
+
+        let (result, freed_bytes) = match target.as_str() {
+            "trash" => {
+                let home = dirs::home_dir().unwrap_or_default();
+                let trash_path = home.join(".Trash");
+                let mut count = 0u64;
+                let size_before = dir_size(&trash_path);
+
+                // 优先用 osascript 清空废纸篓（避免 macOS 权限问题）
+                let osa_result = std::process::Command::new("osascript")
+                    .args(["-e", r#"tell application "Finder" to empty trash"#])
+                    .output();
+
+                match osa_result {
+                    Ok(output) if output.status.success() => {
+                        (format!("✅ 已通过 Finder 清空废纸篓"), size_before)
+                    }
+                    _ => {
+                        // fallback: 手动删除 .Trash 内容
+                        if trash_path.exists() {
+                            let mut fallback_count = 0u64;
+                            for entry in std::fs::read_dir(&trash_path).map_err(|e| anyhow::anyhow!("{}", e))? {
+                                let entry = entry.map_err(|e| anyhow::anyhow!("{}", e))?;
+                                let path = entry.path();
+                                if path.is_dir() {
+                                    std::fs::remove_dir_all(&path).ok();
+                                } else {
+                                    std::fs::remove_file(&path).ok();
+                                }
+                                fallback_count += 1;
+                            }
+                            (format!("已清空废纸篓，清理了 {} 个项目", fallback_count), size_before)
+                        } else {
+                            ("废纸篓已为空".to_string(), 0)
+                        }
+                    }
+                }
+            }
+            "downloads" => {
+                let downloads = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join("Downloads");
+                let size_before = dir_size(&downloads);
+                let mut count = 0u64;
+                for entry in std::fs::read_dir(&downloads).map_err(|e| anyhow::anyhow!("{}", e))? {
+                    let entry = entry.map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let path = entry.path();
+                    if path.is_dir() {
+                        std::fs::remove_dir_all(&path).ok();
+                    } else {
+                        std::fs::remove_file(&path).ok();
+                    }
+                    count += 1;
+                }
+                (format!("已清空下载文件夹，清理了 {} 个项目", count), size_before)
+            }
+            "caches" => {
+                let home = dirs::home_dir().unwrap_or_default();
+                let caches_path = home.join("Library").join("Caches");
+                let size_before = dir_size(&caches_path);
+                let mut count = 0u64;
+                for entry in std::fs::read_dir(&caches_path).map_err(|e| anyhow::anyhow!("{}", e))? {
+                    let entry = entry.map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let path = entry.path();
+                    if path.is_dir() {
+                        std::fs::remove_dir_all(&path).ok();
+                    } else {
+                        std::fs::remove_file(&path).ok();
+                    }
+                    count += 1;
+                }
+                (format!("已清理缓存目录，清理了 {} 个项目", count), size_before)
+            }
+            "custom" => {
+                if let Some(p) = custom_path {
+                    let pp = std::path::Path::new(&p);
+                    if pp.exists() {
+                        let size_before = dir_size(pp);
+                        if pp.is_dir() {
+                            std::fs::remove_dir_all(pp).map_err(|e| anyhow::anyhow!("{}", e))?;
+                        } else {
+                            std::fs::remove_file(pp).map_err(|e| anyhow::anyhow!("{}", e))?;
+                        }
+                        (format!("已删除：{}", p), size_before)
+                    } else {
+                        (format!("路径不存在：{}", p), 0)
+                    }
+                } else {
+                    ("请指定要删除的路径".to_string(), 0)
+                }
+            }
+            _ => (format!("未知的清理目标：{}", target), 0),
+        };
+
+        Ok(json!({
+            "status": "success",
+            "message": result,
+            "freed_bytes": freed_bytes,
+            "freed_human": human_bytes(freed_bytes)
+        }))
+    }
+}
+
+fn expand_path_for_disk(path: &str) -> String {
+    let expanded = if path.starts_with("~/") || path == "~" {
+        dirs::home_dir()
+            .map(|home| {
+                if path == "~" { home.to_string_lossy().to_string() }
+                else { home.join(path.trim_start_matches("~/")).to_string_lossy().to_string() }
+            })
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    // 中文目录名映射
+    let chinese_map = [
+        ("桌面", "Desktop"), ("下载", "Downloads"), ("文档", "Documents"),
+        ("图片", "Pictures"), ("音乐", "Music"), ("视频", "Movies"),
+    ];
+    let mut result = expanded;
+    for (cn, en) in &chinese_map {
+        if result.contains(cn) {
+            let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default();
+            result = result.replace(cn, &format!("{}/{}", home, en));
+        }
+    }
+    result
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for entry in rd.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_symlink() { continue; }
+                if meta.is_dir() {
+                    total = total.saturating_add(dir_size(&entry.path()));
+                } else if meta.is_file() {
+                    total = total.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    total
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut idx = 0;
+    while size >= 1024.0 && idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        idx += 1;
+    }
+    format!("{:.1} {}", size, UNITS[idx])
 }

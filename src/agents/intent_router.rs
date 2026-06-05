@@ -21,10 +21,10 @@ impl IntentRouter {
     pub fn new() -> Self {
         Self {
             system_keywords: vec![
-                "进程", "cpu", "内存", "磁盘", "硬盘", "空间", "占用",
-                "process", "memory", "disk",
+                "进程", "cpu", "内存",
+                "process", "memory",
                 "打开", "打开应用", "启动", "关闭程序", "杀进程", "终止",
-                "文件夹", "目录", "文件", "删除", "复制", "移动",
+                "删除", "复制", "移动",
             ]
             .into_iter()
             .map(String::from)

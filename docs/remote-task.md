@@ -20,10 +20,10 @@
 | 9 | dispatcher 危险等级路由 + TriggerReply 扩展 | Phase 2-5 | ✅ 已完成 | 1h | 0.8h |
 | 10 | Extreme 极度危险双确认协调 | Phase 3 | ✅ 已完成 | 1h | 1h |
 | 11 | Workspace 切换命令 (/workspace /workspaces) | Phase 4-1 | ✅ 已完成 | 1h | 0.8h |
-| 12 | 远程 Task 创建和 Step 追加 | Phase 4-2 | ⏳ 待开始 | 1.5h | — |
+| 12 | 远程 Task 创建和 Step 追加 | Phase 4-2 | ✅ 已完成 | 1.5h | 1.5h |
 | 13 | 测试 | Phase 5 | ✅ 已完成 | 1h | 0.5h |
 
-**总计：预计约 4 人天**
+**总计：13/13 已完成 | 实际约 12.8h**
 
 ---
 
@@ -42,7 +42,7 @@
 
 ### Phase 1: 暗号核心模块
 
-#### [ ] Task 2: DangerLevel 枚举 + SkillManifest 扩展
+#### [x] Task 2: DangerLevel 枚举 + SkillManifest 扩展
 
 - **涉及文件**：
   - `src/agents/permission.rs` — 新增 `DangerLevel` 枚举（`Normal | Dangerous | Extreme`），实现 `Default`
@@ -52,8 +52,17 @@
   - `src/skills/app_uninstaller.rs` — 标注 `DangerLevel::Dangerous`
   - `src/skills/doc_summarizer.rs` — 标注 `DangerLevel::Normal`
   - `src/skills/media_dedup.rs` — 标注 `DangerLevel::Dangerous`
+- **附带修复**（此前代码中就已存在的签名不匹配问题）：
+  - `src/triggers/dispatcher.rs` — `skill.execute(args)` → `skill.execute(args, None)`
+  - `src/agents/core/orchestrator.rs` — `skill.execute(skill_args)` → `skill.execute(skill_args, None)`
+  - `src/app_state.rs` — `s.execute(args)` → `s.execute(args, None)`
+  - `src/agents/core/tools/mod.rs` — 3 处 `request_async(kind, detail)` → `request_async(kind, detail, None)`
+  - `src/skills/doc_summarizer.rs` — `request_async(ToolKind::File, detail)` → `request_async(ToolKind::File, detail, _source)`
+  - `src/skills/media_dedup.rs` — `request_async(ToolKind::File, detail)` → `request_async(ToolKind::File, detail, _source)`
+  - `src/ui/nav.rs` — 2 处 `cx` → `_cx`（与签名冲突）
+  - `src/ui/sidebar.rs` — `let section` → `let mut section`（pre-existing bug）
 - **验证**：`cargo build` 通过
-- **完成时间**：
+- **完成时间**：2026-06-05
 
 #### [x] Task 3: RemoteAuth 模块
 
@@ -71,33 +80,22 @@
 - **验证**：`cargo build` 通过
 - **完成时间**：2026-06-05
 
-#### [ ] Task 4: 暗号设置 UI
+#### [x] Task 4: 暗号设置 UI
 
 - **涉及文件**：
-  - `src/ui/dialogs.rs` 或 `src/ui/sidebar.rs` — 新增暗号设置弹窗
-  - `src/app_state.rs` — 可能需要新增状态字段
-- **UI 设计**：
-  ```
-  ┌─────────────────────────────────────┐
-  │  远程暗号设置                          │
-  ├─────────────────────────────────────┤
-  │  暗号: [________________]            │
-  │  确认暗号: [________________]        │
-  │                                     │
-  │  暗号状态: 未设置 / 已设置            │
-  │  [设置] [修改] [清除]                 │
-  │                                     │
-  │  提示：暗号仅在本机设置，不经过网络      │
-  └─────────────────────────────────────┘
-  ```
+  - `src/ui/dialogs.rs` — 新增暗号设置弹窗
+  - `src/ui/nav.rs` — 导航栏"暗号"按钮
+  - `src/ui/mod.rs` — cipher dialog 渲染集成
+  - `src/app_state.rs` — 新增 cipher_edit_text/cipher_confirm_text/cipher_message 等状态
+- **UI 设计**：导航栏按钮 → 弹出对话框 → 输入/确认/保存/清除暗号
 - **验证**：手动验收 — 输入暗号 → 写入 remote_auth.json → 再次打开看到"已设置"
-- **完成时间**：
+- **完成时间**：2026-06-05
 
 ---
 
 ### Phase 2: Telegram 绑定 + 状态机
 
-#### [ ] Task 5: Config 结构体新增 Telegram 字段
+#### [x] Task 5: Config 结构体新增 Telegram 字段
 
 - **涉及文件**：
   - `src/services/config.rs` — `Config` 新增 3 个字段（均加 `#[serde(default)]`）：
@@ -107,7 +105,7 @@
 - **验证**：`cargo build` 通过；旧 config.json 反序列化不报错
 - **完成时间**：
 
-#### [ ] Task 6: TelegramTrigger::from_config() + main.rs 更新
+#### [x] Task 6: TelegramTrigger::from_config() + main.rs 更新
 
 - **涉及文件**：
   - `src/triggers/telegram.rs` — 新增 `from_config(config: &Config) -> Option<Self>`
@@ -119,7 +117,7 @@
 - **验证**：`cargo build` 通过；配置优先、无配置时 fallback 到环境变量
 - **完成时间**：
 
-#### [ ] Task 7: GPUI Telegram 绑定引导 UI
+#### [x] Task 7: GPUI Telegram 绑定引导 UI
 
 - **涉及文件**：
   - `src/ui/dialogs.rs` 或 `src/ui/sidebar.rs` — 绑定引导 UI
@@ -140,7 +138,7 @@
 - **验证**：手动验收全流程
 - **完成时间**：
 
-#### [ ] Task 8: PendingConfirmation 状态机
+#### [x] Task 8: PendingConfirmation 状态机
 
 - **涉及文件**：
   - `src/triggers/telegram.rs` — 主要改造
@@ -161,7 +159,7 @@
 - **验证**：`cargo build` 通过
 - **完成时间**：
 
-#### [ ] Task 9: dispatcher 危险等级路由 + TriggerReply 扩展
+#### [x] Task 9: dispatcher 危险等级路由 + TriggerReply 扩展
 
 - **涉及文件**：
   - `src/triggers/mod.rs` — `TriggerReply` 扩展
@@ -188,7 +186,7 @@
 
 ### Phase 3: 极度危险双确认
 
-#### [ ] Task 10: Extreme 极度危险双确认协调
+#### [x] Task 10: Extreme 极度危险双确认协调
 
 - **涉及文件**：
   - `src/agents/permission.rs` — 新增 `enqueue_detached()`
@@ -218,7 +216,7 @@
 
 ### Phase 4: Workspace + Task 机制
 
-#### [ ] Task 11: Workspace 切换命令
+#### [x] Task 11: Workspace 切换命令
 
 - **涉及文件**：
   - `src/triggers/dispatcher.rs` — 新增 `/workspace`、`/workspaces` 命令解析
@@ -230,7 +228,7 @@
 - **验证**：TG 中 `/workspace 工作区A` 能切换并回复确认
 - **完成时间**：
 
-#### [ ] Task 12: 远程 Task 创建和 Step 追加
+#### [x] Task 12: 远程 Task 创建和 Step 追加
 
 - **涉及文件**：
   - `src/task_db.rs` — messages 表迁移；新增活跃 Task 查询接口
@@ -254,7 +252,7 @@
 
 ### Phase 5: 测试
 
-#### [ ] Task 13: 测试
+#### [x] Task 13: 测试
 
 - **单元测试**：
   - `RemoteAuth` — verify / lock / unlock 逻辑

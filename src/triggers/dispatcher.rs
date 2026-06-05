@@ -106,10 +106,10 @@ pub async fn dispatch(text: &str) -> TriggerReply {
             TriggerReply::new(workspaces)
         }
         TriggerCommand::Status => {
-            TriggerReply::new("远程状态功能即将上线。输入 /help 查看可用命令。".to_string())
+            TriggerReply::new(status_text())
         }
         TriggerCommand::ListRemoteTasks => {
-            TriggerReply::new("远程任务列表功能即将上线。".to_string())
+            TriggerReply::new(list_remote_tasks_text())
         }
         TriggerCommand::ClearTask => {
             TriggerReply::new("远程任务已清除。".to_string())
@@ -183,6 +183,77 @@ fn list_workspaces_text() -> String {
             out
         }
         Err(_) => "查询 workspace 失败".to_string(),
+    }
+}
+
+/// 构建 /status 回复文本
+fn status_text() -> String {
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    if !db_path.exists() {
+        return "暂无状态信息（数据库不存在）".to_string();
+    }
+    let conn = sqlez::connection::Connection::open_file(
+        db_path.to_str().unwrap_or("one.db"),
+    );
+    match crate::task_db::load_workspaces(&conn) {
+        Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
+        Ok(rows) => {
+            let mut out = "远程运行状态：\n".to_string();
+            for w in rows {
+                let task_count = crate::task_db::load_remote_tasks(&conn, w.id)
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                out.push_str(&format!(
+                    "• {} — {} 个任务\n",
+                    w.name, task_count
+                ));
+            }
+            out
+        }
+        Err(_) => "查询失败".to_string(),
+    }
+}
+
+/// 构建 /tasks 回复文本
+fn list_remote_tasks_text() -> String {
+    // 当前没有 workspace 上下文信息，只能查所有 workspace
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    if !db_path.exists() {
+        return "暂无任务（数据库不存在）".to_string();
+    }
+    let conn = sqlez::connection::Connection::open_file(
+        db_path.to_str().unwrap_or("one.db"),
+    );
+    match crate::task_db::load_workspaces(&conn) {
+        Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
+        Ok(rows) => {
+            let mut out = "所有远程任务：\n".to_string();
+            for w in rows {
+                let tasks = crate::task_db::load_remote_tasks(&conn, w.id).unwrap_or_default();
+                if tasks.is_empty() {
+                    continue;
+                }
+                out.push_str(&format!("\n【{}】\n", w.name));
+                for t in tasks.iter().take(10) {
+                    let title = if t.title.is_empty() { "（无标题）" } else { &t.title };
+                    out.push_str(&format!("  • #{} — {}\n", t.id, title));
+                }
+                if tasks.len() > 10 {
+                    out.push_str(&format!("  …共 {} 个任务\n", tasks.len()));
+                }
+            }
+            if out == "所有远程任务：\n" {
+                out.push_str("（无任务）");
+            }
+            out
+        }
+        Err(_) => "查询失败".to_string(),
     }
 }
 

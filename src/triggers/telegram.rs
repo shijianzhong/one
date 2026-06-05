@@ -2,11 +2,6 @@
 
 //! Telegram Bot trigger，靠 reqwest 长轮询 `getUpdates`。
 //!
-//! 配置：
-//!   * `ONE_TELEGRAM_BOT_TOKEN`         — Bot 父 token，缺省时 trigger 不启动
-//!   * `ONE_TELEGRAM_ALLOWED_CHATS`     — 逗号分隔 chat_id 白名单（必须）
-//!   * `ONE_TELEGRAM_API_BASE`          — 可选，默认 https://api.telegram.org
-//!
 //! 流程：
 //!   1. 启动时拉一个 1 分钟超时的 `getUpdates`，把 `offset` 滚动到下一个未读位置；
 //!   2. 收到消息后先校验 chat_id 白名单，否则丢弃并日志告警；
@@ -49,9 +44,7 @@ struct PendingConfirmation {
 
 impl Drop for PendingConfirmation {
     fn drop(&mut self) {
-        // 确保本机弹窗在超时/取消时被撤销，防止永久悬挂
-        // Note: 如果 local_approval_rx 还在，Sender 端会收到 Drop 错误
-        // 实际上 PendingConfirmation 持有的是 Receiver，Drop 时无需操作
+        // PendingConfirmation 持有 Receiver，Drop 时无需操作
     }
 }
 
@@ -68,6 +61,72 @@ pub struct TelegramTrigger {
     pending: Mutex<HashMap<i64, PendingConfirmation>>,
     current_workspace_id: Mutex<String>,
     current_task_id: Mutex<Option<String>>,
+}
+
+/// 确保给定 workspace 下有一个远程 Task，返回 task_id
+fn ensure_remote_task(
+    current_workspace_id: &Mutex<String>,
+    current_task_id: &Mutex<Option<String>>,
+) -> String {
+    let workspace_id_str = current_workspace_id.lock().unwrap().clone();
+    if workspace_id_str.is_empty() {
+        return String::new();
+    }
+    let ws_id: usize = match workspace_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => return String::new(),
+    };
+
+    {
+        let tid = current_task_id.lock().unwrap().clone();
+        if let Some(id) = tid {
+            return id;
+        }
+    }
+
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    let conn =
+        sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
+    if let Ok(task_id) = crate::task_db::insert_remote_task(&conn, ws_id) {
+        let id_str = task_id.to_string();
+        *current_task_id.lock().unwrap() = Some(id_str.clone());
+        id_str
+    } else {
+        String::new()
+    }
+}
+
+/// 追加一条 user message 作为 step 到指定 Task
+fn append_step_to_task(
+    task_id: &str,
+    role: &str,
+    content: &str,
+    step_type: &str,
+    skill_id: Option<&str>,
+) {
+    let task_id_usize: usize = match task_id.parse() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    let conn =
+        sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
+    let count = crate::task_db::count_messages(&conn, task_id_usize).unwrap_or(0);
+    let _ = crate::task_db::insert_message_step(
+        &conn,
+        task_id_usize,
+        role,
+        content,
+        count as i64 + 1,
+        step_type,
+        skill_id,
+    );
 }
 
 impl TelegramTrigger {
@@ -175,7 +234,10 @@ impl TelegramTrigger {
                 if pc.expires_at > now {
                     true
                 } else {
-                    log::info!("[telegram] pending confirmation expired for skill={}", pc.skill_id);
+                    log::info!(
+                        "[telegram] pending confirmation expired for skill={}",
+                        pc.skill_id
+                    );
                     false
                 }
             });
@@ -194,18 +256,15 @@ impl TelegramTrigger {
         };
 
         let Some(mut pc) = pc else {
-            return Ok(None); // 没有待确认项，不处理
+            return Ok(None);
         };
 
-        // 检查超时
         if Instant::now() > pc.expires_at {
             return Ok(Some("确认超时，操作已取消。".to_string()));
         }
 
-        // 验证暗号
         match crate::agents::remote_auth::RemoteAuth::verify_cipher(cipher_text) {
             Ok(true) => {
-                // Extreme 操作：暗号通过后还需本机弹窗确认
                 if pc.danger_level == DangerLevel::Extreme {
                     if let Some(local_rx) = &mut pc.local_approval_rx {
                         let local_result = tokio::time::timeout(
@@ -213,43 +272,59 @@ impl TelegramTrigger {
                             local_rx,
                         )
                         .await;
-
                         match local_result {
-                            Ok(Ok(true)) => {
-                                // 双确认通过，执行 skill（代码继续到下面的执行部分）
-                            }
+                            Ok(Ok(true)) => {}
                             Ok(Ok(false)) => {
-                                return Ok(Some("⚠️ 双确认失败：本机拒绝了操作，操作已取消。".to_string()));
+                                return Ok(Some(
+                                    "⚠️ 双确认失败：本机拒绝了操作，操作已取消。"
+                                        .to_string(),
+                                ));
                             }
                             Ok(Err(_)) => {
-                                return Ok(Some("⚠️ 双确认失败：审批通道异常，操作已取消。".to_string()));
+                                return Ok(Some(
+                                    "⚠️ 双确认失败：审批通道异常，操作已取消。"
+                                        .to_string(),
+                                ));
                             }
                             Err(_) => {
-                                return Ok(Some("⚠️ 双确认超时，操作已取消。".to_string()));
+                                return Ok(Some(
+                                    "⚠️ 双确认超时，操作已取消。".to_string(),
+                                ));
                             }
                         }
                     }
                 }
 
-                // 暗号验证通过 — 执行 skill
                 let skill = crate::skills::registry().find(&pc.skill_id);
                 let skill_id = pc.skill_id.clone();
                 let result_text = match skill {
                     Some(skill) => {
-                        let _guard = crate::agents::permission::RemoteScopeGuard::enter();
-                        // 用 mem::take 提取 args（避免 Drop 导致的移动问题）
+                        let _guard =
+                            crate::agents::permission::RemoteScopeGuard::enter();
                         let args = std::mem::take(&mut pc.args);
                         match skill.execute(args, None).await {
                             Ok(exec) => {
-                                let mut out = format!("✅ 暗号验证通过！\n[run] {}\n{}\n", skill_id, exec.summary);
+                                let mut out = format!(
+                                    "✅ 暗号验证通过！\n[run] {}\n{}\n",
+                                    skill_id, exec.summary
+                                );
                                 if exec.freed_bytes > 0 {
-                                    out.push_str(&format!("释放 {} 字节\n", exec.freed_bytes));
+                                    out.push_str(&format!(
+                                        "释放 {} 字节\n",
+                                        exec.freed_bytes
+                                    ));
                                 }
                                 if !exec.success_items.is_empty() {
-                                    out.push_str(&format!("成功 {} 项\n", exec.success_items.len()));
+                                    out.push_str(&format!(
+                                        "成功 {} 项\n",
+                                        exec.success_items.len()
+                                    ));
                                 }
                                 if !exec.failed_items.is_empty() {
-                                    out.push_str(&format!("失败 {} 项\n", exec.failed_items.len()));
+                                    out.push_str(&format!(
+                                        "失败 {} 项\n",
+                                        exec.failed_items.len()
+                                    ));
                                 }
                                 out
                             }
@@ -260,14 +335,8 @@ impl TelegramTrigger {
                 };
                 Ok(Some(result_text))
             }
-            Ok(false) => {
-                // 不应该发生（verify_cipher 返回 Ok(false) 时已被 record_failure 和 lock 处理）
-                Ok(Some("暗号验证失败，请重试。".to_string()))
-            }
-            Err(msg) => {
-                // 暗号错误或未设置
-                Ok(Some(msg))
-            }
+            Ok(false) => Ok(Some("暗号验证失败，请重试。".to_string())),
+            Err(msg) => Ok(Some(msg)),
         }
     }
 }
@@ -290,7 +359,9 @@ impl Trigger for TelegramTrigger {
                 Ok(updates) => {
                     for update in updates {
                         offset = update.update_id + 1;
-                        let Some(message) = update.message else { continue };
+                        let Some(message) = update.message else {
+                            continue;
+                        };
                         let chat_id = message.chat.id;
                         let text = message.text.unwrap_or_default();
                         if text.is_empty() {
@@ -302,10 +373,7 @@ impl Trigger for TelegramTrigger {
                                 chat_id
                             );
                             let _ = self
-                                .send_message(
-                                    chat_id,
-                                    "未授权：此 chat_id 不在白名单中。",
-                                )
+                                .send_message(chat_id, "未授权：此 chat_id 不在白名单中。")
                                 .await;
                             continue;
                         }
@@ -314,24 +382,27 @@ impl Trigger for TelegramTrigger {
                         if self.pending.lock().unwrap().contains_key(&chat_id) {
                             match self.handle_cipher_reply(chat_id, &text).await {
                                 Ok(Some(reply_text)) => {
-                                    let _ = self.send_message(chat_id, &reply_text).await;
+                                    let _ =
+                                        self.send_message(chat_id, &reply_text).await;
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    log::error!("[telegram] handle_cipher_reply error: {:?}", e);
+                                    log::error!(
+                                        "[telegram] handle_cipher_reply error: {:?}",
+                                        e
+                                    );
                                 }
                             }
                             continue;
                         }
 
-                        // 普通消息处理
                         let reply: TriggerReply = super::dispatch(&text).await;
 
-                        // 处理 workspace 切换命令（/workspace <name>）
+                        // 处理 workspace 切换
                         if text.starts_with("/workspace ") {
-                            let name = text.trim_start_matches("/workspace ").trim();
+                            let name =
+                                text.trim_start_matches("/workspace ").trim();
                             if !name.is_empty() {
-                                // 查询数据库找到 workspace
                                 let db_path = dirs::config_dir()
                                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                                     .join(".one")
@@ -339,51 +410,65 @@ impl Trigger for TelegramTrigger {
                                 let conn = sqlez::connection::Connection::open_file(
                                     db_path.to_str().unwrap_or("one.db"),
                                 );
-                                let ws_result = crate::task_db::load_workspaces(&conn);
+                                let ws_result =
+                                    crate::task_db::load_workspaces(&conn);
                                 let workspaces = ws_result.unwrap_or_default();
-                                let matched = workspaces.iter().find(|w| w.name == name)
-                                    .or_else(|| workspaces.iter().find(|w| w.name.contains(name)));
+                                let matched = workspaces
+                                    .iter()
+                                    .find(|w| w.name == name)
+                                    .or_else(|| {
+                                        workspaces
+                                            .iter()
+                                            .find(|w| w.name.contains(name))
+                                    });
                                 if let Some(ws) = matched {
-                                    *self.current_workspace_id.lock().unwrap() = ws.id.to_string();
-                                    let _ = self.send_message(
-                                        chat_id,
-                                        &format!("已切换到 workspace「{}」", ws.name),
-                                    ).await;
+                                    *self.current_workspace_id.lock().unwrap() =
+                                        ws.id.to_string();
+                                    let _ = self
+                                        .send_message(
+                                            chat_id,
+                                            &format!(
+                                                "已切换到 workspace「{}」",
+                                                ws.name
+                                            ),
+                                        )
+                                        .await;
                                 } else {
-                                    let _ = self.send_message(
-                                        chat_id,
-                                        &format!("未找到 workspace「{}」，请先在本机创建", name),
-                                    ).await;
+                                    let _ = self
+                                        .send_message(
+                                            chat_id,
+                                            &format!(
+                                                "未找到 workspace「{}」，请先在本机创建",
+                                                name
+                                            ),
+                                        )
+                                        .await;
                                 }
                             }
                             continue;
                         }
 
-                        // 处理 /workspaces 命令（列出所有 workspace）
-                        if text == "/workspaces" {
-                            if let Err(err) = self.send_message(chat_id, &reply.text).await {
-                                log::error!("[telegram] sendMessage failed: {:?}", err);
-                            }
-                            continue;
-                        }
-
-                        // 处理 /clear 命令（结束当前 Task）
                         if text == "/clear" {
                             *self.current_task_id.lock().unwrap() = None;
-                            let _ = self.send_message(chat_id, "远程任务已结束。下次消息将创建新任务。").await;
+                            let _ = self
+                                .send_message(
+                                    chat_id,
+                                    "远程任务已结束。下次消息将创建新任务。",
+                                )
+                                .await;
                             continue;
                         }
 
-                        // 如果 dispatch 返回需要暗号确认的标记，进入 pending 状态
                         if reply.needs_cipher {
-                            // 从 reply 文本中提取 skill_id（格式为 "操作「id」需要远程暗号确认"）
                             let skill_id = text
                                 .strip_prefix("/run ")
                                 .and_then(|rest| rest.split_whitespace().next())
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            let local_approval_rx = if reply.danger_level == DangerLevel::Extreme {
+                            let local_approval_rx = if reply.danger_level
+                                == DangerLevel::Extreme
+                            {
                                 crate::agents::permission::enqueue_detached(
                                     crate::agents::permission::ToolKind::Shell,
                                     format!(
@@ -403,9 +488,15 @@ impl Trigger for TelegramTrigger {
                                     .lock()
                                     .unwrap()
                                     .clone(),
-                                task_id: self.current_task_id.lock().unwrap().clone().unwrap_or_default(),
+                                task_id: self
+                                    .current_task_id
+                                    .lock()
+                                    .unwrap()
+                                    .clone()
+                                    .unwrap_or_default(),
                                 danger_level: reply.danger_level,
-                                needs_local_approval: reply.danger_level == DangerLevel::Extreme,
+                                needs_local_approval: reply.danger_level
+                                    == DangerLevel::Extreme,
                                 local_approval_rx,
                                 expires_at: Instant::now()
                                     + Duration::from_secs(CIPHER_TIMEOUT_SECS),
@@ -416,12 +507,22 @@ impl Trigger for TelegramTrigger {
                                 pending.insert(chat_id, pc);
                             }
 
-                            if let Err(err) = self.send_message(chat_id, &reply.text).await {
-                                log::error!("[telegram] sendMessage failed: {:?}", err);
+                            if let Err(err) =
+                                self.send_message(chat_id, &reply.text).await
+                            {
+                                log::error!(
+                                    "[telegram] sendMessage failed: {:?}",
+                                    err
+                                );
                             }
                         } else {
-                            if let Err(err) = self.send_message(chat_id, &reply.text).await {
-                                log::error!("[telegram] sendMessage failed: {:?}", err);
+                            if let Err(err) =
+                                self.send_message(chat_id, &reply.text).await
+                            {
+                                log::error!(
+                                    "[telegram] sendMessage failed: {:?}",
+                                    err
+                                );
                             }
                         }
                     }
@@ -482,7 +583,6 @@ mod tests {
 
     #[test]
     fn pending_drop_does_not_panic() {
-        // 验证 Drop 实现不会 panic
         {
             let pc = PendingConfirmation {
                 skill_id: "test".to_string(),

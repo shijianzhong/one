@@ -270,6 +270,50 @@ pub fn count_messages(conn: &Connection, task_id: usize) -> Result<usize> {
     Ok(count.into_iter().next().unwrap_or(0))
 }
 
+/// 创建远程 Task，返回 task_id
+pub fn insert_remote_task(conn: &Connection, workspace_id: usize) -> Result<usize> {
+    insert_task(conn, workspace_id, "远程任务")
+}
+
+/// 插入带 step 信息的消息（远程 Task 使用）
+pub fn insert_message_step(
+    conn: &Connection,
+    task_id: usize,
+    role: &str,
+    content: &str,
+    step_index: i64,
+    step_type: &str,
+    skill_id: Option<&str>,
+) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO messages (task_id, role, content, step_index, step_type, skill_id) VALUES (?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(task_id, role, content, step_index, step_type, skill_id))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+/// 查询某个 task 最近 N 条消息
+pub fn load_recent_messages(conn: &Connection, task_id: usize, limit: usize) -> Result<Vec<MessageRow>> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT role, content FROM messages WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+    )?;
+    let limit_i64 = limit as i64;
+    stmt.with_bindings(&(task_id, limit_i64))?;
+    let mut rows: Vec<MessageRow> = stmt
+        .map(|s| {
+            let role = s.column_text(0)?.to_string();
+            let content = s.column_text(1)?.to_string();
+            Ok(MessageRow { role, content })
+        })?;
+    rows.reverse();
+    Ok(rows)
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkspaceRow {
     pub id: usize,

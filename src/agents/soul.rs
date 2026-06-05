@@ -54,7 +54,11 @@ fn queue() -> &'static Mutex<ProposalQueue> {
 }
 
 fn soul_path() -> PathBuf {
-    PathBuf::from("soul.md")
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".one");
+    std::fs::create_dir_all(&config_dir).ok();
+    config_dir.join("soul.md")
 }
 
 /// Tool side: enqueue a proposal. Returns the assigned id, or `None` if the

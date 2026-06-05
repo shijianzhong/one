@@ -21,7 +21,11 @@ impl MainAgent {
         api_key: String,
         workspace: String,
     ) -> Self {
-        let soul_content = fs::read_to_string("soul.md").unwrap_or_else(|_| {
+        let soul_path = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".one")
+            .join("soul.md");
+        let soul_content = fs::read_to_string(&soul_path).unwrap_or_else(|_| {
             "你是一个通用的 AI 助手。".to_string()
         });
 

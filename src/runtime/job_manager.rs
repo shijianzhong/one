@@ -1148,6 +1148,10 @@ impl AppState {
                                         )
                                         .ok();
                                     }
+                                    if this.pending_summarize && this.active_task_id.is_some() {
+                                        this.pending_summarize = false;
+                                        this.spawn_summarize_job(cx);
+                                    }
                                     this.needs_auto_scroll = true;
                                 }
                                 OrchestratorWrapperEvent::Failed(error) => {

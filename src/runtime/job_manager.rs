@@ -1104,6 +1104,27 @@ impl AppState {
                                         });
                                         recorder.finish(RunStatus::Finished);
                                     }
+                                    // 清理所有空的 subagent 卡片（兜底：如果子代理从未产生任何内容）
+                                    let empty_run_ids: Vec<u64> = this
+                                        .job_manager
+                                        .orchestrator_agent_run_map
+                                        .values()
+                                        .copied()
+                                        .filter(|run_id| {
+                                            this.job_manager
+                                                .subagent_messages
+                                                .get(run_id)
+                                                .map(|s| {
+                                                    s.live_text.is_empty()
+                                                        && s.events.is_empty()
+                                                        && s.stderr_lines.is_empty()
+                                                })
+                                                .unwrap_or(false)
+                                        })
+                                        .collect();
+                                    for rid in empty_run_ids {
+                                        this.job_manager.subagent_messages.remove(&rid);
+                                    }
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;
                                     this.job_manager.request_status_text = None;
@@ -1127,6 +1148,27 @@ impl AppState {
                                             error: error.clone(),
                                         });
                                         recorder.finish(RunStatus::Failed);
+                                    }
+                                    // 清理所有空的 subagent 卡片（同 Finished 分支）
+                                    let empty_run_ids: Vec<u64> = this
+                                        .job_manager
+                                        .orchestrator_agent_run_map
+                                        .values()
+                                        .copied()
+                                        .filter(|run_id| {
+                                            this.job_manager
+                                                .subagent_messages
+                                                .get(run_id)
+                                                .map(|s| {
+                                                    s.live_text.is_empty()
+                                                        && s.events.is_empty()
+                                                        && s.stderr_lines.is_empty()
+                                                })
+                                                .unwrap_or(false)
+                                        })
+                                        .collect();
+                                    for rid in empty_run_ids {
+                                        this.job_manager.subagent_messages.remove(&rid);
                                     }
                                     this.job_manager.orchestrator_agent_run_map.clear();
                                     this.job_manager.request_in_flight = false;

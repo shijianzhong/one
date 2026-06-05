@@ -51,10 +51,8 @@ impl Orchestrator {
         while max_steps > 0 {
             max_steps -= 1;
 
-            on_event(OrchestratorEvent::StepStarted {
-                agent_id: self.main_agent.id().to_string(),
-                agent_name: self.main_agent.name().to_string(),
-            });
+            // StepStarted 仅在 run_sub_agent 中发送（真正启动子代理时）
+            // 主循环不发送，避免简单对话也创建空白的 subagent 卡片
 
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let main_agent = self.main_agent.clone();

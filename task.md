@@ -58,18 +58,22 @@ ClaudeCode Skill   Memory
 - [x] `triggers/telegram`（reqwest long-poll + chat_id 白名单 `ONE_TELEGRAM_ALLOWED_CHATS`）。
 - [x] 远程触发自动锁 PermissionMode = Strict；危险操作双确认。
 - [x] `/audit` 远程拉取最近 N 条 RunEvent。
+- [x] 远程暗号确认机制（DangerLevel + RemoteAuth + PendingConfirmation 状态机 + Extreme 双确认）。
+- [x] Telegram 绑定引导 UI（GPUI 设置页 Token 输入 + getMe 验证 + 绑定码）。
+- [x] 远程 Workspace 切换（`/workspace` + `/workspaces`）。
+- [x] 远程 Task 生命周期（自动创建 + Step 追加 + `/status`/`/tasks`/`/clear`）。
 
-## M4 · 内容侧
-- [ ] DocSkill 接 PDF/DOCX 解析 + 分块 + L3 嵌入。
-- [ ] MemoryStore 切 sqlite-vss / Qdrant 实现。
-- [ ] Skill Marketplace 接 Skill Registry，支持热装载。
-- [ ] 多模型路由（按任务类型挑模型）。
+## M4 · 内容侧（挂起）
+- [ ] DocSkill 接 PDF/DOCX 解析 + 分块 + L3 嵌入（待需要时开发）
+- [ ] MemoryStore 切 sqlite-vss / Qdrant 实现（低优先级）
+- [ ] Skill Marketplace 接 Skill Registry，支持热装载（低优先级）
+- [ ] 多模型路由（按任务类型挑模型）（已暂停，当前单模型够用）
 
 ## 当前优先级
 1. **M1 已闭环**：安全侧（Permission + Soul）+ 审计侧（RunRecorder）+ 状态侧（JobManager 字段收敛）+ 数据侧（memory workspace）全部到位。
 2. **M2 已闭环**：Skill trait、5 个首批 Skill（system.cleaner / desktop.organizer / app.uninstaller / doc.summarizer / media.dedup）、Skill 卡片 UI、`run_system_task` SkillRegistry 直调全部就绪；GPUI 卡片与 LLM 工具都跑同一套 `Skill::preview/execute` + PermissionPolicy。
-3. **M3 推进中**：`triggers/` 骨架 + Telegram long-poll trigger + `/help /skills /preview /run /audit` 命令路由 + `task_db::load_recent_run_events` 已落地；剩余项是"远程触发自动锁 Strict + 危险操作双确认"——当前依赖 `Skill::execute` 自身的 `permission().request_async`（=本机第二次确认），但还未在 PermissionPolicy 里区分"远程来源"自动收紧到 Strict，需在下一刀里加个 `request_async_remote` 或 `enter_strict_for(scope)` 入口。
-4. M4 内容侧 / Skill Marketplace 暂未开工。
+3. **M3 已闭环**：Telegram 远程触发 + `RemoteScopeGuard` 自动 Strict + 暗号确认（DangerLevel/RemoteAuth/PendingConfirmation/Extreme 双确认）+ 绑定引导 UI + Workspace/Task 管理。`cargo build` 通过，`cargo test` 40/40 通过。
+4. **M4 内容侧**：所有 4 项挂起，待后期需要时开发。
 
 ## 进度记录
 - **2026-06-03**：MainAgent 上线。

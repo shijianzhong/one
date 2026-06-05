@@ -146,6 +146,7 @@ impl Skill for MediaDedupSkill {
             name: "媒体去重".to_string(),
             description: "递归扫描目录，按文件大小 + 首 64KB 哈希识别重复的图片/视频，预览重复组与可释放空间，确认后删除冗余副本（保留最旧/最新/最短路径，由 keep_strategy 决定）。".to_string(),
             category: SkillCategory::Media,
+            danger_level: crate::agents::permission::DangerLevel::Dangerous,
         }
     }
 
@@ -223,7 +224,11 @@ impl Skill for MediaDedupSkill {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
         let parsed: DedupArgs = serde_json::from_value(args).unwrap_or_default();
         let folder = match Self::target_folder(&parsed) {
             Some(f) => f,
@@ -253,7 +258,7 @@ impl Skill for MediaDedupSkill {
             groups.len(),
             strategy
         );
-        match permission().request_async(ToolKind::File, detail).await {
+        match permission().request_async(ToolKind::File, detail, _source).await {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

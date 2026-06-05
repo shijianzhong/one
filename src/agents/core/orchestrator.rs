@@ -192,7 +192,7 @@ impl Orchestrator {
                                 .cloned()
                                 .unwrap_or(Value::Object(Default::default()));
                             if apply {
-                                match skill.execute(skill_args).await {
+                                match skill.execute(skill_args, None).await {
                                     Ok(exec) => serde_json::json!({
                                         "stage": "execute",
                                         "skill_id": skill_id,

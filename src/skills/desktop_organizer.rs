@@ -86,6 +86,7 @@ impl Skill for DesktopOrganizerSkill {
             name: "桌面整理".to_string(),
             description: "按文件类型把目标目录（默认 ~/Desktop）顶层文件分类挪到子目录（图片/视频/文档 等）。".to_string(),
             category: SkillCategory::Desktop,
+            danger_level: crate::agents::permission::DangerLevel::Dangerous,
         }
     }
 

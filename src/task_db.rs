@@ -42,6 +42,9 @@ impl Database {
 
         ensure_task_draft_column(conn_ref)?;
 
+        // 远程 Task 相关的 messages 表扩展
+        ensure_messages_step_columns(conn_ref)?;
+
         let _ = (conn_ref
             .exec(
                 "CREATE TABLE IF NOT EXISTS messages (
@@ -212,6 +215,59 @@ fn get_db_path() -> PathBuf {
         .join(".one");
     std::fs::create_dir_all(&config_dir).ok();
     config_dir.join("one.db")
+}
+
+// ====== 远程 Task Step 支持 ======
+
+/// 确保 messages 表有远程 Task 所需的额外列
+fn ensure_messages_step_columns(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "messages", "step_index")? {
+        let _ = (conn
+            .exec("ALTER TABLE messages ADD COLUMN step_index INTEGER DEFAULT 0")
+            .unwrap())();
+    }
+    if !table_has_column(conn, "messages", "step_type")? {
+        let _ = (conn
+            .exec("ALTER TABLE messages ADD COLUMN step_type TEXT DEFAULT 'user_message'")
+            .unwrap())();
+    }
+    if !table_has_column(conn, "messages", "skill_id")? {
+        let _ = (conn
+            .exec("ALTER TABLE messages ADD COLUMN skill_id TEXT")
+            .unwrap())();
+    }
+    Ok(())
+}
+
+/// 获取指定 workspace 下所有远程 Task（非 draft）
+pub fn load_remote_tasks(conn: &Connection, workspace_id: usize) -> Result<Vec<TaskRow>> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, title, is_draft FROM tasks WHERE workspace_id = ? ORDER BY id DESC LIMIT 20",
+    )?;
+    stmt.with_bindings(&workspace_id)?;
+    stmt.map(|s| {
+        let id = s.column_int64(0)? as usize;
+        let title = s.column_text(1)?.to_string();
+        let is_draft = s.column_int64(2).unwrap_or(0) != 0;
+        Ok(TaskRow {
+            id,
+            title,
+            is_draft,
+        })
+    })
+}
+
+/// 统计某个 task 的 messages 数量（用于 step_index）
+pub fn count_messages(conn: &Connection, task_id: usize) -> Result<usize> {
+    let mut stmt =
+        Statement::prepare(conn, "SELECT COUNT(*) FROM messages WHERE task_id = ?")?;
+    stmt.with_bindings(&task_id)?;
+    let count: Vec<usize> = stmt
+        .map(|s| s.column_int64(0).map(|v| v as usize))?
+        .into_iter()
+        .collect();
+    Ok(count.into_iter().next().unwrap_or(0))
 }
 
 #[derive(Debug, Clone)]

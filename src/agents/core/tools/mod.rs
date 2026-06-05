@@ -22,6 +22,7 @@ impl Tool for ProcessListTool {
             .request_async(
                 crate::agents::permission::ToolKind::Process,
                 "list_processes",
+                None,
             )
             .await
         {
@@ -67,7 +68,7 @@ impl Tool for FileListTool {
     async fn call(&self, arguments: Value) -> Result<Value> {
         let path = arguments["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path"))?;
         match crate::agents::permission::global()
-            .request_async(crate::agents::permission::ToolKind::File, path)
+            .request_async(crate::agents::permission::ToolKind::File, path, None)
             .await
         {
             crate::agents::permission::PermissionDecision::Allow => {}
@@ -121,7 +122,7 @@ impl Tool for ShellTool {
         let cwd = arguments["cwd"].as_str();
 
         match crate::agents::permission::global()
-            .request_async(crate::agents::permission::ToolKind::Shell, command)
+            .request_async(crate::agents::permission::ToolKind::Shell, command, None)
             .await
         {
             crate::agents::permission::PermissionDecision::Allow => {}

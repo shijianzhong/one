@@ -30,7 +30,8 @@ use crate::ui_theme::{set_theme_mode, ThemeMode};
 use crate::util;
 use crate::workspace::{TaskItem, Workspace};
 use crate::{
-    CancelModelConfig, ExportChat, OpenModelConfigDialog, SaveModelConfig, ToggleLang, ToggleTheme,
+    CancelModelConfig, ExportChat, OpenCipherDialog, OpenModelConfigDialog, SaveModelConfig,
+    ToggleLang, ToggleTheme,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,16 @@ pub(crate) struct AppState {
     pub(crate) pending_approval: Option<crate::agents::permission::ApprovalRequest>,
     pub(crate) pending_soul_proposal: Option<crate::agents::soul::SoulProposal>,
     pub(crate) skill_card: Option<SkillCardState>,
+    /// 暗号设置对话框
+    pub(crate) show_cipher_dialog: bool,
+    pub(crate) cipher_edit_text: String,
+    pub(crate) cipher_confirm_text: String,
+    pub(crate) cipher_message: String,
+    pub(crate) cipher_message_is_error: bool,
+    /// Telegram 绑定引导
+    pub(crate) telegram_bind_token: String,
+    pub(crate) telegram_bind_status: String,
+    pub(crate) telegram_bind_error: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +207,14 @@ impl AppState {
             pending_approval: None,
             pending_soul_proposal: None,
             skill_card: None,
+            show_cipher_dialog: false,
+            cipher_edit_text: String::new(),
+            cipher_confirm_text: String::new(),
+            cipher_message: String::new(),
+            cipher_message_is_error: false,
+            telegram_bind_token: String::new(),
+            telegram_bind_status: String::new(),
+            telegram_bind_error: false,
         };
 
         if state.workspaces.is_empty() {
@@ -344,7 +363,7 @@ impl AppState {
 
         cx.spawn(async move |this, cx| {
             let result = match crate::skills::registry().find(&skill_id) {
-                Some(s) => s.execute(args).await,
+                Some(s) => s.execute(args, None).await,
                 None => Err(anyhow::anyhow!("skill disappeared")),
             };
             let _ = this.update(cx, |state, cx| {
@@ -603,6 +622,9 @@ impl AppState {
             system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_bound_at: None,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save config: {}", e);
@@ -632,6 +654,9 @@ impl AppState {
             system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_bound_at: None,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save lang config: {}", e);
@@ -654,10 +679,86 @@ impl AppState {
             system_model: None,
             lang: self.current_lang,
             theme_mode: self.theme_mode,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_bound_at: None,
         };
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save theme config: {}", e);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn open_cipher_dialog(
+        &mut self,
+        _: &OpenCipherDialog,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cipher_edit_text.clear();
+        self.cipher_confirm_text.clear();
+        self.cipher_message.clear();
+        self.cipher_message_is_error = false;
+        self.show_cipher_dialog = true;
+        cx.notify();
+    }
+
+    pub(crate) fn save_cipher(&mut self, cx: &mut Context<Self>) {
+        let c1 = self.cipher_edit_text.trim().to_string();
+        let c2 = self.cipher_confirm_text.trim().to_string();
+
+        if c1.is_empty() {
+            self.cipher_message = "暗号不能为空".to_string();
+            self.cipher_message_is_error = true;
+            cx.notify();
+            return;
+        }
+        if c1 != c2 {
+            self.cipher_message = "两次输入的暗号不一致".to_string();
+            self.cipher_message_is_error = true;
+            cx.notify();
+            return;
+        }
+        if c1.len() < 2 {
+            self.cipher_message = "暗号长度不能少于 2 个字符".to_string();
+            self.cipher_message_is_error = true;
+            cx.notify();
+            return;
+        }
+
+        match crate::agents::remote_auth::RemoteAuth::set_cipher(&c1) {
+            Ok(()) => {
+                self.cipher_message = "✅ 暗号设置成功".to_string();
+                self.cipher_message_is_error = false;
+                self.cipher_edit_text.clear();
+                self.cipher_confirm_text.clear();
+                cx.notify();
+            }
+            Err(e) => {
+                self.cipher_message = format!("设置失败：{}", e);
+                self.cipher_message_is_error = true;
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn clear_cipher(&mut self, cx: &mut Context<Self>) {
+        match crate::agents::remote_auth::RemoteAuth::clear_cipher() {
+            Ok(()) => {
+                self.cipher_message = "暗号已清除".to_string();
+                self.cipher_message_is_error = false;
+                cx.notify();
+            }
+            Err(e) => {
+                self.cipher_message = format!("清除失败：{}", e);
+                self.cipher_message_is_error = true;
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn close_cipher_dialog(&mut self, cx: &mut Context<Self>) {
+        self.show_cipher_dialog = false;
         cx.notify();
     }
 
@@ -684,6 +785,71 @@ impl AppState {
 }
 
 impl AppState {
+    pub(crate) fn start_telegram_bind(&mut self, cx: &mut Context<Self>) {
+        let token = self.telegram_bind_token.trim().to_string();
+        if token.is_empty() {
+            self.telegram_bind_status = "请输入 Bot Token".to_string();
+            self.telegram_bind_error = true;
+            cx.notify();
+            return;
+        }
+
+        self.telegram_bind_status = "正在验证 Bot Token...".to_string();
+        self.telegram_bind_error = false;
+        cx.notify();
+
+        let token_clone = token.clone();
+        cx.spawn(async move |this, cx| {
+            let client = reqwest::Client::new();
+            let url = format!("https://api.telegram.org/bot{}/getMe", token_clone);
+            let me_result = match client.get(&url).send().await {
+                Ok(resp) => resp.json::<serde_json::Value>().await.ok(),
+                Err(_) => None,
+            };
+
+            let bind_code = format!(
+                "ONE_BIND_{}",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            );
+
+            let status = if let Some(me) = me_result {
+                if me.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    format!(
+                        "Token 有效！请在 Telegram 中给 Bot 发送消息，内容包含绑定码：\n`{}`\n\n消息发送后 Bot 会自动完成绑定。",
+                        bind_code
+                    )
+                } else {
+                    "Token 无效，请检查后重试".to_string()
+                }
+            } else {
+                "无法连接到 Telegram API，请检查网络".to_string()
+            };
+
+            let _ = this.update(cx, |state, cx| {
+                state.telegram_bind_status = status;
+                state.telegram_bind_error = true;
+                state.telegram_bind_token = token_clone.clone();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn handle_telegram_unbind(&mut self, cx: &mut Context<Self>) {
+        // 清除 config 中的 Telegram 配置
+        let mut config = crate::services::load_config();
+        config.telegram_bot_token = None;
+        config.telegram_chat_id = None;
+        config.telegram_bound_at = None;
+        if let Err(e) = crate::services::save_config(&config) {
+            eprintln!("Failed to save config: {}", e);
+        }
+        self.telegram_bind_token.clear();
+        self.telegram_bind_status = "已解除绑定".to_string();
+        self.telegram_bind_error = false;
+        cx.notify();
+    }
+
     pub(crate) fn handle_new_workspace_click(&mut self, cx: &mut Context<Self>) {
         if let Some((path, name)) = util::pick_folder_dialog() {
             if let Some(existing_ws) = self.workspaces.iter().find(|w| w.path == path) {

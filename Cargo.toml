@@ -41,6 +41,7 @@ image = "0.25"
 which = "6"
 rust-embed = "8"
 chrono = "0.4"
+bcrypt = "0.19.1"
 
 [features]
 default = []

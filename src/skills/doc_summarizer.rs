@@ -71,6 +71,7 @@ impl Skill for DocSummarizerSkill {
             name: "文档摘要".to_string(),
             description: "对文本类文件（txt/md/log/csv/json/源码 等）做抽取式摘要：统计字符/行/词数，并截取首尾。PDF/DOCX 解析待 M4 DocSkill 接入。".to_string(),
             category: SkillCategory::Doc,
+            danger_level: crate::agents::permission::DangerLevel::Normal,
         }
     }
 
@@ -127,7 +128,11 @@ impl Skill for DocSummarizerSkill {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<SkillExecution> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
         let parsed: SummarizerArgs = serde_json::from_value(args.clone()).unwrap_or_default();
         let Some(path_str) = parsed.path else {
             return Ok(SkillExecution {
@@ -161,7 +166,7 @@ impl Skill for DocSummarizerSkill {
         ));
         let detail = format!("doc.summarizer 即将写入摘要到：{}", dest.display());
 
-        match permission().request_async(ToolKind::File, detail).await {
+        match permission().request_async(ToolKind::File, detail, _source).await {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

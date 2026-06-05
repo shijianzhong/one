@@ -9,7 +9,7 @@ use crate::task_db;
 use crate::ui_theme::{
     ACTIVE_BG, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_PANEL,
 };
-use crate::{AppState, CancelModelConfig, SaveModelConfig};
+use crate::{AppState, CancelModelConfig, OpenCipherDialog, SaveModelConfig};
 
 impl AppState {
     pub(crate) fn render_model_config_dialog(
@@ -1073,6 +1073,356 @@ impl AppState {
                     )
                     .child(body)
                     .child(buttons),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn render_cipher_dialog(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let cipher_is_set = crate::agents::remote_auth::RemoteAuth::is_cipher_set();
+        let msg = self.cipher_message.clone();
+        let msg_is_error = self.cipher_message_is_error;
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.close_cipher_dialog(cx);
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(400.0))
+                    .p_5()
+                    .bg(SURFACE_PANEL())
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_md()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _: &gpui::MouseDownEvent, _window, _cx| {}),
+                    )
+                    .child(
+                        div()
+                            .text_base()
+                            .text_color(PRIMARY_TEXT())
+                            .font_weight(FontWeight::BOLD)
+                            .child("远程暗号设置"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(SECONDARY_TEXT())
+                            .child("暗号用于 Telegram 远程触发危险操作时的确认。暗号仅在本机设置，不经过网络传输。"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if cipher_is_set {
+                                gpui::hsla(0.33, 0.6, 0.5, 1.0)
+                            } else {
+                                SECONDARY_TEXT()
+                            })
+                            .child(if cipher_is_set {
+                                "✅ 暗号已设置"
+                            } else {
+                                "⏹ 暗号未设置"
+                            }),
+                    )
+                    // --- Telegram 绑定区 ---
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .mt_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(PRIMARY_TEXT())
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Telegram 远程控制"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child("绑定后可通过 Telegram 远程执行 Skill 操作。"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child("Bot Token"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_xs()
+                                            .text_color(SECONDARY_TEXT())
+                                            .child("Telegram Bot Token 输入区域"),
+                                    ),
+                            )
+                            .when(!self.telegram_bind_status.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(if self.telegram_bind_error {
+                                            gpui::hsla(0.0, 0.7, 0.5, 1.0)
+                                        } else {
+                                            gpui::hsla(0.33, 0.6, 0.5, 1.0)
+                                        })
+                                        .child(self.telegram_bind_status.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .h(px(36.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_lg()
+                                            .bg(BRAND_BLUE())
+                                            .cursor_pointer()
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(
+                                                    |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                        this.start_telegram_bind(cx);
+                                                    },
+                                                ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(gpui::white())
+                                                    .child("绑定 Telegram"),
+                                            ),
+                                    )
+                                    .when(
+                                        crate::services::load_config()
+                                            .telegram_bot_token
+                                            .is_some(),
+                                        |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_1()
+                                                    .h(px(36.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .rounded_lg()
+                                                    .border_1()
+                                                    .border_color(gpui::hsla(0.0, 0.6, 0.5, 1.0))
+                                                    .bg(CANVAS_BG())
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        cx.listener(
+                                                            |this,
+                                                             _: &gpui::MouseDownEvent,
+                                                             _window,
+                                                             cx| {
+                                                                this.handle_telegram_unbind(cx);
+                                                            },
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(gpui::hsla(
+                                                                0.0, 0.6, 0.5, 1.0,
+                                                            ))
+                                                            .child("解绑"),
+                                                    ),
+                                            )
+                                        },
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child("新暗号"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child("暗号输入区域 - 请在设置页面编辑"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .child("确认暗号"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(36.0))
+                                    .px_3()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child("确认暗号输入区域"),
+                                    ),
+                            ),
+                    )
+                    .when(!msg.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(if msg_is_error {
+                                    gpui::hsla(0.0, 0.7, 0.5, 1.0)
+                                } else {
+                                    gpui::hsla(0.33, 0.6, 0.5, 1.0)
+                                })
+                                .child(msg),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .mt_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT())
+                                    .bg(CANVAS_BG())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.close_cipher_dialog(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(PRIMARY_TEXT())
+                                            .child("取消"),
+                                    ),
+                            )
+                            .when(cipher_is_set, |this| {
+                                this.child(
+                                    div()
+                                        .flex_1()
+                                        .h(px(36.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_lg()
+                                        .border_1()
+                                        .border_color(gpui::hsla(0.0, 0.6, 0.5, 1.0))
+                                        .bg(CANVAS_BG())
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(
+                                                |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                    this.clear_cipher(cx);
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(gpui::hsla(0.0, 0.6, 0.5, 1.0))
+                                                .child("清除暗号"),
+                                        ),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(36.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .bg(BRAND_BLUE())
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                this.save_cipher(cx);
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(gpui::white())
+                                            .child(if cipher_is_set {
+                                                "修改暗号"
+                                            } else {
+                                                "设置暗号"
+                                            }),
+                                    ),
+                            ),
+                    ),
             )
             .into_any_element()
     }

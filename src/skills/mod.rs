@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agents::permission::DangerLevel;
+
 pub mod app_uninstaller;
 pub mod desktop_organizer;
 pub mod doc_summarizer;
@@ -38,6 +40,8 @@ pub struct SkillManifest {
     pub name: String,
     pub description: String,
     pub category: SkillCategory,
+    #[serde(default)]
+    pub danger_level: DangerLevel,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

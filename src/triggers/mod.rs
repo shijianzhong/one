@@ -21,6 +21,8 @@ pub mod telegram;
 
 use async_trait::async_trait;
 
+use crate::agents::permission::DangerLevel;
+
 #[derive(Debug, Clone)]
 pub struct TriggerEvent {
     pub source: String,
@@ -32,6 +34,26 @@ pub struct TriggerEvent {
 #[derive(Debug, Clone)]
 pub struct TriggerReply {
     pub text: String,
+    /// 是否需要远程暗号确认
+    pub needs_cipher: bool,
+    /// 当前操作的远程危险等级
+    pub danger_level: DangerLevel,
+}
+
+impl TriggerReply {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            needs_cipher: false,
+            danger_level: DangerLevel::Normal,
+        }
+    }
+
+    pub fn needs_cipher(mut self, level: DangerLevel) -> Self {
+        self.needs_cipher = true;
+        self.danger_level = level;
+        self
+    }
 }
 
 #[async_trait]

@@ -4,7 +4,16 @@ use std::cell::Cell;
 use std::env;
 use std::sync::{Mutex, OnceLock};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DangerLevel {
+    #[default]
+    Normal,
+    Dangerous,
+    Extreme,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
@@ -187,6 +196,27 @@ static QUEUE: OnceLock<Mutex<ApprovalQueue>> = OnceLock::new();
 
 fn queue() -> &'static Mutex<ApprovalQueue> {
     QUEUE.get_or_init(|| Mutex::new(ApprovalQueue::default()))
+}
+
+/// 投递本机审批请求但不等待结果。返回 oneshot Receiver，调用方在需要时 await。
+/// 用于 Extreme 双确认：先投递弹窗，等暗号验证通过后再等待弹窗结果。
+pub fn enqueue_detached(
+    kind: ToolKind,
+    detail: String,
+) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut q = queue().lock().ok()?;
+        q.next_id = q.next_id.wrapping_add(1);
+        let id = q.next_id;
+        q.pending.push(ApprovalRequest {
+            id,
+            kind,
+            detail,
+            responder: tx,
+        });
+    }
+    Some(rx)
 }
 
 async fn enqueue_request(kind: ToolKind, detail: String) -> Option<bool> {

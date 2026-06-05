@@ -45,6 +45,7 @@ gpui::actions!(
         ToggleLang,
         ToggleTheme,
         ExportChat,
+        OpenCipherDialog,
     ]
 );
 
@@ -192,7 +193,9 @@ fn main() {
             editor::init(cx);
             gpui_tokio::init(cx);
 
-            if let Some(trigger) = triggers::telegram::TelegramTrigger::from_env() {
+            if let Some(trigger) = triggers::telegram::TelegramTrigger::from_config(&config)
+                .or_else(|| triggers::telegram::TelegramTrigger::from_env())
+            {
                 std::thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,

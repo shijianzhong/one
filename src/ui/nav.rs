@@ -12,8 +12,8 @@ use crate::ui_theme::{
 };
 use crate::workspace::TaskItem;
 use crate::{
-    skills_market, AppState, MainView, OpenModelConfigDialog, ToggleLang, ToggleTheme, NAV_WIDTH,
-    TITLEBAR_HEIGHT,
+    skills_market, AppState, MainView, OpenCipherDialog, OpenModelConfigDialog, ToggleLang,
+    ToggleTheme, NAV_WIDTH, TITLEBAR_HEIGHT,
 };
 
 impl AppState {
@@ -337,8 +337,8 @@ impl AppState {
         _cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.main_view {
-            MainView::Chat => self.render_chat(window, cx).into_any_element(),
-            MainView::SkillsMarket => skills_market::render_skills_market(&*self, window, cx),
+            MainView::Chat => self.render_chat(window, _cx).into_any_element(),
+            MainView::SkillsMarket => skills_market::render_skills_market(&*self, window, _cx),
         }
     }
 
@@ -549,6 +549,7 @@ impl AppState {
             models_active,
             cx,
         ));
+        nav = nav.child(self.make_cipher_nav_item(cx));
 
         nav
     }
@@ -682,6 +683,40 @@ impl AppState {
                 ),
             )
             .child(div().h(px(40.0)))
+    }
+
+    fn make_cipher_nav_item(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_1()
+            .py_1()
+            .cursor_pointer()
+            .hover(|this| this.opacity(0.92))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                    this.open_cipher_dialog(&OpenCipherDialog, _window, cx);
+                }),
+            )
+            .child(self.make_icon_slot("lock", false))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_sm()
+                    .text_color(SECONDARY_TEXT())
+                    .font_weight(FontWeight::BOLD)
+                    .text_ellipsis()
+                    .child("暗号"),
+            )
+            .child(
+                div()
+                    .w(px(12.0))
+                    .text_xs()
+                    .text_color(MUTED_TEXT()),
+            )
     }
 
     fn make_icon_slot(&mut self, icon_key: &'static str, active: bool) -> impl IntoElement {

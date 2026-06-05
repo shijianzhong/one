@@ -107,6 +107,7 @@ impl Skill for AppUninstallerSkill {
             name: "应用卸载".to_string(),
             description: "卸载 macOS 应用并清理 ~/Library 下的残留（Application Support / Caches / Preferences / Logs 等）。".to_string(),
             category: SkillCategory::App,
+            danger_level: crate::agents::permission::DangerLevel::Dangerous,
         }
     }
 

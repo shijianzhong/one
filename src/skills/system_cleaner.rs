@@ -116,6 +116,7 @@ impl Skill for SystemCleanerSkill {
             name: "系统清理".to_string(),
             description: "扫描 macOS 缓存、Xcode DerivedData、废纸篓等可清理目录，预览大小后由用户确认再执行删除。".to_string(),
             category: SkillCategory::System,
+            danger_level: crate::agents::permission::DangerLevel::Dangerous,
         }
     }
 

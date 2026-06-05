@@ -21,6 +21,15 @@ pub struct Config {
     pub lang: Lang,
     #[serde(default)]
     pub theme_mode: ThemeMode,
+    /// Telegram Bot Token，用于远程触发
+    #[serde(default)]
+    pub telegram_bot_token: Option<String>,
+    /// Telegram 绑定的 chat_id，白名单校验用
+    #[serde(default)]
+    pub telegram_chat_id: Option<String>,
+    /// Telegram 绑定的时间
+    #[serde(default)]
+    pub telegram_bound_at: Option<String>,
 }
 
 impl Default for Config {
@@ -34,6 +43,9 @@ impl Default for Config {
             system_model: None,
             lang: Lang::Zh,
             theme_mode: ThemeMode::Dark,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_bound_at: None,
         }
     }
 }

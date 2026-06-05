@@ -16,6 +16,7 @@
 use serde_json::Value;
 
 use super::TriggerReply;
+use crate::agents::permission::DangerLevel;
 
 #[derive(Debug, Clone)]
 pub enum TriggerCommand {
@@ -24,6 +25,11 @@ pub enum TriggerCommand {
     PreviewSkill { id: String, args: Value },
     RunSkill { id: String, args: Value },
     Audit { limit: usize },
+    Workspace { name: String },
+    ListWorkspaces,
+    Status,
+    ListRemoteTasks,
+    ClearTask,
     Unknown(String),
 }
 
@@ -51,6 +57,15 @@ pub fn parse_command(text: &str) -> TriggerCommand {
             let limit = rest.parse::<usize>().unwrap_or(10).clamp(1, 50);
             TriggerCommand::Audit { limit }
         }
+        "/workspace" => {
+            TriggerCommand::Workspace {
+                name: rest.to_string(),
+            }
+        }
+        "/workspaces" => TriggerCommand::ListWorkspaces,
+        "/status" => TriggerCommand::Status,
+        "/tasks" => TriggerCommand::ListRemoteTasks,
+        "/clear" => TriggerCommand::ClearTask,
         other => TriggerCommand::Unknown(other.to_string()),
     }
 }
@@ -69,18 +84,41 @@ fn split_id_and_args(rest: &str) -> (String, Value) {
 
 pub async fn dispatch(text: &str) -> TriggerReply {
     let command = parse_command(text);
-    let reply = match command {
-        TriggerCommand::Help => help_text(),
-        TriggerCommand::ListSkills => list_skills(),
-        TriggerCommand::PreviewSkill { id, args } => preview_skill(&id, args).await,
+    match command {
+        TriggerCommand::Help => TriggerReply::new(help_text()),
+        TriggerCommand::ListSkills => TriggerReply::new(list_skills()),
+        TriggerCommand::PreviewSkill { id, args } => {
+            TriggerReply::new(preview_skill(&id, args).await)
+        }
         TriggerCommand::RunSkill { id, args } => run_skill(&id, args).await,
-        TriggerCommand::Audit { limit } => audit_text(limit),
-        TriggerCommand::Unknown(s) => format!(
+        TriggerCommand::Audit { limit } => TriggerReply::new(audit_text(limit)),
+        TriggerCommand::Workspace { name } => {
+            // 交给 telegram.rs 处理实际的 workspace 切换
+            // 这里只返回格式化后的回复
+            if name.is_empty() {
+                TriggerReply::new("当前 workspace：请查看 /status".to_string())
+            } else {
+                TriggerReply::new(format!("/workspace {}", name))
+            }
+        }
+        TriggerCommand::ListWorkspaces => {
+            let workspaces = list_workspaces_text();
+            TriggerReply::new(workspaces)
+        }
+        TriggerCommand::Status => {
+            TriggerReply::new("远程状态功能即将上线。输入 /help 查看可用命令。".to_string())
+        }
+        TriggerCommand::ListRemoteTasks => {
+            TriggerReply::new("远程任务列表功能即将上线。".to_string())
+        }
+        TriggerCommand::ClearTask => {
+            TriggerReply::new("远程任务已清除。".to_string())
+        }
+        TriggerCommand::Unknown(s) => TriggerReply::new(format!(
             "未识别的命令：{}\n输入 /help 查看可用命令。",
             short_label(&s)
-        ),
-    };
-    TriggerReply { text: reply }
+        )),
+    }
 }
 
 fn short_label(s: &str) -> String {
@@ -97,6 +135,11 @@ fn help_text() -> String {
 /preview <id> [json] 预览 Skill（只读）
 /run <id> [json]     执行 Skill（需要本机授权弹窗确认）
 /audit [n]           最近 N 条 RunEvent（默认 10）
+/workspace [name]    切换到指定 workspace
+/workspaces          列出所有 workspace
+/status              显示当前远程 Task 状态
+/tasks               列出该 workspace 下所有远程 Task
+/clear               结束当前远程 Task
 /help                显示本帮助"#
         .to_string()
 }
@@ -116,6 +159,31 @@ fn list_skills() -> String {
         ));
     }
     out
+}
+
+fn list_workspaces_text() -> String {
+    // 通过 SQLite 直接查询 workspace 列表
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    if !db_path.exists() {
+        return "暂无 workspace".to_string();
+    }
+    let conn = sqlez::connection::Connection::open_file(
+        db_path.to_str().unwrap_or("one.db"),
+    );
+    match crate::task_db::load_workspaces(&conn) {
+        Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
+        Ok(rows) => {
+            let mut out = "Workspace 列表：\n".to_string();
+            for w in rows {
+                out.push_str(&format!("• {}（ID: {}）— {}\n", w.name, w.id, w.path));
+            }
+            out
+        }
+        Err(_) => "查询 workspace 失败".to_string(),
+    }
 }
 
 async fn preview_skill(id: &str, args: Value) -> String {
@@ -141,20 +209,40 @@ async fn preview_skill(id: &str, args: Value) -> String {
     }
 }
 
-async fn run_skill(id: &str, args: Value) -> String {
+async fn run_skill(id: &str, args: Value) -> TriggerReply {
     let Some(skill) = crate::skills::registry().find(id) else {
-        return format!(
+        return TriggerReply::new(format!(
             "未找到 skill_id：{}\n输入 /skills 查看可用列表。",
             short_label(id)
-        );
+        ));
     };
+
+    // 检查远程危险等级
+    let danger_level = skill.manifest().danger_level;
+    if danger_level != DangerLevel::Normal {
+        // 暗号未设置时直接拒绝
+        if !crate::agents::remote_auth::RemoteAuth::is_cipher_set() {
+            return TriggerReply::new(format!(
+                "⚠️ 操作「{}」需要远程暗号确认，但暗号尚未设置。\n请先在本机 ONE 设置页配置远程暗号。",
+                id
+            ));
+        }
+        // 返回需要暗号确认的标记，由 telegram.rs 状态机处理
+        return TriggerReply::new(format!(
+            "📐 操作「{}」需要远程暗号确认，请在 2 分钟内回复暗号。",
+            id
+        ))
+        .needs_cipher(danger_level);
+    }
 
     // 远程执行自动进入 Strict 权限模式
     let _guard = crate::agents::permission::RemoteScopeGuard::enter();
 
-    let result = skill.execute(args).await;
-    match result {
-        Ok(exec) if exec.denied => format!("[run] {}：用户在本机拒绝。{}", id, exec.summary),
+    let result = skill.execute(args, None).await;
+    TriggerReply::new(match result {
+        Ok(exec) if exec.denied => {
+            format!("[run] {}：用户在本机拒绝。{}", id, exec.summary)
+        }
         Ok(exec) => {
             let mut out = format!("[run] {}\n{}\n", id, exec.summary);
             if exec.freed_bytes > 0 {
@@ -172,7 +260,7 @@ async fn run_skill(id: &str, args: Value) -> String {
             out
         }
         Err(e) => format!("execute 失败：{}", e),
-    }
+    })
 }
 
 fn audit_text(limit: usize) -> String {

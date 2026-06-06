@@ -95,6 +95,8 @@ pub(crate) struct AppState {
     pub(crate) telegram_bind_token: String,
     pub(crate) telegram_bind_status: String,
     pub(crate) telegram_bind_error: bool,
+    /// 每个 task 的运行状态（true=有请求在运行）
+    pub(crate) task_active_states: HashMap<usize, bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +217,7 @@ impl AppState {
             telegram_bind_token: String::new(),
             telegram_bind_status: String::new(),
             telegram_bind_error: false,
+            task_active_states: HashMap::new(),
         };
 
         if state.workspaces.is_empty() {
@@ -785,6 +788,23 @@ impl AppState {
 }
 
 impl AppState {
+    /// 标记某个 task 正在运行中
+    pub(crate) fn mark_task_active(&mut self, task_id: usize) {
+        self.task_active_states.insert(task_id, true);
+    }
+
+    /// 标记某个 task 已结束运行
+    pub(crate) fn mark_task_inactive(&mut self, task_id: Option<usize>) {
+        if let Some(id) = task_id {
+            self.task_active_states.insert(id, false);
+        }
+    }
+
+    /// 查询某个 task 是否正在运行中
+    pub(crate) fn is_task_active(&self, task_id: Option<usize>) -> bool {
+        task_id.map(|id| self.task_active_states.get(&id).copied().unwrap_or(false)).unwrap_or(false)
+    }
+
     pub(crate) fn start_telegram_bind(&mut self, cx: &mut Context<Self>) {
         let token = self.telegram_bind_token.trim().to_string();
         if token.is_empty() {

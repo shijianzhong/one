@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use super::{Agent, AgentContext, AgentResponse, ToolCall};
 use crate::agents::claude_code::ClaudeStreamEvent;
+use crate::memory::types::ChatMessage;
 
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
@@ -39,12 +40,18 @@ impl Orchestrator {
         &self,
         task: &str,
         session_id: String,
+        history: Vec<ChatMessage>,
         mut on_event: F,
     ) -> Result<String>
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
         let mut context = AgentContext::new(session_id);
+        // 先加载历史消息（除最后一条 user 消息外，避免重复）
+        let msg_count = history.len();
+        for msg in history.into_iter().take(msg_count.saturating_sub(1)) {
+            context.add_message(msg);
+        }
         context.add_message(crate::memory::types::ChatMessage::new("user", task));
 
         let mut max_steps = 15;

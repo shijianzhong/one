@@ -116,6 +116,17 @@ where
     };
 
     let url = format!("{}/chat/completions", base_url);
+    eprintln!("\n========== LLM REQUEST ==========");
+    eprintln!("Model: {}", model);
+    eprintln!("Messages ({}):", request_body.messages.len());
+    for (i, msg) in request_body.messages.iter().enumerate() {
+        let role = msg["role"].as_str().unwrap_or("");
+        let content_preview = &msg["content"].as_str().unwrap_or("")[..std::cmp::min(200, msg["content"].as_str().unwrap_or("").len())];
+        let has_tools = msg.get("tool_calls").is_some();
+        eprintln!("  [{}] role={} content={}{}", i, role, content_preview, if has_tools { " [has tool_calls]" } else { "" });
+    }
+    eprintln!("Tools: {}", tools.map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_else(|| "none".to_string()));
+    eprintln!("================================\n");
     let response = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -204,13 +215,20 @@ where
 
     if !tool_calls_map.is_empty() {
         let tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
-        // Sort by index? map doesn't guarantee order, but for simplicity...
+        eprintln!("\n========== LLM RESPONSE (with tool calls) ==========");
+        eprintln!("Content (first 500): {}", &full_text[..std::cmp::min(500, full_text.len())]);
+        eprintln!("Tool calls: {}", serde_json::to_string_pretty(&tool_calls).unwrap_or_default());
+        eprintln!("===================================================\n");
         return Ok(serde_json::json!({
             "role": "assistant",
             "content": full_text,
             "tool_calls": tool_calls
         }));
     }
+
+    eprintln!("\n========== LLM RESPONSE ==========");
+    eprintln!("{}", &full_text[..std::cmp::min(1000, full_text.len())]);
+    eprintln!("==================================\n");
 
     Ok(serde_json::json!({
         "role": "assistant",

@@ -30,7 +30,10 @@ impl MainAgent {
         });
 
         let system_prompt = format!(
-            "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。",
+            "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。\n\n你有 remember 和 recall 两个记忆工具：\n\
+             - 每次获取到关于用户的新信息（姓名、偏好、习惯、背景等），请立即调用 remember 保存。\n\
+             - 在回答用户问题前，先调用 recall 查看是否有已存储的用户信息。\n\
+             - 用户不会直接告诉你该记什么，需要你自己判断什么信息值得长期记住。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
             std::env::consts::OS

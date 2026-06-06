@@ -1110,7 +1110,7 @@ impl AppState {
         let weak_composer = composer_editor.downgrade();
         let weak_composer_for_action = weak_composer.clone();
 
-        let request_in_flight = self.job_manager.request_in_flight;
+        let request_in_flight = self.is_task_active(self.active_task_id);
         let send_bg = BRAND_BLUE();
         let send_label = if request_in_flight {
             t(lang, Translations::STOP_GENERATING)

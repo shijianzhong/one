@@ -208,6 +208,9 @@ impl AppState {
         });
         self.persist_current_claude_state();
         self.insert_subagent_message(run_id, instruction.to_string());
+        if let Some(tid) = self.active_task_id {
+            self.mark_task_active(tid);
+        }
         run_id
     }
 
@@ -443,6 +446,7 @@ impl AppState {
 
         if let Some(msg) = final_message {
             if let Some(task_id) = persist_task_id {
+                self.mark_task_inactive(Some(task_id));
                 let _ = task_db::insert_message(&self.db.conn, task_id, "assistant", &msg);
                 if self.active_task_id == Some(task_id) {
                     self.messages.push(ChatMessage::new("assistant", &msg));
@@ -1007,6 +1011,12 @@ impl AppState {
             Some(t(self.current_lang, Translations::ANALYZING_INTENT).to_string()),
         );
 
+        // 标记当前 task 为运行中
+        let spawn_task_id = self.active_task_id;
+        if let Some(tid) = spawn_task_id {
+            self.mark_task_active(tid);
+        }
+
         let log_run_id = self.active_task_id.and_then(|task_id| {
             RunRecorder::begin(
                 &self.db.conn,
@@ -1022,10 +1032,12 @@ impl AppState {
 
         let session_id = format!("orchestrator-{}", run_id);
         let instruction_for_task = instruction.clone();
+        let history = self.messages.clone();
+        let spawn_task_id = spawn_task_id; // 捕获 spawn 时的 task_id
 
         gpui_tokio::Tokio::spawn(cx, async move {
             let result = orchestrator
-                .run_task(&instruction_for_task, session_id, |event| {
+                .run_task(&instruction_for_task, session_id, history, |event| {
                     let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
                 })
                 .await;
@@ -1138,6 +1150,7 @@ impl AppState {
                                     this.job_manager.general_ai_live_text.clear();
                                     this.job_manager.general_ai_run_id = None;
                                     this.job_manager.general_ai_show_live_bubble = false;
+                                    this.mark_task_inactive(spawn_task_id);
                                     this.messages.push(ChatMessage::new("assistant", &result));
                                     if let Some(task_id) = this.active_task_id {
                                         task_db::insert_message(
@@ -1190,6 +1203,7 @@ impl AppState {
                                     this.job_manager.general_ai_live_text.clear();
                                     this.job_manager.general_ai_run_id = None;
                                     this.job_manager.general_ai_show_live_bubble = false;
+                                    this.mark_task_inactive(spawn_task_id);
                                     this.messages.push(ChatMessage::new(
                                         "assistant",
                                         &format!("Orchestrator failed: {}", error),

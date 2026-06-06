@@ -217,7 +217,9 @@ where
     if !tool_calls_map.is_empty() {
         let tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
         eprintln!("\n========== LLM RESPONSE (with tool calls) ==========");
-        eprintln!("Content (first 500): {}", &full_text[..std::cmp::min(500, full_text.len())]);
+        let preview_len = std::cmp::min(500, full_text.len());
+        let preview_end = (0..=preview_len).rev().find(|&i| full_text.is_char_boundary(i)).unwrap_or(0);
+        eprintln!("Content (first 500): {}", &full_text[..preview_end]);
         eprintln!("Tool calls: {}", serde_json::to_string_pretty(&tool_calls).unwrap_or_default());
         eprintln!("===================================================\n");
         return Ok(serde_json::json!({

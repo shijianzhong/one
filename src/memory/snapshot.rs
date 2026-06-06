@@ -130,9 +130,12 @@ fn build_snapshot_prompt(messages: &[ChatMessage]) -> String {
         "You are a memory distiller. Analyze the conversation and return ONLY a valid JSON \
          object (no markdown fences) with these fields:\n\
          - \"summary\": string, 1-3 sentences overview\n\
-         - \"key_facts\": array of strings, concrete facts/decisions (max 8)\n\
+         - \"key_facts\": array of strings, **global, permanent facts** about the user (their name, language, \
+           profession, location, skills, important decisions). Do NOT include temporary preferences \
+           or conversation-specific details here. Max 8 items.\n\
          - \"open_loops\": array of strings, unresolved questions or pending actions (max 5)\n\
-         - \"preferences\": array of strings, user preferences or style hints (max 5)\n\n\
+         - \"preferences\": array of strings, **temporary, task-specific preferences** (e.g. output format for \
+           this task, response style for this conversation). These are NOT permanent user traits. Max 5.\n\n\
          Conversation:\n{}\n\nRespond with ONLY the JSON object.",
         history
     )
@@ -192,22 +195,17 @@ pub fn generate_snapshot_sync(
                 }
 
                 // ── 自动提取 key_facts + preferences 写入 profile ──────────
-                // 不依赖 LLM 自觉调用 remember，只要 snapshot 分析出来了就自动持久化
+                // key_facts → global + workspace（全局持久事实）
+                // preferences → workspace 仅当前 workspace 可见（临时偏好）
                 for fact in &snap.key_facts {
                     if !fact.trim().is_empty() {
-                        // 如果是用户相关的偏好/命名等，写入 global scope
-                        if fact.contains("user") || fact.contains("用户") || fact.contains("命名")
-                            || fact.contains("起名") || fact.contains("名字") || fact.contains("偏好")
-                        {
-                            let _ = crate::memory::profile::save_global_fact(fact, Some(task_id));
-                        }
-                        // 写入当前 workspace scope
+                        let _ = crate::memory::profile::save_global_fact(fact, Some(task_id));
                         let _ = crate::memory::profile::save_fact(workspace_name, fact, Some(task_id));
                     }
                 }
                 for pref in &snap.preferences {
                     if !pref.trim().is_empty() {
-                        let _ = crate::memory::profile::save_global_fact(pref, Some(task_id));
+                        // preferences 只写入 workspace，不写入 global
                         let _ = crate::memory::profile::save_fact(workspace_name, pref, Some(task_id));
                     }
                 }

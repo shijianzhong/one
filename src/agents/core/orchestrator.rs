@@ -381,7 +381,7 @@ impl Orchestrator {
             let mut final_result = String::new();
 
             loop {
-                match rx.blocking_recv() {
+                match rx.recv().await {
                     Some(event) => {
                         let is_terminal = matches!(
                             event,
@@ -418,7 +418,8 @@ impl Orchestrator {
                 });
             }
 
-            let _ = handle.join();
+            // 等待子线程结束（在 spawn_blocking 中执行 join 避免阻塞 tokio worker）
+            let _ = tokio::task::spawn_blocking(move || handle.join()).await;
             on_event(OrchestratorEvent::StepFinished { result: final_result.clone() });
             return Ok(final_result);
         }

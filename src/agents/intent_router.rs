@@ -20,23 +20,8 @@ pub struct IntentRouter {
 impl IntentRouter {
     pub fn new() -> Self {
         Self {
-            system_keywords: vec![
-                "进程", "cpu", "内存",
-                "process", "memory",
-                "打开", "打开应用", "启动", "关闭程序", "杀进程", "终止",
-                "删除", "复制", "移动",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            coding_keywords: vec![
-                "写代码", "代码", "编程", "函数", "调试", "bug",
-                "code", "coding", "debug", "function", "class",
-                "实现", "开发", "程序", "帮我写", "写个", "创建一个",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+            system_keywords: vec![],
+            coding_keywords: vec![],
         }
     }
 
@@ -99,31 +84,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_system_keywords() {
+    fn test_empty_keywords_no_fast_route() {
         let router = IntentRouter::new();
-        assert!(router.needs_precise_route("查看进程"));
-        assert!(router.needs_precise_route("我电脑的内存使用情况"));
-        assert!(router.needs_precise_route("打开 Safari"));
-
-        let (level, _) = router.route("查看进程");
-        assert!(matches!(level, IntentLevel::SystemTools));
-
-        let (level, _) = router.route("帮我写个函数");
-        assert!(matches!(level, IntentLevel::Coding));
-        assert!(router.needs_precise_route("帮我写个函数"));
-    }
-
-    #[test]
-    fn test_general_conversation() {
-        let router = IntentRouter::new();
-        // 所有简单对话都不需要精确路由
-        assert!(!router.needs_precise_route("你好"));
-        assert!(!router.needs_precise_route("what's your name"));
-        assert!(!router.needs_precise_route("今天天气怎么样"));
-        assert!(!router.needs_precise_route("帮我整理项目"));
-
-        let (level, decision) = router.route("what's your name");
-        assert!(matches!(level, IntentLevel::General));
-        assert!(decision.is_none());
+        // 关键词池为空，所有请求都应该走 General + None
+        for msg in &["查看进程", "我电脑的内存使用情况", "打开 Safari",
+                      "帮我写个函数", "你好", "what's your name", "今天天气怎么样"] {
+            let (level, decision) = router.route(msg);
+            assert!(matches!(level, IntentLevel::General), "expected General for '{}'", msg);
+            assert!(decision.is_none(), "expected None decision for '{}'", msg);
+            assert!(!router.needs_precise_route(msg), "expected no precise route for '{}'", msg);
+        }
     }
 }

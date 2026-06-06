@@ -41,12 +41,38 @@ impl Orchestrator {
         task: &str,
         session_id: String,
         history: Vec<ChatMessage>,
+        workspace: &str,
+        task_id: Option<usize>,
         mut on_event: F,
     ) -> Result<String>
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
         let mut context = AgentContext::new(session_id);
+
+        // ── 主动注入记忆 (Active Memory Injection) ──────────────────────
+        let mut all_facts = crate::memory::profile::get_global_facts();
+        all_facts.extend(crate::memory::profile::get_all_facts(workspace));
+        
+        // 使用 HashSet 去重
+        let set: std::collections::HashSet<String> = all_facts.into_iter().collect();
+        let mut unique_facts: Vec<String> = set.into_iter().collect();
+        unique_facts.sort(); // 保持输出稳定性
+
+        if !unique_facts.is_empty() {
+            let memory_hint = format!(
+                "### User Profile & Project Context\n{}",
+                unique_facts.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+            );
+            context.add_message(crate::memory::types::ChatMessage::new("system", &memory_hint));
+        }
+
+        // ── 注入 L3 相关 task 上下文 (Phase 3) ────────────────────────
+        let l3_context = crate::memory::snapshot::build_memory_context(workspace, task_id.unwrap_or(0), task);
+        if !l3_context.is_empty() {
+            context.add_message(crate::memory::types::ChatMessage::new("system", &l3_context));
+        }
+
         // 先加载历史消息（除最后一条 user 消息外，避免重复）
         let msg_count = history.len();
         for msg in history.into_iter().take(msg_count.saturating_sub(1)) {

@@ -31,9 +31,10 @@ impl MainAgent {
 
         let system_prompt = format!(
             "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。\n\n你有 remember 和 recall 两个记忆工具：\n\
-             - 每次获取到关于用户的新信息（姓名、偏好、习惯、背景等），请立即调用 remember 保存。\n\
-             - 在回答用户问题前，先调用 recall 查看是否有已存储的用户信息。\n\
-             - 用户不会直接告诉你该记什么，需要你自己判断什么信息值得长期记住。",
+             - 每次对话开始时先调 recall 查看已有信息，避免重复提问。\n\
+             - 遇到关于用户个人的信息（姓名、偏好、职业、语言习惯）→ remember(scope=\"global\")。\n\
+             - 遇到关于当前项目/工作区的信息（技术栈、规范、路径、团队成员）→ remember(scope=\"workspace\")。\n\
+             - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
             std::env::consts::OS
@@ -155,15 +156,30 @@ impl Tool for RememberTool {
         json!({
             "type": "object",
             "properties": {
-                "fact": { "type": "string", "description": "需要记住的事实内容" }
+                "fact": { "type": "string", "description": "需要记住的事实内容" },
+                "scope": { 
+                    "type": "string", 
+                    "enum": ["global", "workspace", "both"],
+                    "description": "存储范围。global：跨 workspace 的个人信息；workspace：仅限当前项目；both：同时存。默认 both。"
+                }
             },
             "required": ["fact"]
         })
     }
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
         let fact = args["fact"].as_str().unwrap_or_default();
-        crate::memory::profile::save_fact(&self.workspace, fact)?;
-        Ok(json!({ "status": "success", "message": "Fact remembered" }))
+        let scope = args["scope"].as_str().unwrap_or("both");
+        
+        match scope {
+            "global" => crate::memory::profile::save_global_fact(fact, None)?,
+            "workspace" => crate::memory::profile::save_fact(&self.workspace, fact, None)?,
+            _ => {
+                crate::memory::profile::save_global_fact(fact, None)?;
+                crate::memory::profile::save_fact(&self.workspace, fact, None)?;
+            }
+        }
+        
+        Ok(json!({ "status": "success", "message": format!("Fact remembered in scope: {}", scope) }))
     }
 }
 
@@ -179,7 +195,17 @@ impl Tool for RecallTool {
         json!({ "type": "object", "properties": {} })
     }
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
-        let facts = crate::memory::profile::get_all_facts(&self.workspace);
+        let mut set = std::collections::HashSet::new();
+        
+        // 合并全局和工作区事实并去重
+        for f in crate::memory::profile::get_global_facts() {
+            set.insert(f);
+        }
+        for f in crate::memory::profile::get_all_facts(&self.workspace) {
+            set.insert(f);
+        }
+        
+        let facts: Vec<String> = set.into_iter().collect();
         Ok(json!(facts))
     }
 }

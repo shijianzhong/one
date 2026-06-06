@@ -985,12 +985,12 @@ impl AppState {
 
     pub(crate) fn spawn_orchestrator_run(&mut self, instruction: String, cx: &mut Context<Self>) {
         let config = crate::services::load_config();
-        let workspace_name = self
-            .get_active_workspace()
-            .map(|w| w.name.as_str())
-            .unwrap_or("Default");
+        let workspace_name = match self.get_active_workspace() {
+            Some(w) => w.name.clone(),
+            None => "Default".to_string(),
+        };
 
-        let orchestrator = match AgentFactory::create_orchestrator(&config, workspace_name) {
+        let orchestrator = match AgentFactory::create_orchestrator(&config, &workspace_name) {
             Ok(o) => o,
             Err(e) => {
                 self.messages.push(ChatMessage::new(
@@ -1033,11 +1033,14 @@ impl AppState {
         let session_id = format!("orchestrator-{}", run_id);
         let instruction_for_task = instruction.clone();
         let history = self.messages.clone();
-        let spawn_task_id = spawn_task_id; // 捕获 spawn 时的 task_id
+
+        let workspace_name_for_orchestrator = workspace_name.clone();
+        let workspace_name_for_snapshot = workspace_name; 
+        let active_task_id = self.active_task_id;
 
         gpui_tokio::Tokio::spawn(cx, async move {
             let result = orchestrator
-                .run_task(&instruction_for_task, session_id, history, |event| {
+                .run_task(&instruction_for_task, session_id, history, &workspace_name_for_orchestrator, active_task_id, |event| {
                     let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
                 })
                 .await;
@@ -1123,6 +1126,28 @@ impl AppState {
                                         });
                                         recorder.finish(RunStatus::Finished);
                                     }
+
+                                    // ── 异步生成记忆快照 (Phase 3) ──────────────────
+                                    if let Some(task_id) = active_task_id {
+                                        let messages = this.messages.clone();
+                                        let base_url = this.model_base_url.clone();
+                                        let api_key = this.model_api_key.clone();
+                                        let model = this.model_name.clone();
+                                        let ws_name = workspace_name_for_snapshot.clone();
+                                        let task_title = this.workspaces.iter()
+                                            .find(|w| w.name == ws_name)
+                                            .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
+                                            .map(|t| t.title.clone())
+                                            .unwrap_or_else(|| "task".to_string());
+
+                                        std::thread::spawn(move || {
+                                            crate::memory::snapshot::generate_snapshot_sync(
+                                                &base_url, &api_key, &model,
+                                                &messages, task_id, &task_title, &ws_name,
+                                            );
+                                        });
+                                    }
+
                                     // 清理所有空的 subagent 卡片（兜底：如果子代理从未产生任何内容）
                                     let empty_run_ids: Vec<u64> = this
                                         .job_manager
@@ -1150,7 +1175,7 @@ impl AppState {
                                     this.job_manager.general_ai_live_text.clear();
                                     this.job_manager.general_ai_run_id = None;
                                     this.job_manager.general_ai_show_live_bubble = false;
-                                    this.mark_task_inactive(spawn_task_id);
+                                    this.mark_task_inactive(active_task_id);
                                     this.messages.push(ChatMessage::new("assistant", &result));
                                     if let Some(task_id) = this.active_task_id {
                                         task_db::insert_message(
@@ -1203,7 +1228,7 @@ impl AppState {
                                     this.job_manager.general_ai_live_text.clear();
                                     this.job_manager.general_ai_run_id = None;
                                     this.job_manager.general_ai_show_live_bubble = false;
-                                    this.mark_task_inactive(spawn_task_id);
+                                    this.mark_task_inactive(active_task_id);
                                     this.messages.push(ChatMessage::new(
                                         "assistant",
                                         &format!("Orchestrator failed: {}", error),

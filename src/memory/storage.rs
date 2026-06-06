@@ -25,6 +25,10 @@ pub fn get_workspace_memory_dir(workspace_name: &str) -> PathBuf {
     get_memory_base_path().join(workspace_name)
 }
 
+pub fn get_global_memory_dir() -> PathBuf {
+    get_memory_base_path().join("global")
+}
+
 pub fn get_task_memory_path(workspace_name: &str, task_id: usize) -> PathBuf {
     get_workspace_memory_dir(workspace_name).join(format!("task_{}.json", task_id))
 }

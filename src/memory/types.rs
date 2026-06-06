@@ -24,6 +24,13 @@ impl ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactEntry {
+    pub content: String,
+    pub timestamp: i64,
+    pub source_task_id: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMemory {
     pub task_id: usize,
     pub task_title: String,

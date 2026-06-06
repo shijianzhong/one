@@ -140,6 +140,18 @@ impl AppState {
     }
 
     pub fn restore_task_context(&mut self) {
+        // ── 清理前一个 task 的运行状态 ──────────────────────────────
+        // 防止旧 task 的 Orchestrator/Claude Code 运行状态污染新 task
+        self.job_manager.subagent_messages.clear();
+        self.job_manager.orchestrator_agent_run_map.clear();
+        self.job_manager.request_in_flight = false;
+        self.job_manager.request_kind = None;
+        self.job_manager.request_status_text = None;
+        self.job_manager.general_ai_run_id = None;
+        self.job_manager.general_ai_task_id = None;
+        self.job_manager.general_ai_show_live_bubble = false;
+        self.job_manager.general_ai_live_text.clear();
+
         if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
             let _ = self.ensure_task_storage_dir(workspace_id, task_id, &title);
             let msgs = task_db::load_messages(&self.db.conn, task_id).unwrap_or_default();

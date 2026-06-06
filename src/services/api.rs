@@ -230,7 +230,9 @@ where
     }
 
     eprintln!("\n========== LLM RESPONSE ==========");
-    eprintln!("{}", &full_text[..std::cmp::min(1000, full_text.len())]);
+    let preview_len = std::cmp::min(1000, full_text.len());
+    let preview_end = (0..=preview_len).rev().find(|&i| full_text.is_char_boundary(i)).unwrap_or(0);
+    eprintln!("{}", &full_text[..preview_end]);
     eprintln!("==================================\n");
 
     Ok(serde_json::json!({

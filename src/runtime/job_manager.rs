@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::Context;
 
@@ -147,6 +148,7 @@ impl AppState {
         self.job_manager.current_claude_run = None;
         self.job_manager.pending_claude_question = None;
         self.job_manager.orchestrator_agent_run_map.clear();
+        self.job_manager.subagent_messages.clear();
 
         // 4. 标记当前 task 不活跃
         if let Some(tid) = self.active_task_id {
@@ -1042,7 +1044,7 @@ impl AppState {
         let event_sender = sender.clone();
         let final_sender = sender;
 
-        let session_id = format!("orchestrator-{}", run_id);
+        let session_id = uuid::Uuid::new_v4().to_string();
         let instruction_for_task = instruction.clone();
         let history = self.messages.clone();
 

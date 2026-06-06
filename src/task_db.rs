@@ -427,14 +427,60 @@ pub fn update_task_title(conn: &Connection, task_id: usize, title: &str) -> Resu
 }
 
 pub fn delete_task(conn: &Connection, task_id: usize) -> Result<()> {
-    // Delete all messages for this task first
-    let mut stmt = Statement::prepare(conn, "DELETE FROM messages WHERE task_id = ?")?;
-    stmt.with_bindings(&task_id)?;
-    stmt.exec()?;
-    // Delete the task
-    let mut stmt = Statement::prepare(conn, "DELETE FROM tasks WHERE id = ?")?;
-    stmt.with_bindings(&task_id)?;
-    stmt.exec()?;
+    // ── 级联清理关联表 ────────────────────────────────────────────
+    // 1. 通过 task_runs 找到所有 run_id，删除 run_events
+    let run_ids: Vec<i64> = {
+        let mut stmt = Statement::prepare(conn, "SELECT id FROM task_runs WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.map(|s| s.column_int64(0))?
+            .into_iter()
+            .collect()
+    };
+    for run_id in &run_ids {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM run_events WHERE run_id = ?")?;
+        stmt.with_bindings(run_id)?;
+        stmt.exec()?;
+    }
+
+    // 2. 删除 task_runs
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM task_runs WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+
+    // 3. 删除 agent_instances 及关联的 agent_conversations
+    let instance_ids: Vec<i64> = {
+        let mut stmt = Statement::prepare(conn, "SELECT id FROM agent_instances WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.map(|s| s.column_int64(0))?
+            .into_iter()
+            .collect()
+    };
+    for inst_id in &instance_ids {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM agent_conversations WHERE agent_instance_id = ?")?;
+        stmt.with_bindings(inst_id)?;
+        stmt.exec()?;
+    }
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM agent_instances WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+
+    // 4. 删除 messages
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM messages WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+
+    // 5. 删除 task 本身
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM tasks WHERE id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
     Ok(())
 }
 

@@ -270,52 +270,142 @@ impl AppState {
                                         cx.listener(
                                             move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                 cx.stop_propagation();
+
+                                                // ── P1: 运行时禁止删除 ────────────────
+                                                if this.is_task_active(Some(task_id)) {
+                                                    this.messages.push(
+                                                        crate::memory::types::ChatMessage::new(
+                                                            "system",
+                                                            "⚠️ 任务正在运行，无法删除。请等待任务完成后重试。",
+                                                        ),
+                                                    );
+                                                    cx.notify();
+                                                    return;
+                                                }
+
+                                                let (was_draft, was_active, task_title) = this
+                                                    .workspaces
+                                                    .iter()
+                                                    .find(|w| w.id == ws_id)
+                                                    .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
+                                                    .map(|t| {
+                                                        (
+                                                            t.is_draft,
+                                                            this.active_task_id == Some(task_id),
+                                                            t.title.clone(),
+                                                        )
+                                                    })
+                                                    .unwrap_or_default();
+
+                                                // ── 内存移除 ────────────────────────
                                                 if let Some(ws) = this
                                                     .workspaces
                                                     .iter_mut()
                                                     .find(|w| w.id == ws_id)
                                                 {
-                                                    let was_draft = ws
-                                                        .tasks
-                                                        .iter()
-                                                        .find(|t| t.id == task_id)
-                                                        .map(|t| t.is_draft)
-                                                        .unwrap_or(false);
-                                                    let was_active =
-                                                        this.active_task_id == Some(task_id);
                                                     ws.tasks.retain(|t| t.id != task_id);
-                                                    task_db::delete_task(&this.db.conn, task_id)
-                                                        .ok();
+                                                }
 
-                                                    if was_draft || was_active {
+                                                // ── 数据库删除 + 级联清理 (P0) ──
+                                                let delete_result =
+                                                    task_db::delete_task(&this.db.conn, task_id);
+
+                                                match delete_result {
+                                                    Ok(()) => {
+                                                        // ── P2: 清理文件系统目录 ────
+                                                        if !task_title.is_empty() {
+                                                            let task_dir = this.get_task_dir_for_ids(
+                                                                ws_id, task_id, &task_title,
+                                                            );
+                                                            if task_dir.exists() {
+                                                                let _ = std::fs::remove_dir_all(&task_dir);
+                                                            }
+                                                        }
+
+                                                        // ── P2: 清理 JobManager 状态 ─
+                                                        this.job_manager.current_claude_run = this.job_manager.current_claude_run
+                                                            .as_ref()
+                                                            .filter(|r| r.task_id != Some(task_id))
+                                                            .cloned();
+
+                                                        if this.job_manager.general_ai_task_id == Some(task_id) {
+                                                            this.job_manager.reset_general_ai_run();
+                                                        }
+
+                                                        this.job_manager.subagent_messages
+                                                            .retain(|_, s| s.task_id != Some(task_id));
+
+                                                        this.task_active_states.remove(&task_id);
+
+                                                        // ── 删除成功提示 ────────────
+                                                        this.messages.push(
+                                                            crate::memory::types::ChatMessage::new(
+                                                                "system",
+                                                                &format!(
+                                                                    "✅ 任务已删除: {} (id={})",
+                                                                    task_title, task_id,
+                                                                ),
+                                                            ),
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        // ── P3: 删除失败 → 回滚 UI + 提示 ─
+                                                        eprintln!(
+                                                            "Failed to delete task {}: {}",
+                                                            task_id, e
+                                                        );
+
+                                                        // 回滚内存状态
                                                         if let Ok(rows) = task_db::load_tasks(
                                                             &this.db.conn,
                                                             ws_id,
                                                         ) {
-                                                            ws.tasks = rows
-                                                                .into_iter()
-                                                                .map(|t| TaskItem {
-                                                                    id: t.id,
-                                                                    title: t.title,
-                                                                    is_draft: t.is_draft,
-                                                                })
-                                                                .collect();
+                                                            if let Some(ws) = this
+                                                                .workspaces
+                                                                .iter_mut()
+                                                                .find(|w| w.id == ws_id)
+                                                            {
+                                                                ws.tasks = rows
+                                                                    .into_iter()
+                                                                    .map(|t| TaskItem {
+                                                                        id: t.id,
+                                                                        title: t.title,
+                                                                        is_draft: t.is_draft,
+                                                                    })
+                                                                    .collect();
+                                                            }
                                                         }
-                                                    }
 
-                                                    if was_active {
-                                                        this.active_task_id = ws
-                                                            .tasks
+                                                        this.messages.push(
+                                                            crate::memory::types::ChatMessage::new(
+                                                                "system",
+                                                                &format!(
+                                                                    "❌ 删除任务失败 (id={}): {}",
+                                                                    task_id, e,
+                                                                ),
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+
+                                                // ── 删除后切换 active task ─────────
+                                                if was_active {
+                                                    this.active_task_id = if let Some(ws) = this
+                                                        .workspaces
+                                                        .iter()
+                                                        .find(|w| w.id == ws_id)
+                                                    {
+                                                        ws.tasks
                                                             .iter()
                                                             .find(|t| t.is_draft)
                                                             .map(|t| t.id)
-                                                            .or_else(|| {
-                                                                ws.tasks.first().map(|t| t.id)
-                                                            });
-                                                        this.restore_task_context();
-                                                    }
-                                                    cx.notify();
+                                                            .or_else(|| ws.tasks.first().map(|t| t.id))
+                                                    } else {
+                                                        None
+                                                    };
+                                                    this.restore_task_context();
                                                 }
+                                                cx.notify();
                                             },
                                         ),
                                     )

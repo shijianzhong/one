@@ -1,24 +1,21 @@
 use std::collections::HashMap;
-use std::sync::mpsc::{self, TryRecvError};
-use std::time::Duration;
 
 use gpui::Context;
 
-use crate::agents::claude_code::{ClaudeStreamEvent, ClaudeCodeAgent};
+use crate::agents::claude_code::{ClaudeCodeAgent, ClaudeStreamEvent};
 use crate::agents::core::{AgentFactory, OrchestratorEvent};
 use crate::agents::types::{
-    ClaudeRunPanelState, ClaudeRunStatus, ClaudeRunEvent, ClaudeRunTone, SubagentMessageState,
-    SubagentStatus, SubagentEventEntry, SubagentEventTone, PreviewState, PreviewStatus,
-    PendingQuestion, RequestKind,
+    ClaudeRunEvent, ClaudeRunPanelState, ClaudeRunStatus, ClaudeRunTone, PendingQuestion,
+    PreviewState, PreviewStatus, RequestKind, SubagentEventEntry, SubagentEventTone, SubagentMessageState,
+    SubagentStatus,
 };
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
-use crate::services::api::call_chat_api_stream;
 use crate::services::summarize_conversation_async;
 use crate::{
-    escape_visible_snippet, log_think_boundary_newlines, normalize_single_line_label,
-    parse_tools_from_json, strip_think_tags, task_db, AppState,
+    log_think_boundary_newlines, normalize_single_line_label, parse_tools_from_json,
+    strip_think_tags, task_db, AppState,
 };
 use super::events::*;
 
@@ -237,9 +234,9 @@ impl AppState {
             )
         });
 
-        let (sender, receiver) = mpsc::channel::<ClaudeStreamEvent>();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<ClaudeStreamEvent>();
         let worker_sender = sender.clone();
-        let final_sender = sender.clone();
+        let final_sender = sender;
         let instruction_for_worker = instruction.clone();
         let session_id_for_worker = session_id.clone();
         let project_dir_for_worker = project_dir.clone();
@@ -273,47 +270,28 @@ impl AppState {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| loop {
-            let mut disconnected = false;
-
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => {
-                        let _ = this.update(cx, |this, cx| {
-                            if let Some(rid) = log_run_id {
-                                if let Some(mapped) = map_claude_to_run_event(&event) {
-                                    let recorder = RunRecorder::attach(&this.db.conn, rid);
-                                    recorder.record(&mapped);
-                                    match mapped {
-                                        RunEvent::Finished { .. } => {
-                                            recorder.finish(RunStatus::Finished);
-                                        }
-                                        RunEvent::Failed { .. } => {
-                                            recorder.finish(RunStatus::Failed);
-                                        }
-                                        _ => {}
-                                    }
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = receiver.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(rid) = log_run_id {
+                        if let Some(mapped) = map_claude_to_run_event(&event) {
+                            let recorder = RunRecorder::attach(&this.db.conn, rid);
+                            recorder.record(&mapped);
+                            match mapped {
+                                RunEvent::Finished { .. } => {
+                                    recorder.finish(RunStatus::Finished);
                                 }
+                                RunEvent::Failed { .. } => {
+                                    recorder.finish(RunStatus::Failed);
+                                }
+                                _ => {}
                             }
-                            this.apply_claude_run_event(run_id, event);
-                            cx.notify();
-                        });
+                        }
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
+                    this.apply_claude_run_event(run_id, event);
+                    cx.notify();
+                });
             }
-
-            if disconnected {
-                break;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(60))
-                .await;
         })
         .detach();
     }
@@ -707,7 +685,7 @@ impl AppState {
         let job_id = self.job_manager.allocate_summarize_job_id();
         self.job_manager.summarize_job_id = Some(job_id);
 
-        let (sender, receiver) = mpsc::channel::<SummarizeEvent>();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<SummarizeEvent>();
         let sender_ok = sender.clone();
         let sender_err = sender;
 
@@ -731,32 +709,13 @@ impl AppState {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| loop {
-            let mut disconnected = false;
-
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => {
-                        let _ = this.update(cx, |this, cx| {
-                            this.apply_summarize_event(event);
-                            cx.notify();
-                        });
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = receiver.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.apply_summarize_event(event);
+                    cx.notify();
+                });
             }
-
-            if disconnected {
-                break;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(60))
-                .await;
         })
         .detach();
     }
@@ -822,9 +781,9 @@ impl AppState {
         let api_key = self.model_api_key.clone();
         let model = self.model_name.clone();
 
-        let (sender, receiver) = mpsc::channel::<GeneralAiStreamEvent>();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<GeneralAiStreamEvent>();
         let delta_sender = sender.clone();
-        let final_sender = sender.clone();
+        let final_sender = sender;
 
         let task_for_async = task.clone();
         gpui_tokio::Tokio::spawn(cx, async move {
@@ -917,9 +876,9 @@ impl AppState {
 
             let run_id = self.begin_general_ai_run();
 
-            let (sender, receiver) = mpsc::channel::<GeneralAiStreamEvent>();
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<GeneralAiStreamEvent>();
             let delta_sender = sender.clone();
-            let final_sender = sender.clone();
+            let final_sender = sender;
 
             let tools_for_async = tools;
             gpui_tokio::Tokio::spawn(cx, async move {
@@ -950,35 +909,16 @@ impl AppState {
     fn poll_general_ai_events(
         &mut self,
         run_id: u64,
-        receiver: mpsc::Receiver<GeneralAiStreamEvent>,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<GeneralAiStreamEvent>,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |this, cx| loop {
-            let mut disconnected = false;
-
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => {
-                        let _ = this.update(cx, |this, cx| {
-                            this.apply_general_ai_stream_event(run_id, event, cx);
-                            cx.notify();
-                        });
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = receiver.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.apply_general_ai_stream_event(run_id, event, cx);
+                    cx.notify();
+                });
             }
-
-            if disconnected {
-                break;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(60))
-                .await;
         })
         .detach();
     }
@@ -1026,9 +966,9 @@ impl AppState {
             )
         });
 
-        let (sender, receiver) = mpsc::channel::<OrchestratorWrapperEvent>();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<OrchestratorWrapperEvent>();
         let event_sender = sender.clone();
-        let final_sender = sender.clone();
+        let final_sender = sender;
 
         let session_id = format!("orchestrator-{}", run_id);
         let instruction_for_task = instruction.clone();
@@ -1056,13 +996,10 @@ impl AppState {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| loop {
-            let mut disconnected = false;
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => {
-                        let _ = this.update(cx, |this, cx| {
-                            match event {
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = receiver.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    match event {
                                 OrchestratorWrapperEvent::Event(e) => match e {
                                     OrchestratorEvent::Plan { plan } => {
                                         if let Some(rid) = log_run_id {
@@ -1239,20 +1176,7 @@ impl AppState {
                             cx.notify();
                         });
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-            if disconnected {
-                break;
-            }
-            cx.background_executor()
-                .timer(Duration::from_millis(60))
-                .await;
-        })
-        .detach();
+                })
+                .detach();
     }
 }

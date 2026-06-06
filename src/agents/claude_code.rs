@@ -3,10 +3,10 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub enum ClaudeStreamEvent {
@@ -195,7 +195,7 @@ impl ClaudeCodeAgent {
         project_dir: &PathBuf,
         instruction: &str,
         session_id: Option<&str>,
-        sender: Sender<ClaudeStreamEvent>,
+        sender: UnboundedSender<ClaudeStreamEvent>,
     ) -> Result<String> {
         std::fs::create_dir_all(project_dir).with_context(|| {
             format!("Failed to create Claude workdir: {}", project_dir.display())

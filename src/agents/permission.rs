@@ -198,6 +198,14 @@ fn queue() -> &'static Mutex<ApprovalQueue> {
     QUEUE.get_or_init(|| Mutex::new(ApprovalQueue::default()))
 }
 
+static APPROVAL_NOTIFY: OnceLock<std::sync::Arc<tokio::sync::Notify>> = OnceLock::new();
+
+pub fn approval_notify() -> std::sync::Arc<tokio::sync::Notify> {
+    APPROVAL_NOTIFY
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Notify::new()))
+        .clone()
+}
+
 /// 投递本机审批请求但不等待结果。返回 oneshot Receiver，调用方在需要时 await。
 /// 用于 Extreme 双确认：先投递弹窗，等暗号验证通过后再等待弹窗结果。
 pub fn enqueue_detached(
@@ -216,6 +224,7 @@ pub fn enqueue_detached(
             responder: tx,
         });
     }
+    approval_notify().notify_one();
     Some(rx)
 }
 
@@ -232,6 +241,7 @@ async fn enqueue_request(kind: ToolKind, detail: String) -> Option<bool> {
             responder: tx,
         });
     }
+    approval_notify().notify_one();
     rx.await.ok()
 }
 

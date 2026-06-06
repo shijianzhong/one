@@ -53,6 +53,14 @@ fn queue() -> &'static Mutex<ProposalQueue> {
     QUEUE.get_or_init(|| Mutex::new(ProposalQueue::default()))
 }
 
+static SOUL_NOTIFY: OnceLock<std::sync::Arc<tokio::sync::Notify>> = OnceLock::new();
+
+pub fn soul_notify() -> std::sync::Arc<tokio::sync::Notify> {
+    SOUL_NOTIFY
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Notify::new()))
+        .clone()
+}
+
 fn soul_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -71,6 +79,7 @@ pub fn submit_proposal(rationale: String, new_content: String) -> Option<u64> {
     let id = q.next_id;
     q.pending
         .push(SoulProposal::new(id, rationale, new_content, previous_content));
+    soul_notify().notify_one();
     Some(id)
 }
 

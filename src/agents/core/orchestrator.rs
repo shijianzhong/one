@@ -339,8 +339,7 @@ impl Orchestrator {
 
         // ── Coding agent: stream Claude Code output in real time ──────────────
         if agent_id == "coding" {
-            use std::sync::mpsc;
-            let (tx, rx) = mpsc::channel::<ClaudeStreamEvent>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ClaudeStreamEvent>();
             let tx2 = tx.clone(); // keep sender alive until we drop it
             let task_owned = task.to_string();
             let project_dir = std::path::PathBuf::from(".");
@@ -357,8 +356,8 @@ impl Orchestrator {
             let mut final_result = String::new();
 
             loop {
-                match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(event) => {
+                match rx.blocking_recv() {
+                    Some(event) => {
                         let is_terminal = matches!(
                             event,
                             ClaudeStreamEvent::Finished { .. } | ClaudeStreamEvent::Failed { .. }
@@ -376,12 +375,7 @@ impl Orchestrator {
                             break;
                         }
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if handle.is_finished() {
-                            break;
-                        }
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    None => break,
                 }
             }
 

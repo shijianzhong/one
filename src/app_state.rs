@@ -5,9 +5,7 @@ use std::process::{Child, Command, Stdio};
 use gpui::{Context, Pixels, Point, ScrollHandle, Window};
 
 use crate::agents;
-use crate::agents::types::{
-    ClaudeRunPanelState, PreviewLaunchResult, RequestKind, SubagentMessageState,
-};
+use crate::agents::types::PreviewLaunchResult;
 
 /// A question from Claude Code waiting for user interaction
 #[derive(Debug, Clone)]
@@ -235,10 +233,20 @@ impl AppState {
         state
     }
 
-    /// Spin up a background pump that periodically drains the global
-    /// permission approval queue and surfaces the next request as a dialog.
+    /// Spin up a background pump that wait for global permission approval
+    /// or soul proposal notifications and surfaces the next request as a dialog.
     fn start_approval_pump(&self, cx: &mut Context<Self>) {
+        let perm_notify = crate::agents::permission::approval_notify();
+        let soul_notify = crate::agents::soul::soul_notify();
+
         cx.spawn(async move |this, cx| loop {
+            // Wait for either a permission or a soul proposal notification.
+            // This is zero CPU usage while waiting.
+            tokio::select! {
+                _ = perm_notify.notified() => {}
+                _ = soul_notify.notified() => {}
+            }
+
             let _ = this.update(cx, |state, cx| {
                 if state.pending_approval.is_none() {
                     if let Some(req) = crate::agents::permission::drain_next() {
@@ -253,9 +261,6 @@ impl AppState {
                     }
                 }
             });
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(120))
-                .await;
         })
         .detach();
     }

@@ -8,14 +8,12 @@ pub mod tools;
 pub mod system_agent;
 pub mod coding_agent;
 pub mod factory;
-pub mod memory_agent;
 pub mod main_agent;
 
 pub use main_agent::MainAgent;
 pub use orchestrator::{Orchestrator, OrchestratorEvent};
 pub use system_agent::SystemAgent;
 pub use coding_agent::CodingAgent;
-pub use memory_agent::MemoryAgent;
 pub use factory::AgentFactory;
 
 /// Trait for tools that agents can use

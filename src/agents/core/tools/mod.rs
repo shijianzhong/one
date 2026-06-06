@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use super::{Tool};
+use super::Tool;
 
 pub struct ProcessListTool;
 
@@ -185,49 +185,5 @@ fn truncate_utf8(data: &[u8], max_bytes: usize) -> String {
         // Use String::from_utf8_lossy which handles boundary issues gracefully
         let truncated = String::from_utf8_lossy(&data[..max_bytes]).to_string();
         truncated + "… [truncated]"
-    }
-}
-
-pub struct MemoryTool {
-    pub workspace: String,
-}
-
-#[async_trait]
-impl Tool for MemoryTool {
-    fn name(&self) -> &str { "manage_memory" }
-    fn description(&self) -> &str { "记录或查询关于用户的永久事实、偏好或重要信息。用于实现长期记忆。" }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["save_fact", "get_all_facts"],
-                    "description": "要执行的操作"
-                },
-                "fact": {
-                    "type": "string",
-                    "description": "要记录的事实内容（仅在 action 为 save_fact 时需要）"
-                }
-            },
-            "required": ["action"]
-        })
-    }
-
-    async fn call(&self, arguments: Value) -> Result<Value> {
-        let action = arguments["action"].as_str().ok_or_else(|| anyhow::anyhow!("Missing action"))?;
-
-        match action {
-            "save_fact" => {
-                let fact = arguments["fact"].as_str().ok_or_else(|| anyhow::anyhow!("Missing fact"))?;
-                crate::memory::profile::save_fact(&self.workspace, fact)?;
-                Ok(json!({ "status": "success", "message": "Fact saved to user profile" }))
-            }
-            "get_all_facts" => {
-                let facts = crate::memory::profile::get_all_facts(&self.workspace);
-                Ok(json!(facts))
-            }
-            _ => Err(anyhow::anyhow!("Unknown action")),
-        }
     }
 }

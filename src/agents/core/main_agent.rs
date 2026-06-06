@@ -34,10 +34,13 @@ impl MainAgent {
              - 每次对话开始时先调 recall 查看已有信息，避免重复提问。\n\
              - 遇到关于用户个人的信息（姓名、偏好、职业、语言习惯）→ remember(scope=\"global\")。\n\
              - 遇到关于当前项目/工作区的信息（技术栈、规范、路径、团队成员）→ remember(scope=\"workspace\")。\n\
-             - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。",
+             - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。\n\n\
+             你可以使用 update_work_dir 工具切换工作目录。默认工作目录是整个项目的根目录。\
+             如果需要在子项目目录中运行构建或测试命令（如 cargo test、npm run build），\
+             请先用 update_work_dir 切换至正确的子目录，再调用 run_claude_code 执行任务。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
-            std::env::consts::OS
+            std::env::consts::OS,
         );
 
         let tools: Vec<Arc<dyn Tool>> = vec![
@@ -48,6 +51,7 @@ impl MainAgent {
             Arc::new(RememberTool { workspace: workspace.clone() }),
             Arc::new(RecallTool { workspace: workspace.clone() }),
             Arc::new(ProposeSoulUpdateTool),
+            Arc::new(UpdateWorkDirTool),
         ];
 
         Self {
@@ -430,6 +434,41 @@ impl Tool for CleanDiskTool {
             "message": result,
             "freed_bytes": freed_bytes,
             "freed_human": human_bytes(freed_bytes)
+        }))
+    }
+}
+
+/// 工作目录切换工具：允许 MainAgent 动态切换 Claude Code 的启动目录
+struct UpdateWorkDirTool;
+#[async_trait]
+impl Tool for UpdateWorkDirTool {
+    fn name(&self) -> &str { "update_work_dir" }
+    fn description(&self) -> &str {
+        "切换当前工作目录至指定路径。默认情况下，整个工作区根目录为工作目录以保持全局视野。\
+         当需要运行 cargo、npm、go 等构建工具命令，且在当前目录找不到对应的配置文件时，\
+         应使用此工具切换至对应的子项目目录（如 server/、frontend/、backend/ 等）。\
+         注意：此工具仅修改 Claude Code 的执行目录，不影响工作区结构。"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "目标子项目目录路径，支持相对于当前工作目录的相对路径或绝对路径"
+                }
+            },
+            "required": ["path"]
+        })
+    }
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
+        let path = args["path"].as_str().unwrap_or_default().to_string();
+        if path.is_empty() {
+            return Ok(json!({ "status": "error", "message": "未提供路径参数" }));
+        }
+        Ok(json!({
+            "status": "success",
+            "message": format!("准备切换工作目录至: {}。将在下一次 Claude Code 调用时生效。", path)
         }))
     }
 }

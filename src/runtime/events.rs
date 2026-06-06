@@ -55,6 +55,6 @@ pub fn map_claude_to_run_event(event: &ClaudeStreamEvent) -> Option<RunEvent> {
         ClaudeStreamEvent::Failed { error } => Some(RunEvent::Failed {
             error: error.clone(),
         }),
-        ClaudeStreamEvent::Stderr(_) | ClaudeStreamEvent::Session { .. } => None,
+        ClaudeStreamEvent::Stderr(_) | ClaudeStreamEvent::Session { .. } | ClaudeStreamEvent::ModifiedFiles { .. } => None,
     }
 }

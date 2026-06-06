@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::Result;
 
@@ -8,7 +9,7 @@ use crate::services::config::Config;
 pub struct AgentFactory;
 
 impl AgentFactory {
-    pub fn create_orchestrator(config: &Config, workspace_name: &str) -> Result<Orchestrator> {
+    pub fn create_orchestrator(config: &Config, workspace_name: &str, work_dir: PathBuf) -> Result<Orchestrator> {
         let mut sub_agents: HashMap<String, Arc<dyn Agent>> = HashMap::new();
 
         let system_agent = Arc::new(SystemAgent::new(
@@ -35,6 +36,6 @@ impl AgentFactory {
             workspace_name.to_string(),
         ));
 
-        Ok(Orchestrator::new(main_agent, sub_agents))
+        Ok(Orchestrator::new(main_agent, sub_agents, work_dir))
     }
 }

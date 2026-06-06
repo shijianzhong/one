@@ -134,6 +134,7 @@ pub struct ClaudeRunPanelState {
     pub session_id: Option<String>,
     pub artifacts: Vec<ArtifactEntry>,
     pub pending_question: Option<PendingQuestion>,
+    pub modified_files: Vec<String>,
 }
 
 // ── Subagent card (chat message rendering) ────────────────────────────────────

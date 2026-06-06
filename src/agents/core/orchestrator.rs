@@ -23,16 +23,19 @@ pub enum OrchestratorEvent {
 pub struct Orchestrator {
     main_agent: Arc<dyn Agent>,
     sub_agents: std::collections::HashMap<String, Arc<dyn Agent>>,
+    work_dir: std::sync::Mutex<std::path::PathBuf>,
 }
 
 impl Orchestrator {
     pub fn new(
         main_agent: Arc<dyn Agent>,
         sub_agents: std::collections::HashMap<String, Arc<dyn Agent>>,
+        work_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             main_agent,
             sub_agents,
+            work_dir: std::sync::Mutex::new(work_dir),
         }
     }
 
@@ -289,7 +292,26 @@ impl Orchestrator {
                         }
                     }
                 }
-                // Generic tool execution for tools owned by the MainAgent itself (e.g. remember, update_soul)
+                // Generic tool execution for tools owned by the MainAgent itself (e.g. remember, update_soul, update_work_dir)
+                "update_work_dir" => {
+                    let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+                    let new_path = args["path"].as_str().unwrap_or_default().to_string();
+                    if !new_path.is_empty() {
+                        let path = std::path::PathBuf::from(&new_path);
+                        if path.exists() {
+                            *self.work_dir.lock().unwrap() = path;
+                            serde_json::json!({
+                                "status": "success",
+                                "path": new_path,
+                                "message": format!("工作目录已切换至: {}", new_path)
+                            }).to_string()
+                        } else {
+                            format!("Error: 路径不存在: {}", new_path)
+                        }
+                    } else {
+                        "Error: 未提供路径参数".to_string()
+                    }
+                }
                 _ => {
                     if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == call.name) {
                         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
@@ -342,13 +364,14 @@ impl Orchestrator {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ClaudeStreamEvent>();
             let tx2 = tx.clone(); // keep sender alive until we drop it
             let task_owned = task.to_string();
-            let project_dir = std::path::PathBuf::from(".");
+            let project_dir = self.work_dir.lock().unwrap().clone();
+            let session_owned = session_id.to_string();
 
             let handle = std::thread::spawn(move || {
                 crate::agents::claude_code::ClaudeCodeAgent::execute_instruction_stream(
                     &project_dir,
                     &task_owned,
-                    None,
+                    Some(&session_owned),
                     tx,
                 )
             });

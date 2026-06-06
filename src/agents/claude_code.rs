@@ -27,6 +27,9 @@ pub enum ClaudeStreamEvent {
         prompt: String,
         options: Vec<String>,
     },
+    ModifiedFiles {
+        files: Vec<String>,
+    },
     Finished {
         result: String,
     },
@@ -309,6 +312,14 @@ impl ClaudeCodeAgent {
             return Err(anyhow!("claude exited with status {}", status));
         }
 
+        // ── Git diff: 检测 Claude Code 修改了哪些文件 ──────────────────────
+        let modified_files = Self::detect_modified_files(project_dir);
+        if !modified_files.is_empty() {
+            let _ = sender.send(ClaudeStreamEvent::ModifiedFiles {
+                files: modified_files,
+            });
+        }
+
         let final_text = if result_text.trim().is_empty() {
             result_override.unwrap_or_default()
         } else {
@@ -316,6 +327,40 @@ impl ClaudeCodeAgent {
         };
 
         Ok(final_text)
+    }
+
+    /// 在 project_dir 中执行 git diff --name-only，返回 Claude Code 修改过的文件列表。
+    fn detect_modified_files(project_dir: &PathBuf) -> Vec<String> {
+        // 首先检查是否是 git 仓库
+        let git_dir = project_dir.join(".git");
+        if !git_dir.exists() {
+            return vec![];
+        }
+
+        let output = match Command::new("git")
+            .args(["-C", &project_dir.to_string_lossy(), "diff", "--name-only"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => return vec![],
+        };
+
+        if !output.status.success() {
+            return vec![];
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let files: Vec<String> = stdout
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if files.is_empty() {
+            return vec![];
+        }
+
+        files
     }
 }
 

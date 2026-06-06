@@ -202,6 +202,7 @@ impl AppState {
                 .map(|dir| Self::load_artifacts_for_task_dir(&dir))
                 .unwrap_or_default(),
             pending_question: None,
+            modified_files: Vec::new(),
         });
         self.persist_current_claude_state();
         self.insert_subagent_message(run_id, instruction.to_string());
@@ -402,6 +403,15 @@ impl AppState {
                         format!("{}: {}", t(lang, Translations::SESSION_ID), session_id),
                     ));
                 }
+                ClaudeStreamEvent::ModifiedFiles { ref files } => {
+                    if !files.is_empty() {
+                        run.modified_files = files.clone();
+                        run.events.push(ClaudeRunEvent::info(
+                            "Modified Files".to_string(),
+                            format!("Modified: {}", files.join(", ")),
+                        ));
+                    }
+                }
                 ClaudeStreamEvent::AskUserQuestion {
                     prompt,
                     options,
@@ -533,6 +543,15 @@ impl AppState {
                     detail: prompt.clone(),
                     tone: SubagentEventTone::Info,
                 });
+            }
+            ClaudeStreamEvent::ModifiedFiles { files } => {
+                if !files.is_empty() {
+                    state.events.push(SubagentEventEntry {
+                        title: "Modified Files".to_string(),
+                        detail: format!("{} file(s) changed:\n{}", files.len(), files.join("\n")),
+                        tone: SubagentEventTone::Info,
+                    });
+                }
             }
             _ => {}
         }
@@ -930,7 +949,11 @@ impl AppState {
             None => "Default".to_string(),
         };
 
-        let orchestrator = match AgentFactory::create_orchestrator(&config, &workspace_name) {
+        let orchestrator = match AgentFactory::create_orchestrator(
+            &config,
+            &workspace_name,
+            std::path::PathBuf::from(self.get_work_dir()),
+        ) {
             Ok(o) => o,
             Err(e) => {
                 self.messages.push(ChatMessage::new(
@@ -1081,6 +1104,10 @@ impl AppState {
                                             crate::memory::snapshot::generate_snapshot_sync(
                                                 &base_url, &api_key, &model,
                                                 &messages, task_id, &task_title, &ws_name,
+                                            );
+                                            // ── 写入 L3 chunk ──────────────────────────
+                                            let _ = crate::memory::storage::save_task_memory_async(
+                                                ws_name, task_id, task_title, messages,
                                             );
                                         });
                                     }

@@ -32,17 +32,28 @@
 - `src/agents/core/orchestrator.rs` — `execute_tool_calls_and_feed_back` 拦截 `update_work_dir`
 - 编译通过 ✅
 
-## Task 删除问题修复 - [✅ 已完成]
+## 方案C：跨 Task Memory 自动提取 - [✅ 已完成]
 
-### 根因分析
-1. **P0** `delete_task` 只删了 `messages` 和 `tasks` 表，遗漏 `task_runs`、`run_events`、`agent_instances`、`agent_conversations`
-2. **P1** 删除前未检查任务是否在运行，导致数据库状态混乱
-3. **P2** 未清理 JobManager 状态 (`current_claude_run`、`general_ai_task_id`、`subagent_messages`、`task_active_states`) 和文件系统目录
-4. **P3** 所有错误被 `.ok()` 静默吞掉，用户无感知
+### 问题
+LLM 口头说"我用 remember 记住"但未真正调用工具，导致 profile 为空，
+切换到新 task 后不记得"小一"这个名字。
+
+### C-1: 任务结束时自动将 facts 写入 profile
+`src/memory/snapshot.rs` → `generate_snapshot_sync()`:
+- snapshot 生成后，自动从 `key_facts` 和 `preferences` 中提取事实
+- 用户相关事实（命名、偏好等）写入 global scope
+- 项目相关事实写入 workspace scope
+- **不再依赖 LLM 自觉调用 remember 工具**
+
+### C-2: 增强 build_memory_context 注入质量
+`src/memory/snapshot.rs` → `build_memory_context()`:
+- L3 检索从最多 3 条增加到 5 条
+- 内容截断从 200 字符增加到 400 字符，使用安全的 char boundary 截断
+- 新增注入相关 task 的 snapshot key facts
+- 本 task 的 snapshot 信息也注入到 system prompt（当前 task 的 key facts、summary、preferences）
 
 ### 改动文件
-- `src/task_db.rs` — `delete_task` 级联清理 5 张关联表
-- `src/ui/nav.rs` — 删除前检查 `is_task_active`；删除后清理 JobManager 状态 + 文件系统目录；成功/失败均向 chat 发消息提示
+- `src/memory/snapshot.rs` — 两个函数均修改
 - 编译通过 ✅
   - [x] `src/agents/types.rs`: `ClaudeRunPanelState` 增加 `modified_files: Vec<String>` 字段
   - [x] `src/runtime/job_manager.rs`: `apply_claude_run_event` 处理 `ModifiedFiles` 事件

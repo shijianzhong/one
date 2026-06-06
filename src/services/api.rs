@@ -121,7 +121,8 @@ where
     eprintln!("Messages ({}):", request_body.messages.len());
     for (i, msg) in request_body.messages.iter().enumerate() {
         let role = msg["role"].as_str().unwrap_or("");
-        let content_preview = &msg["content"].as_str().unwrap_or("")[..std::cmp::min(200, msg["content"].as_str().unwrap_or("").len())];
+        let content_str = msg["content"].as_str().unwrap_or("");
+        let content_preview = content_str;
         let has_tools = msg.get("tool_calls").is_some();
         eprintln!("  [{}] role={} content={}{}", i, role, content_preview, if has_tools { " [has tool_calls]" } else { "" });
     }

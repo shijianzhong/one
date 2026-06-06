@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gpui::Context;
 
@@ -30,16 +32,21 @@ pub struct JobManager {
     pub orchestrator_agent_run_map: HashMap<String, u64>,
     /// Active Claude Code question waiting for user answer (from any path)
     pub pending_claude_question: Option<crate::app_state::PendingClaudeQuestion>,
-    
+
     pub next_general_ai_run_id: u64,
     pub general_ai_run_id: Option<u64>,
     pub general_ai_task_id: Option<usize>,
     pub general_ai_live_text: String,
     pub general_ai_show_live_bubble: bool,
-    
+
     pub next_summarize_job_id: u64,
     pub summarize_job_id: Option<u64>,
     pub pending_confirmation_tools: Option<(Vec<system_tools::Tool>, String)>,
+
+    /// 取消标志：停止按钮触发后设为 true
+    pub cancel_flag: Arc<AtomicBool>,
+    /// Claude Code 子进程 PID（用于 kill），通过 AtomicU32 共享给 worker 线程
+    pub claude_child_pid: Option<Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl JobManager {
@@ -61,6 +68,8 @@ impl JobManager {
             next_summarize_job_id: 0,
             summarize_job_id: None,
             pending_confirmation_tools: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            claude_child_pid: None,
         }
     }
 
@@ -117,6 +126,36 @@ impl JobManager {
 }
 
 impl AppState {
+    /// 停止当前所有正在运行的任务（Claude Code / Orchestrator）
+    pub(crate) fn cancel_current_run(&mut self, cx: &mut Context<Self>) {
+        // 1. 设置取消标志
+        self.job_manager.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // 2. Kill Claude Code 子进程（如果有）
+        if let Some(pid_arc) = self.job_manager.claude_child_pid.take() {
+            let pid = pid_arc.load(std::sync::atomic::Ordering::SeqCst);
+            if pid > 0 {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output();
+            }
+        }
+
+        // 3. 清理所有请求状态
+        self.job_manager.clear_request_full();
+        self.job_manager.reset_general_ai_run();
+        self.job_manager.current_claude_run = None;
+        self.job_manager.pending_claude_question = None;
+        self.job_manager.orchestrator_agent_run_map.clear();
+
+        // 4. 标记当前 task 不活跃
+        if let Some(tid) = self.active_task_id {
+            self.mark_task_inactive(Some(tid));
+        }
+
+        cx.notify();
+    }
+
     pub(crate) fn persist_current_claude_state(&self) {
         let Some(run) = self.job_manager.current_claude_run.as_ref() else {
             return;
@@ -242,6 +281,14 @@ impl AppState {
         let session_id_for_worker = session_id.clone();
         let project_dir_for_worker = project_dir.clone();
 
+        // 创建取消标志的副本，传给 claude code 进程
+        let cancel_flag = self.job_manager.cancel_flag.clone();
+
+        // 用 AtomicU32 存储子进程 PID
+        let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let child_pid_for_worker = child_pid.clone();
+        self.job_manager.claude_child_pid = Some(child_pid);
+
         gpui_tokio::Tokio::spawn(cx, async move {
             let result = tokio::task::spawn_blocking(move || {
                 ClaudeCodeAgent::execute_instruction_stream(
@@ -249,6 +296,8 @@ impl AppState {
                     &instruction_for_worker,
                     session_id_for_worker.as_deref(),
                     worker_sender,
+                    Some(cancel_flag),
+                    Some(&child_pid_for_worker),
                 )
             })
             .await;

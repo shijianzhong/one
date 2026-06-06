@@ -1213,10 +1213,7 @@ impl AppState {
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                         if this.job_manager.request_in_flight {
-                                            // 停止生成：重置请求状态
-                                            this.job_manager.request_in_flight = false;
-                                            this.job_manager.request_status_text = None;
-                                            cx.notify();
+                                            this.cancel_current_run(cx);
                                             return;
                                         }
                                         if let Some(editor) = weak_composer.upgrade() {

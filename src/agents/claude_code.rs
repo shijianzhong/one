@@ -3,6 +3,8 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
@@ -199,6 +201,8 @@ impl ClaudeCodeAgent {
         instruction: &str,
         session_id: Option<&str>,
         sender: UnboundedSender<ClaudeStreamEvent>,
+        cancel_flag: Option<Arc<AtomicBool>>,
+        child_pid: Option<&std::sync::atomic::AtomicU32>,
     ) -> Result<String> {
         std::fs::create_dir_all(project_dir).with_context(|| {
             format!("Failed to create Claude workdir: {}", project_dir.display())
@@ -258,6 +262,11 @@ impl ClaudeCodeAgent {
             )
         })?;
 
+        // ── 存储子进程 PID（用于外部 kill） ─────────────────────────────
+        if let Some(pid_storage) = child_pid {
+            pid_storage.store(child.id(), Ordering::SeqCst);
+        }
+
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let stderr = child.stderr.take().context("Failed to capture stderr")?;
         let reader = BufReader::new(stdout);
@@ -284,8 +293,20 @@ impl ClaudeCodeAgent {
         let mut result_text = String::new();
         let mut result_override: Option<String> = None;
 
-        for line in reader.lines() {
-            let line = line.context("Failed to read line")?;
+        for line_result in reader.lines() {
+            // ── 检查取消信号 ────────────────────────────────────────────
+            if let Some(ref flag) = cancel_flag {
+                if flag.load(Ordering::SeqCst) {
+                    let _ = child.kill();
+                    let _ = sender.send(ClaudeStreamEvent::Failed {
+                        error: "用户取消了操作".to_string(),
+                    });
+                    let _ = child.wait();
+                    return Err(anyhow!("cancelled by user"));
+                }
+            }
+
+            let line = line_result.context("Failed to read line")?;
             for event in Self::parse_stream_line(&line) {
                 match &event {
                     ClaudeStreamEvent::AssistantText(text) => {

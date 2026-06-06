@@ -10,13 +10,14 @@ use serde::Deserialize;
 pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -> String {
     let mut parts: Vec<String> = vec![];
 
+    // ── 注入本 task 的 snapshot 关键信息 ──────────────────────────
     if let Some(snap) = load_task_snapshot(workspace_name, task_id) {
         if !snap.summary.is_empty() {
-            parts.push(format!("## Task Summary\n{}", snap.summary));
+            parts.push(format!("## Current Task Summary\n{}", snap.summary));
         }
         if !snap.key_facts.is_empty() {
             parts.push(format!(
-                "## Key Facts\n{}",
+                "## Current Task Key Facts\n{}",
                 snap.key_facts
                     .iter()
                     .map(|f| format!("- {}", f))
@@ -46,16 +47,27 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
         }
     }
 
+    // ── L3 跨任务语义检索 ────────────────────────────────────────
     if !query.is_empty() {
         let all = load_l3_chunks_internal(workspace_name);
         let others: Vec<MemoryChunk> = all.into_iter().filter(|c| c.task_id != task_id).collect();
         if !others.is_empty() {
-            let hits = tfidf_search(query, &others, 3);
+            let hits = tfidf_search(query, &others, 5);
             if !hits.is_empty() {
                 let mut section = vec!["## Related Context (from other tasks)".to_string()];
-                for idx in hits {
-                    let hit = &others[idx];
-                    let preview = &hit.content[..hit.content.len().min(200)];
+                for idx in &hits {
+                    let hit = &others[*idx];
+                    // 展示更多上下文信息：task 标题 + 角色 + 完整内容（截断至400字符）
+                    let max_len = 400;
+                    let preview = if hit.content.len() > max_len {
+                        let mut end = max_len;
+                        while !hit.content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}...", &hit.content[..end])
+                    } else {
+                        hit.content.clone()
+                    };
                     section.push(format!(
                         "[Task: {}] {}: {}",
                         hit.task_title,
@@ -67,6 +79,26 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
                         preview
                     ));
                 }
+
+                // 补充：注入这些相关 task 的 snapshot key facts（如果有）
+                let mut added_tasks = std::collections::HashSet::new();
+                for idx in hits {
+                    let hit = &others[idx];
+                    if added_tasks.insert(hit.task_id) {
+                        if let Some(related_snap) = load_task_snapshot(workspace_name, hit.task_id) {
+                            if !related_snap.key_facts.is_empty() {
+                                section.push(format!(
+                                    "[Snapshot Facts from Task {}: {}]",
+                                    hit.task_id, hit.task_title
+                                ));
+                                for f in &related_snap.key_facts {
+                                    section.push(format!("  - {}", f));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 parts.push(section.join("\n"));
             }
         }
@@ -157,6 +189,27 @@ pub fn generate_snapshot_sync(
                 eprintln!("[Memory L2] snapshot OK for task {}", task_id);
                 if let Err(e) = save_task_snapshot(workspace_name, &snap) {
                     eprintln!("[Memory L2] save snapshot failed: {}", e);
+                }
+
+                // ── 自动提取 key_facts + preferences 写入 profile ──────────
+                // 不依赖 LLM 自觉调用 remember，只要 snapshot 分析出来了就自动持久化
+                for fact in &snap.key_facts {
+                    if !fact.trim().is_empty() {
+                        // 如果是用户相关的偏好/命名等，写入 global scope
+                        if fact.contains("user") || fact.contains("用户") || fact.contains("命名")
+                            || fact.contains("起名") || fact.contains("名字") || fact.contains("偏好")
+                        {
+                            let _ = crate::memory::profile::save_global_fact(fact, Some(task_id));
+                        }
+                        // 写入当前 workspace scope
+                        let _ = crate::memory::profile::save_fact(workspace_name, fact, Some(task_id));
+                    }
+                }
+                for pref in &snap.preferences {
+                    if !pref.trim().is_empty() {
+                        let _ = crate::memory::profile::save_global_fact(pref, Some(task_id));
+                        let _ = crate::memory::profile::save_fact(workspace_name, pref, Some(task_id));
+                    }
                 }
             }
             None => eprintln!("[Memory L2] parse failed: {}", resp),

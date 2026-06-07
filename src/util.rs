@@ -76,3 +76,46 @@ pub(crate) fn extract_html_hints(text: &str) -> Vec<String> {
 
     hints
 }
+
+pub(crate) fn strip_think_tags(text: &str) -> String {
+    let mut result = String::new();
+    let mut inside_think = false;
+    let mut temp = String::new();
+
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if !inside_think && ch == '<' {
+            // Check for <think>
+            let mut matched = false;
+            if let Some(&'t') = chars.peek() {
+                let remaining: String = text.chars().skip(text.chars().count() - chars.clone().count()).take(6).collect();
+                if remaining == "think>" {
+                    inside_think = true;
+                    for _ in 0..6 { chars.next(); }
+                    matched = true;
+                }
+            }
+            if !matched {
+                result.push(ch);
+            }
+        } else if inside_think && ch == '<' {
+            // Check for </think>
+            let mut matched = false;
+            if let Some(&'/') = chars.peek() {
+                let remaining: String = text.chars().skip(text.chars().count() - chars.clone().count()).take(7).collect();
+                if remaining == "/think>" {
+                    inside_think = false;
+                    for _ in 0..7 { chars.next(); }
+                    matched = true;
+                }
+            }
+            if !matched {
+                // Stay inside think
+            }
+        } else if !inside_think {
+            result.push(ch);
+        }
+    }
+
+    result.trim().to_string()
+}

@@ -96,7 +96,7 @@ impl gpui::Render for AppState {
                 this.child(self.render_skill_card_dialog(cx))
             })
             .when(self.show_cipher_dialog, |this| {
-                this.child(self.render_cipher_dialog(cx))
+                this.child(self.render_cipher_dialog(window, cx))
             })
     }
 }

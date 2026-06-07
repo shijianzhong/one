@@ -9,7 +9,7 @@ use crate::task_db;
 use crate::ui_theme::{
     ACTIVE_BG, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_PANEL,
 };
-use crate::{AppState, CancelModelConfig, OpenCipherDialog, SaveModelConfig};
+use crate::{AppState, CancelModelConfig, SaveModelConfig};
 
 impl AppState {
     pub(crate) fn render_model_config_dialog(
@@ -1077,10 +1077,43 @@ impl AppState {
             .into_any_element()
     }
 
-    pub(crate) fn render_cipher_dialog(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_cipher_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let cipher_is_set = crate::agents::remote_auth::RemoteAuth::is_cipher_set();
         let msg = self.cipher_message.clone();
         let msg_is_error = self.cipher_message_is_error;
+        let app = &mut *cx;
+
+        let telegram_token_editor =
+            window.use_keyed_state("telegram_token_editor", app, |window, cx| {
+                let mut editor = Editor::single_line(window, cx);
+                editor.set_text(self.telegram_bind_token.clone(), window, cx);
+                editor
+            });
+
+        let cipher_editor = window.use_keyed_state("cipher_editor", app, |window, cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(self.cipher_edit_text.clone(), window, cx);
+            editor
+        });
+
+        let confirm_cipher_editor =
+            window.use_keyed_state("confirm_cipher_editor", app, |window, cx| {
+                let mut editor = Editor::single_line(window, cx);
+                editor.set_text(self.cipher_confirm_text.clone(), window, cx);
+                editor
+            });
+
+        let telegram_token_focus = telegram_token_editor.read(cx).focus_handle(cx);
+        let cipher_focus = cipher_editor.read(cx).focus_handle(cx);
+        let confirm_cipher_focus = confirm_cipher_editor.read(cx).focus_handle(cx);
+
+        let weak_telegram_token = telegram_token_editor.downgrade();
+        let weak_cipher = cipher_editor.downgrade();
+        let weak_confirm_cipher = confirm_cipher_editor.downgrade();
 
         div()
             .absolute()
@@ -1138,6 +1171,27 @@ impl AppState {
                                 "⏹ 暗号未设置"
                             }),
                     )
+                    .child({
+                        let config = crate::services::load_config();
+                        let is_bound = config.telegram_bot_token.is_some() && config.telegram_chat_id.is_some();
+                        div()
+                            .text_xs()
+                            .text_color(if is_bound {
+                                gpui::hsla(0.33, 0.6, 0.5, 1.0)
+                            } else {
+                                SECONDARY_TEXT()
+                            })
+                            .child(if let (Some(token), Some(chat_id)) = (config.telegram_bot_token, config.telegram_chat_id) {
+                                let token_mask = if token.len() > 10 {
+                                    format!("{}***", &token[..6])
+                                } else {
+                                    "***".to_string()
+                                };
+                                format!("✅ Telegram 已绑定 ({} / ID: {})", token_mask, chat_id)
+                            } else {
+                                "⏹ Telegram 未绑定".to_string()
+                            })
+                    })
                     // --- Telegram 绑定区 ---
                     .child(
                         div()
@@ -1174,13 +1228,8 @@ impl AppState {
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_xs()
-                                            .text_color(SECONDARY_TEXT())
-                                            .child("Telegram Bot Token 输入区域"),
-                                    ),
+                                    .track_focus(&telegram_token_focus)
+                                    .child(telegram_token_editor),
                             )
                             .when(!self.telegram_bind_status.is_empty(), |this| {
                                 this.child(
@@ -1211,7 +1260,10 @@ impl AppState {
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener(
-                                                    |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                    move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                        if let Some(editor) = weak_telegram_token.upgrade() {
+                                                            this.telegram_bind_token = editor.read(cx).text(cx);
+                                                        }
                                                         this.start_telegram_bind(cx);
                                                     },
                                                 ),
@@ -1285,11 +1337,8 @@ impl AppState {
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .child("暗号输入区域 - 请在设置页面编辑"),
-                                    ),
+                                    .track_focus(&cipher_focus)
+                                    .child(cipher_editor),
                             ),
                     )
                     .child(
@@ -1313,11 +1362,8 @@ impl AppState {
                                     .border_1()
                                     .border_color(BORDER_LIGHT())
                                     .bg(CANVAS_BG())
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .child("确认暗号输入区域"),
-                                    ),
+                                    .track_focus(&confirm_cipher_focus)
+                                    .child(confirm_cipher_editor),
                             ),
                     )
                     .when(!msg.is_empty(), |this| {
@@ -1406,7 +1452,11 @@ impl AppState {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(
-                                            |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                            move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                                if let (Some(c), Some(cc)) = (weak_cipher.upgrade(), weak_confirm_cipher.upgrade()) {
+                                                    this.cipher_edit_text = c.read(cx).text(cx);
+                                                    this.cipher_confirm_text = cc.read(cx).text(cx);
+                                                }
                                                 this.save_cipher(cx);
                                             },
                                         ),

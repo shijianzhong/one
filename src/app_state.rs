@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use gpui::{Context, Pixels, Point, ScrollHandle, Window};
+use gpui::{AppContext, Context, Pixels, Point, ScrollHandle, Window};
 
 use crate::agents;
 use crate::agents::types::PreviewLaunchResult;
@@ -808,43 +808,170 @@ impl AppState {
             return;
         }
 
+        println!("[telegram_bind] Starting bind process for token: {}...", if token.len() > 10 { &token[..10] } else { &token });
         self.telegram_bind_status = "正在验证 Bot Token...".to_string();
         self.telegram_bind_error = false;
         cx.notify();
 
         let token_clone = token.clone();
+        let tokio_handle = gpui_tokio::Tokio::handle(cx);
+        let validate_handle = tokio_handle.clone();
+        let token_for_validate = token_clone.clone();
+        let validate_task = cx.background_spawn(async move {
+            let join_handle = validate_handle.spawn(async move {
+                let client = reqwest::Client::new();
+                let url = format!("https://api.telegram.org/bot{}/getMe", token_for_validate);
+                client
+                    .get(&url)
+                    .send()
+                    .await?
+                    .json::<serde_json::Value>()
+                    .await
+            });
+            join_handle.await
+        });
+
         cx.spawn(async move |this, cx| {
-            let client = reqwest::Client::new();
-            let url = format!("https://api.telegram.org/bot{}/getMe", token_clone);
-            let me_result = match client.get(&url).send().await {
-                Ok(resp) => resp.json::<serde_json::Value>().await.ok(),
-                Err(_) => None,
-            };
+            let me_result = validate_task.await.ok().and_then(|r| r.ok());
+            println!("[telegram_bind] Validation result: {:?}", me_result);
 
             let bind_code = format!(
                 "ONE_BIND_{}",
                 chrono::Local::now().format("%Y%m%d%H%M%S")
             );
 
+            let mut is_token_valid = false;
             let status = if let Some(me) = me_result {
                 if me.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    is_token_valid = true;
+                    let bot_name = me["result"]["first_name"].as_str().unwrap_or("Unknown Bot");
+                    println!("[telegram_bind] Token is valid. Bot name: {}", bot_name);
                     format!(
-                        "Token 有效！请在 Telegram 中给 Bot 发送消息，内容包含绑定码：\n`{}`\n\n消息发送后 Bot 会自动完成绑定。",
-                        bind_code
+                        "Token 有效！机器人：{}\n请在 Telegram 中给 Bot 发送消息，内容包含绑定码：\n`{}`\n\n正在等待消息（120秒超时）...",
+                        bot_name, bind_code
                     )
                 } else {
+                    println!("[telegram_bind] Token is invalid according to Telegram API.");
                     "Token 无效，请检查后重试".to_string()
                 }
             } else {
+                println!("[telegram_bind] Failed to connect to Telegram API or parse response.");
                 "无法连接到 Telegram API，请检查网络".to_string()
             };
 
             let _ = this.update(cx, |state, cx| {
                 state.telegram_bind_status = status;
-                state.telegram_bind_error = true;
+                state.telegram_bind_error = !is_token_valid;
                 state.telegram_bind_token = token_clone.clone();
                 cx.notify();
             });
+
+            if !is_token_valid {
+                return;
+            }
+
+            println!("[telegram_bind] Starting polling loop for bind_code: {}", bind_code);
+            // Polling for binding message
+            let start_time = std::time::Instant::now();
+            let mut offset = 0;
+            loop {
+                if std::time::Instant::now().duration_since(start_time).as_secs() > 120 {
+                    println!("[telegram_bind] Polling timeout reached.");
+                    let _ = this.update(cx, |state, cx| {
+                        state.telegram_bind_status = "等待绑定超时，请重试".to_string();
+                        state.telegram_bind_error = true;
+                        cx.notify();
+                    });
+                    break;
+                }
+
+                let token_for_poll = token_clone.clone();
+                let bind_code_for_poll = bind_code.clone();
+                let poll_handle = tokio_handle.clone();
+                println!("[telegram_bind] Polling updates with offset: {}", offset);
+                let poll_result = cx.background_spawn(async move {
+                    let join_handle = poll_handle.spawn(async move {
+                        let client = reqwest::Client::new();
+                        let url = format!("https://api.telegram.org/bot{}/getUpdates", token_for_poll);
+                        client.post(&url)
+                            .json(&serde_json::json!({
+                                "offset": offset,
+                                "timeout": 5,
+                            }))
+                            .send()
+                            .await?
+                            .json::<serde_json::Value>()
+                            .await
+                    });
+                    join_handle.await
+                }).await;
+
+                if let Ok(Ok(resp)) = poll_result {
+                    if let Some(updates) = resp["result"].as_array() {
+                        if !updates.is_empty() {
+                            println!("[telegram_bind] Received {} updates", updates.len());
+                        }
+                        for update in updates {
+                            if let Some(update_id) = update["update_id"].as_i64() {
+                                offset = update_id + 1;
+                            }
+                            if let Some(msg_text) = update["message"]["text"].as_str() {
+                                let msg_text_trimmed = msg_text.trim();
+                                println!("[telegram_bind] Processing message: \"{}\" (Expected: \"{}\")", msg_text_trimmed, bind_code_for_poll);
+                                if msg_text_trimmed.contains(&bind_code_for_poll) {
+                                    println!("[telegram_bind] Match found! Binding chat_id...");
+                                    if let Some(chat_id) = update["message"]["chat"]["id"].as_i64() {
+                                        let chat_id_str = chat_id.to_string();
+                                        println!("[telegram_bind] Found chat_id: {}", chat_id_str);
+                                        
+                                        // Send confirmation message to Telegram
+                                        let token_for_send = token_clone.clone();
+                                        let send_handle = tokio_handle.clone();
+                                        let _ = cx.background_spawn(async move {
+                                            let _ = send_handle.spawn(async move {
+                                                println!("[telegram_bind] Sending confirmation message to Telegram...");
+                                                let client = reqwest::Client::new();
+                                                let url = format!("https://api.telegram.org/bot{}/sendMessage", token_for_send);
+                                                let _ = client.post(&url)
+                                                    .json(&serde_json::json!({
+                                                        "chat_id": chat_id,
+                                                        "text": "✅ 绑定成功！你可以开始使用远程控制功能了。\n\n尝试发送：/help",
+                                                    }))
+                                                    .send()
+                                                    .await;
+                                            }).await;
+                                        });
+
+                                        let _ = this.update(cx, |state, cx| {
+                                            state.telegram_bind_status = format!("✅ 绑定成功！Chat ID: {}", chat_id_str);
+                                            state.telegram_bind_error = false;
+                                            
+                                            let mut config = crate::services::load_config();
+                                            config.telegram_bot_token = Some(token_clone.clone());
+                                            config.telegram_chat_id = Some(chat_id_str);
+                                            config.telegram_bound_at = Some(chrono::Local::now().to_rfc3339());
+                                            let _ = crate::services::save_config(&config);
+                                            println!("[telegram_bind] Config saved successfully.");
+
+                                            // Hot-activate the Telegram trigger
+                                            crate::triggers::telegram::TelegramTrigger::spawn_in_background(&config);
+                                            println!("[telegram_bind] Telegram trigger hot-activated.");
+                                            
+                                            cx.notify();
+                                        });
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!("[telegram_bind] Polling request failed: {:?}", poll_result);
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+            }
         })
         .detach();
     }

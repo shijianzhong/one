@@ -30,13 +30,14 @@ pub enum TriggerCommand {
     Status,
     ListRemoteTasks,
     ClearTask,
+    Chat(String),
     Unknown(String),
 }
 
 pub fn parse_command(text: &str) -> TriggerCommand {
     let text = text.trim();
     if !text.starts_with('/') {
-        return TriggerCommand::Unknown(text.to_string());
+        return TriggerCommand::Chat(text.to_string());
     }
     let mut parts = text.splitn(2, char::is_whitespace);
     let head = parts.next().unwrap_or("/");
@@ -113,6 +114,37 @@ pub async fn dispatch(text: &str) -> TriggerReply {
         }
         TriggerCommand::ClearTask => {
             TriggerReply::new("远程任务已清除。".to_string())
+        }
+        TriggerCommand::Chat(t) => {
+            let config = crate::services::load_config();
+            if config.model_api_key.is_empty() {
+                return TriggerReply::new("未配置 AI 模型，请先在 ONE 设置页配置。".to_string());
+            }
+
+            let mut full_text = String::new();
+            let res = crate::services::api::call_chat_api_stream(
+                &config.model_base_url,
+                &config.model_api_key,
+                &config.model_name,
+                &[crate::memory::types::ChatMessage {
+                    role: "user".to_string(),
+                    content: t,
+                    ..Default::default()
+                }],
+                None,
+                |delta| {
+                    full_text.push_str(&delta);
+                },
+            )
+            .await;
+
+            match res {
+                Ok(_) => {
+                    let cleaned = crate::util::strip_think_tags(&full_text);
+                    TriggerReply::new(cleaned)
+                }
+                Err(e) => TriggerReply::new(format!("AI 响应失败：{}", e)),
+            }
         }
         TriggerCommand::Unknown(s) => TriggerReply::new(format!(
             "未识别的命令：{}\n输入 /help 查看可用命令。",

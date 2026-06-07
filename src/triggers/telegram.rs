@@ -130,6 +130,25 @@ fn append_step_to_task(
 }
 
 impl TelegramTrigger {
+    pub fn spawn_in_background(config: &Config) {
+        if let Some(trigger) = Self::from_config(config) {
+            std::thread::spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log::error!("[telegram] 无法创建 tokio runtime: {:?}", e);
+                        return;
+                    }
+                };
+                rt.block_on(async move {
+                    if let Err(e) = trigger.run().await {
+                        log::error!("[telegram] trigger 退出：{:?}", e);
+                    }
+                });
+            });
+        }
+    }
+
     /// 从配置文件构造；缺 token 或 chat_id 时返回 None。
     pub fn from_config(config: &Config) -> Option<Self> {
         let token = config.telegram_bot_token.clone()?;

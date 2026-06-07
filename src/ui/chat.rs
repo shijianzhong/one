@@ -334,6 +334,7 @@ impl AppState {
         });
         let general_ai_pending = self.job_manager.request_in_flight
             && matches!(self.job_manager.request_kind, Some(RequestKind::GeneralAi))
+            && self.job_manager.general_ai_task_id == self.active_task_id
             && live_run.is_none()
             && general_ai_live_run_id.is_none();
         let is_user = |role: &str| role == "user";

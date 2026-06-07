@@ -140,10 +140,9 @@ impl AppState {
     }
 
     pub fn restore_task_context(&mut self) {
-        // ── 清理前一个 task 的运行状态 ──────────────────────────────
-        // 防止旧 task 的 Orchestrator/Claude Code 运行状态污染新 task
-        self.job_manager.subagent_messages.clear();
-        self.job_manager.orchestrator_agent_run_map.clear();
+        // ── 清理前一个 task 的运行状态，防止污染新 task ───────────
+        // 保留 subagent_messages 和 orchestrator_agent_run_map 不清理，
+        // subagent 卡片由 UI 层按 task_id 过滤渲染，切换时不清除数据
         self.job_manager.request_in_flight = false;
         self.job_manager.request_kind = None;
         self.job_manager.request_status_text = None;

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::Context;
 
@@ -1049,12 +1048,13 @@ impl AppState {
         let history = self.messages.clone();
 
         let workspace_name_for_orchestrator = workspace_name.clone();
-        let workspace_name_for_snapshot = workspace_name; 
+        let workspace_name_for_snapshot = workspace_name;
         let active_task_id = self.active_task_id;
+        let cancel_flag = self.job_manager.cancel_flag.clone();
 
         gpui_tokio::Tokio::spawn(cx, async move {
             let result = orchestrator
-                .run_task(&instruction_for_task, session_id, history, &workspace_name_for_orchestrator, active_task_id, |event| {
+                .run_task(&instruction_for_task, session_id, history, &workspace_name_for_orchestrator, active_task_id, Some(cancel_flag), |event| {
                     let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
                 })
                 .await;

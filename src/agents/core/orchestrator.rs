@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
@@ -46,12 +47,20 @@ impl Orchestrator {
         history: Vec<ChatMessage>,
         workspace: &str,
         task_id: Option<usize>,
+        cancel_flag: Option<Arc<AtomicBool>>,
         mut on_event: F,
     ) -> Result<String>
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
         let mut context = AgentContext::new(session_id);
+
+        // ── 检查取消信号 ───────────────────────────────────────────
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(Ordering::SeqCst) {
+                return Ok("任务已被用户取消。".to_string());
+            }
+        }
 
         // ── 主动注入记忆 (Active Memory Injection) ──────────────────────
         let mut all_facts = crate::memory::profile::get_global_facts();
@@ -86,6 +95,13 @@ impl Orchestrator {
         let mut max_steps = 15;
         while max_steps > 0 {
             max_steps -= 1;
+
+            // ── 检查取消信号 ────────────────────────────────────────
+            if let Some(ref flag) = cancel_flag {
+                if flag.load(Ordering::SeqCst) {
+                    return Ok("任务已被用户取消。".to_string());
+                }
+            }
 
             // StepStarted 仅在 run_sub_agent 中发送（真正启动子代理时）
             // 主循环不发送，避免简单对话也创建空白的 subagent 卡片
@@ -145,6 +161,7 @@ impl Orchestrator {
                     self.execute_tool_calls_and_feed_back(
                         &mut context,
                         &calls,
+                        cancel_flag.clone(),
                         &mut on_event,
                     )
                     .await?;
@@ -161,6 +178,7 @@ impl Orchestrator {
         &self,
         context: &mut AgentContext,
         calls: &[ToolCall],
+        cancel_flag: Option<Arc<AtomicBool>>,
         on_event: &mut F,
     ) -> Result<()>
     where
@@ -202,6 +220,7 @@ impl Orchestrator {
                             agent.clone(),
                             instruction,
                             &context.session_id,
+                            cancel_flag.clone(),
                             on_event,
                         ).await?
                     } else {
@@ -285,6 +304,7 @@ impl Orchestrator {
                                 agent.clone(),
                                 sub_task,
                                 &context.session_id,
+                                cancel_flag.clone(),
                                 on_event,
                             ).await?
                         } else {
@@ -346,6 +366,7 @@ impl Orchestrator {
         agent: Arc<dyn Agent>,
         task: &str,
         session_id: &str,
+        cancel_flag: Option<Arc<AtomicBool>>,
         on_event: &mut F,
     ) -> Result<String>
     where
@@ -366,6 +387,7 @@ impl Orchestrator {
             let task_owned = task.to_string();
             let project_dir = self.work_dir.lock().unwrap().clone();
             let session_owned = session_id.to_string();
+            let cancel_flag_for_worker = cancel_flag.clone();
 
             let handle = std::thread::spawn(move || {
                 crate::agents::claude_code::ClaudeCodeAgent::execute_instruction_stream(
@@ -373,7 +395,7 @@ impl Orchestrator {
                     &task_owned,
                     Some(&session_owned),
                     tx,
-                    None,
+                    cancel_flag_for_worker,
                     None,
                 )
             });

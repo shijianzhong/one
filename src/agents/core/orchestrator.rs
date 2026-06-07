@@ -141,10 +141,10 @@ impl Orchestrator {
                                 continue;
                             }
                             None => {
-                                on_event(OrchestratorEvent::StepFinished {
-                                    result: "用户取消了操作。".to_string(),
-                                });
-                                return Ok("用户取消了操作。".to_string());
+                                // 用户输入通道关闭（可能是切换 task 或启动了新对话），
+                                // 返回空字符串，因为 reply 已通过 AwaitingUserInput 事件处理，
+                                // Finished handler 收到空结果时不会重复写入。
+                                return Ok(String::new());
                             }
                         }
                     } else {

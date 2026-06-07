@@ -672,18 +672,22 @@ impl AppState {
                             this.job_manager.general_ai_run_id = None;
                             this.job_manager.general_ai_show_live_bubble = false;
                             this.mark_task_inactive(active_task_id);
-                            // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
-                            if this.active_task_id == active_task_id {
-                                this.messages.push(ChatMessage::new("assistant", &result));
-                            }
-                            if let Some(task_id) = active_task_id {
-                                task_db::insert_message(
-                                    &this.db.conn,
-                                    task_id,
-                                    "assistant",
-                                    &result,
-                                )
-                                .ok();
+                            // 如果 result 为空，说明结果已通过 AwaitingUserInput 处理（channel 关闭），
+                            // 不再重复写入。
+                            if !result.is_empty() {
+                                // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
+                                if this.active_task_id == active_task_id {
+                                    this.messages.push(ChatMessage::new("assistant", &result));
+                                }
+                                if let Some(task_id) = active_task_id {
+                                    task_db::insert_message(
+                                        &this.db.conn,
+                                        task_id,
+                                        "assistant",
+                                        &result,
+                                    )
+                                    .ok();
+                                }
                             }
                             if this.pending_summarize && this.active_task_id.is_some() {
                                 this.pending_summarize = false;

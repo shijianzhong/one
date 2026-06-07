@@ -5,14 +5,17 @@
 //! 流程：
 //!   1. 启动时拉一个 1 分钟超时的 `getUpdates`，把 `offset` 滚动到下一个未读位置；
 //!   2. 收到消息后先校验 chat_id 白名单，否则丢弃并日志告警；
-//!   3. 把消息文本送到 [`crate::triggers::dispatch`]，得到 [`TriggerReply`]；
-//!   4. 如果 reply 标记了需要暗号确认，将该 chat 的后续消息视为暗号回复，进入状态机；
-//!   5. 通过 `sendMessage` 把 reply 回送给同一个 chat_id；
-//!   6. 任意网络错误都打日志后短退避（5 秒）继续轮询，避免 hot loop。
+//!   3. 若消息以 `/` 开头 → 送到 dispatcher 处理命令（/help /run /workspace 等）；
+//!   4. 若消息不以 `/` 开头且有 workspace → 走 Orchestrator 路径（带记忆系统）；
+//!   5. 若消息触发了暗号状态机 → 进入 cipher 回复处理；
+//!   6. 通过 `sendMessage` 把 reply 回送给同一个 chat_id；
+//!   7. 任意网络错误都打日志后短退避（5 秒）继续轮询，避免 hot loop。
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -26,6 +29,13 @@ use crate::services::Config;
 const DEFAULT_API_BASE: &str = "https://api.telegram.org";
 const LONG_POLL_TIMEOUT: u64 = 50;
 const CIPHER_TIMEOUT_SECS: u64 = 120; // 2 分钟
+
+/// 全局 Telegram trigger 停止信号。
+/// 绑定新 token 前设置此信号，旧 trigger 检测到后优雅退出。
+static TRIGGER_STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+/// 当前运行的 trigger 数量，用于等待旧实例退出。
+static TRIGGER_RUNNING_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 // ============================================================================
 // PendingConfirmation — 等待暗号回复的状态记录
@@ -130,13 +140,29 @@ fn append_step_to_task(
 }
 
 impl TelegramTrigger {
+    /// 停止正在运行的所有 Telegram trigger 实例。
+    ///
+    /// 仅设置全局停止信号，不阻塞等待。
+    /// 旧实例会在完成当前 getUpdates poll 后检测到信号并自行退出（最长 ~55 秒）。
+    /// 新实例立即启动，通过 getUpdates offset 机制保证不会重复消费消息。
+    pub fn stop_all() {
+        TRIGGER_STOP_SIGNAL.store(true, Ordering::SeqCst);
+        log::info!("[telegram] 已设置停止信号，旧实例将在下次 poll 后退出");
+    }
+
     pub fn spawn_in_background(config: &Config) {
         if let Some(trigger) = Self::from_config(config) {
+            // 通知旧实例停止，但不等待（避免网络差时阻塞 UI）
+            // 旧实例会在完成当前 getUpdates poll 后自行退出
+            Self::stop_all();
+
+            TRIGGER_RUNNING_COUNT.fetch_add(1, Ordering::Relaxed);
             std::thread::spawn(move || {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
                         log::error!("[telegram] 无法创建 tokio runtime: {:?}", e);
+                        TRIGGER_RUNNING_COUNT.fetch_sub(1, Ordering::Relaxed);
                         return;
                     }
                 };
@@ -145,6 +171,7 @@ impl TelegramTrigger {
                         log::error!("[telegram] trigger 退出：{:?}", e);
                     }
                 });
+                TRIGGER_RUNNING_COUNT.fetch_sub(1, Ordering::Relaxed);
             });
         }
     }
@@ -373,6 +400,12 @@ impl Trigger for TelegramTrigger {
         );
         let mut offset: i64 = 0;
         loop {
+            // 检查全局停止信号
+            if TRIGGER_STOP_SIGNAL.load(Ordering::SeqCst) {
+                log::info!("[telegram] 收到停止信号，trigger 退出");
+                return Ok(());
+            }
+
             self.sweep_expired();
             match self.poll_updates(offset).await {
                 Ok(updates) => {
@@ -399,6 +432,25 @@ impl Trigger for TelegramTrigger {
 
                         // 检查是否是暗号回复
                         if self.pending.lock().unwrap().contains_key(&chat_id) {
+                            // 预检：暗号应该短（<=32字符）、无空格、无特殊标点
+                            let looks_like_cipher = text.len() <= 32
+                                && !text.contains(' ')
+                                && text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                                && !text.starts_with('/');
+                            if !looks_like_cipher {
+                                let _ = self
+                                    .send_message(chat_id, "⏳ 正在等待暗号确认，请发送暗号或 /cancel 取消。")
+                                    .await;
+                                continue;
+                            }
+                            // 支持 /cancel 取消暗号状态机
+                            if text == "/cancel" {
+                                self.pending.lock().unwrap().remove(&chat_id);
+                                let _ = self
+                                    .send_message(chat_id, "暗号确认已取消。")
+                                    .await;
+                                continue;
+                            }
                             match self.handle_cipher_reply(chat_id, &text).await {
                                 Ok(Some(reply_text)) => {
                                     let _ =
@@ -410,6 +462,148 @@ impl Trigger for TelegramTrigger {
                                         "[telegram] handle_cipher_reply error: {:?}",
                                         e
                                     );
+                                }
+                            }
+                            continue;
+                        }
+
+                        // ── 非命令消息：走 Orchestrator 路径（带记忆系统） ──
+                        //
+                        // 命令以 `/` 开头（/help, /run, /workspace 等），走 dispatcher。
+                        // 非命令消息且有 workspace → 在 Telegram 线程内直接跑 Orchestrator。
+                        if !text.starts_with('/') {
+                            let ws_id_str = self.current_workspace_id.lock().unwrap().clone();
+                            if ws_id_str.is_empty() {
+                                let _ = self
+                                    .send_message(chat_id, "请先发送 /workspace <name> 切换到 workspace 后再发消息。")
+                                    .await;
+                                continue;
+                            }
+
+                            // 1. 确保有远程 task
+                            let task_id_str = ensure_remote_task(
+                                &self.current_workspace_id,
+                                &self.current_task_id,
+                            );
+                            if task_id_str.is_empty() {
+                                let _ = self
+                                    .send_message(chat_id, "创建远程任务失败，请先在本机创建 workspace。")
+                                    .await;
+                                continue;
+                            }
+                            let task_id_usize: usize = match task_id_str.parse() {
+                                Ok(id) => id,
+                                Err(_) => {
+                                    let _ = self.send_message(chat_id, "任务 ID 无效。").await;
+                                    continue;
+                                }
+                            };
+
+                            // 2. 写用户消息到 DB
+                            append_step_to_task(
+                                &task_id_str, "user", &text, "user_message", None,
+                            );
+
+                            // 3. 从 DB 加载历史消息
+                            let db_path = dirs::config_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                .join(".one")
+                                .join("one.db");
+                            let conn = sqlez::connection::Connection::open_file(
+                                db_path.to_str().unwrap_or("one.db"),
+                            );
+                            let db_messages =
+                                crate::task_db::load_messages(&conn, task_id_usize)
+                                    .unwrap_or_default();
+                            let history: Vec<crate::memory::types::ChatMessage> =
+                                db_messages
+                                    .into_iter()
+                                    .map(|m| {
+                                        crate::memory::types::ChatMessage::new(
+                                            &m.role, &m.content,
+                                        )
+                                    })
+                                    .collect();
+
+                            // 4. 获取 workspace 信息
+                            let ws_result = crate::task_db::load_workspaces(&conn);
+                            let (ws_name, ws_path) = match ws_result {
+                                Ok(workspaces) => {
+                                    let ws_id: usize = ws_id_str.parse().unwrap_or(0);
+                                    if let Some(ws) = workspaces.iter().find(|w| w.id == ws_id)
+                                    {
+                                        (ws.name.clone(), std::path::PathBuf::from(&ws.path))
+                                    } else {
+                                        ("Default".to_string(), std::path::PathBuf::from("."))
+                                    }
+                                }
+                                Err(_) => ("Default".to_string(), std::path::PathBuf::from(".")),
+                            };
+
+                            // 5. 发送"正在处理"提示
+                            let _ = self
+                                .send_message(chat_id, "⏳ 正在处理，请稍候...")
+                                .await;
+
+                            // 6. 在 Telegram 线程跑 Orchestrator
+                            let config = crate::services::load_config();
+                            match crate::agents::core::AgentFactory::create_orchestrator(
+                                &config,
+                                &ws_name,
+                                ws_path,
+                            ) {
+                                Ok(orchestrator) => {
+                                    let session_id = format!("telegram-task-{}", task_id_str);
+
+                                    // 注意：user_input_rx=None → 不支持多轮追问
+                                    let result = orchestrator
+                                        .run_task(
+                                            &text,
+                                            session_id,
+                                            history,
+                                            &ws_name,
+                                            Some(task_id_usize),
+                                            None,   // cancel_flag=None
+                                            None,   // user_input_rx=None => 不支持多轮
+                                            |_| {}, // on_event（不关心中间事件）
+                                        )
+                                        .await;
+
+                                    match result {
+                                        Ok(reply_text) => {
+                                            let cleaned = crate::util::strip_think_tags(
+                                                &reply_text,
+                                            );
+                                            // 7. 写 AI 回复到 DB
+                                            append_step_to_task(
+                                                &task_id_str,
+                                                "assistant",
+                                                &cleaned,
+                                                "ai_reply",
+                                                None,
+                                            );
+                                            // 8. 回送
+                                            let _ = self
+                                                .send_message(chat_id, &cleaned)
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            let err_msg =
+                                                format!("处理失败：{}", e);
+                                            let _ = self
+                                                .send_message(chat_id, &err_msg)
+                                                .await;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let err_msg = format!(
+                                        "无法创建 Orchestrator：{}",
+                                        e
+                                    );
+                                    let _ = self
+                                        .send_message(chat_id, &err_msg)
+                                        .await;
                                 }
                             }
                             continue;
@@ -443,6 +637,7 @@ impl Trigger for TelegramTrigger {
                                 if let Some(ws) = matched {
                                     *self.current_workspace_id.lock().unwrap() =
                                         ws.id.to_string();
+                                    *self.current_task_id.lock().unwrap() = None; // ✅ 清空旧 task
                                     let _ = self
                                         .send_message(
                                             chat_id,

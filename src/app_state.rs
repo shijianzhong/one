@@ -610,19 +610,12 @@ impl AppState {
         self.model_api_key = self.editing_api_key.clone();
         self.show_model_config_dialog = false;
 
-        let config = Config {
-            model_base_url: self.model_base_url.clone(),
-            model_api_key: self.model_api_key.clone(),
-            model_name: self.model_name.clone(),
-            light_model: None,
-            coding_model: None,
-            system_model: None,
-            lang: self.current_lang,
-            theme_mode: self.theme_mode,
-            telegram_bot_token: None,
-            telegram_chat_id: None,
-            telegram_bound_at: None,
-        };
+        let mut config = crate::services::load_config();
+        config.model_name = self.model_name.clone();
+        config.model_base_url = self.model_base_url.clone();
+        config.model_api_key = self.model_api_key.clone();
+        config.lang = self.current_lang;
+        config.theme_mode = self.theme_mode;
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save config: {}", e);
         }
@@ -642,19 +635,12 @@ impl AppState {
 
     pub(crate) fn toggle_lang(&mut self, _: &ToggleLang, _: &mut Window, cx: &mut Context<Self>) {
         self.current_lang = self.current_lang.toggle();
-        let config = Config {
-            model_base_url: self.model_base_url.clone(),
-            model_api_key: self.model_api_key.clone(),
-            model_name: self.model_name.clone(),
-            light_model: None,
-            coding_model: None,
-            system_model: None,
-            lang: self.current_lang,
-            theme_mode: self.theme_mode,
-            telegram_bot_token: None,
-            telegram_chat_id: None,
-            telegram_bound_at: None,
-        };
+        let mut config = crate::services::load_config();
+        config.lang = self.current_lang;
+        config.model_base_url = self.model_base_url.clone();
+        config.model_api_key = self.model_api_key.clone();
+        config.model_name = self.model_name.clone();
+        config.theme_mode = self.theme_mode;
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save lang config: {}", e);
         }
@@ -667,19 +653,12 @@ impl AppState {
             ThemeMode::Light => ThemeMode::Dark,
         };
         set_theme_mode(self.theme_mode);
-        let config = Config {
-            model_base_url: self.model_base_url.clone(),
-            model_api_key: self.model_api_key.clone(),
-            model_name: self.model_name.clone(),
-            light_model: None,
-            coding_model: None,
-            system_model: None,
-            lang: self.current_lang,
-            theme_mode: self.theme_mode,
-            telegram_bot_token: None,
-            telegram_chat_id: None,
-            telegram_bound_at: None,
-        };
+        let mut config = crate::services::load_config();
+        config.theme_mode = self.theme_mode;
+        config.model_base_url = self.model_base_url.clone();
+        config.model_api_key = self.model_api_key.clone();
+        config.model_name = self.model_name.clone();
+        config.lang = self.current_lang;
         if let Err(e) = save_config(&config) {
             eprintln!("Failed to save theme config: {}", e);
         }
@@ -807,6 +786,9 @@ impl AppState {
             cx.notify();
             return;
         }
+
+        // 先停止旧 trigger 实例，避免绑定轮询与旧实例竞争
+        crate::triggers::telegram::TelegramTrigger::stop_all();
 
         println!("[telegram_bind] Starting bind process for token: {}...", if token.len() > 10 { &token[..10] } else { &token });
         self.telegram_bind_status = "正在验证 Bot Token...".to_string();
@@ -977,6 +959,8 @@ impl AppState {
     }
 
     pub(crate) fn handle_telegram_unbind(&mut self, cx: &mut Context<Self>) {
+        // 停止当前正在运行的 trigger 实例
+        crate::triggers::telegram::TelegramTrigger::stop_all();
         // 清除 config 中的 Telegram 配置
         let mut config = crate::services::load_config();
         config.telegram_bot_token = None;

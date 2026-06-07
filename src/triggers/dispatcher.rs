@@ -116,35 +116,12 @@ pub async fn dispatch(text: &str) -> TriggerReply {
             TriggerReply::new("远程任务已清除。".to_string())
         }
         TriggerCommand::Chat(t) => {
-            let config = crate::services::load_config();
-            if config.model_api_key.is_empty() {
-                return TriggerReply::new("未配置 AI 模型，请先在 ONE 设置页配置。".to_string());
-            }
-
-            let mut full_text = String::new();
-            let res = crate::services::api::call_chat_api_stream(
-                &config.model_base_url,
-                &config.model_api_key,
-                &config.model_name,
-                &[crate::memory::types::ChatMessage {
-                    role: "user".to_string(),
-                    content: t,
-                    ..Default::default()
-                }],
-                None,
-                |delta| {
-                    full_text.push_str(&delta);
-                },
-            )
-            .await;
-
-            match res {
-                Ok(_) => {
-                    let cleaned = crate::util::strip_think_tags(&full_text);
-                    TriggerReply::new(cleaned)
-                }
-                Err(e) => TriggerReply::new(format!("AI 响应失败：{}", e)),
-            }
+            // 由 telegram.rs 拦截非命令消息直接走 Orchestrator 路径，
+            // 此分支仅作为后备，通常不会命中。
+            TriggerReply::new(format!(
+                "Chat 消息应通过 Telegram Orchestrator 路径处理，请先设置 workspace。\n收到：{}",
+                t
+            ))
         }
         TriggerCommand::Unknown(s) => TriggerReply::new(format!(
             "未识别的命令：{}\n输入 /help 查看可用命令。",

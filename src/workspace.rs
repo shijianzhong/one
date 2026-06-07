@@ -92,6 +92,10 @@ impl AppState {
         self.job_manager.general_ai_task_id = None;
         self.job_manager.general_ai_show_live_bubble = false;
         self.job_manager.general_ai_live_text.clear();
+        // 注意：不要关闭 orchestrator_user_input_tx！
+        // 旧 Orchestrator 可能在后台运行，关闭 channel 会导致它生成
+        // "用户取消了操作"的回复写入 DB。保留 channel，让旧 Orchestrator
+        // 自然结束后写入 DB，下次切回 task 时从 DB 加载就能看到结果。
 
         if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
             let _ = self.ensure_task_storage_dir(workspace_id, task_id, &title);

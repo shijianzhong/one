@@ -7,16 +7,21 @@ use crate::{task_db, AppState, RequestKind};
 
 impl AppState {
     pub(crate) fn route_message(&mut self, message: String, cx: &mut Context<Self>) {
+        let captured_task_id = self.active_task_id; // ✅ 入口 capture，防止切换 task 后写错 DB
         self.messages.push(ChatMessage::new("user", &message));
-        if let Some(task_id) = self.active_task_id {
+        if let Some(task_id) = captured_task_id {
             task_db::insert_message(&self.db.conn, task_id, "user", &message).ok();
         }
         self.needs_auto_scroll = true;
         cx.notify();
 
         // ── 如果 Orchestrator 正在等待用户输入，通过通道发送 ──────
+        // 注意：只发送给所属 task 与当前 task 一致的 Orchestrator
+        // 防止切换 task 后，新 task 的消息被错误路由到旧 Orchestrator
         if let Some(input_tx) = self.job_manager.orchestrator_user_input_tx.as_ref() {
-            if !self.job_manager.request_in_flight {
+            if !self.job_manager.request_in_flight
+                && self.job_manager.general_ai_task_id == self.active_task_id
+            {
                 eprintln!("[ROUTER] Sending user input to running orchestrator");
                 let _ = input_tx.send(message);
                 self.job_manager.set_request(

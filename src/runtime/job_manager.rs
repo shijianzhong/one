@@ -513,7 +513,9 @@ impl AppState {
         let workspace_name_for_orchestrator = workspace_name.clone();
         let workspace_name_for_snapshot = workspace_name;
         let active_task_id = self.active_task_id;
-        let cancel_flag = self.job_manager.cancel_flag.clone();
+        // 每次创建独立 cancel_flag，避免旧 Orchestrator 的取消状态污染新 Orchestrator
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.job_manager.cancel_flag = cancel_flag.clone();
 
         // ── 创建用户输入通道（支持多轮交互） ──────────────────────
         let (user_input_tx, mut user_input_rx) =
@@ -597,10 +599,23 @@ impl AppState {
                             OrchestratorEvent::StepFinished { result: _ } => {}
                             OrchestratorEvent::AwaitingUserInput { reply } => {
                                 // 将 MainAgent 的回复添加到对话历史
-                                this.messages.push(ChatMessage::new(
-                                    "assistant",
-                                    &reply,
-                                ));
+                                // 只在当前显示的 task 与 AI 所属的 task 一致时才 push
+                                if this.active_task_id == active_task_id {
+                                    this.messages.push(ChatMessage::new(
+                                        "assistant",
+                                        &reply,
+                                    ));
+                                }
+                                // ✅ 写 DB（用 captured active_task_id）
+                                if let Some(task_id) = active_task_id {
+                                    task_db::insert_message(
+                                        &this.db.conn,
+                                        task_id,
+                                        "assistant",
+                                        &reply,
+                                    )
+                                    .ok();
+                                }
                                 // 清理运行状态，让用户能够输入
                                 this.job_manager.request_in_flight = false;
                                 this.job_manager.request_kind = None;
@@ -622,7 +637,12 @@ impl AppState {
 
                             // ── 异步生成记忆快照 ─────────────────────────────
                             if let Some(task_id) = active_task_id {
-                                let messages = this.messages.clone();
+                                // ✅ 从 DB 加载消息而非 this.messages（防止切换 task 后数据错误）
+                                let messages = task_db::load_messages(&this.db.conn, task_id)
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|m| crate::memory::types::ChatMessage::new(&m.role, &m.content))
+                                    .collect::<Vec<_>>();
                                 let base_url = this.model_base_url.clone();
                                 let api_key = this.model_api_key.clone();
                                 let model = this.model_name.clone();
@@ -652,8 +672,11 @@ impl AppState {
                             this.job_manager.general_ai_run_id = None;
                             this.job_manager.general_ai_show_live_bubble = false;
                             this.mark_task_inactive(active_task_id);
-                            this.messages.push(ChatMessage::new("assistant", &result));
-                            if let Some(task_id) = this.active_task_id {
+                            // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
+                            if this.active_task_id == active_task_id {
+                                this.messages.push(ChatMessage::new("assistant", &result));
+                            }
+                            if let Some(task_id) = active_task_id {
                                 task_db::insert_message(
                                     &this.db.conn,
                                     task_id,
@@ -684,10 +707,23 @@ impl AppState {
                             this.job_manager.general_ai_run_id = None;
                             this.job_manager.general_ai_show_live_bubble = false;
                             this.mark_task_inactive(active_task_id);
-                            this.messages.push(ChatMessage::new(
-                                "assistant",
-                                &format!("Orchestrator failed: {}", error),
-                            ));
+                            // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
+                            if this.active_task_id == active_task_id {
+                                this.messages.push(ChatMessage::new(
+                                    "assistant",
+                                    &format!("Orchestrator failed: {}", error),
+                                ));
+                            }
+                            // ✅ 写 DB（用 captured active_task_id）
+                            if let Some(task_id) = active_task_id {
+                                task_db::insert_message(
+                                    &this.db.conn,
+                                    task_id,
+                                    "assistant",
+                                    &format!("Orchestrator failed: {}", error),
+                                )
+                                .ok();
+                            }
                             this.needs_auto_scroll = true;
                         }
                     }

@@ -4,38 +4,38 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::{Agent, AgentContext, AgentResponse, ToolCall};
-use crate::agents::claude_code::ClaudeStreamEvent;
 use crate::memory::types::ChatMessage;
 
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
-    /// MainAgent is generating a plan
+    /// MainAgent is generating a plan / thinking text
     Plan { plan: String },
     /// Real-time stream delta from the main assistant
     AssistantDelta(String),
+    /// A sub-step has started (kept for UI compatibility, but no longer used for sub-agents)
     StepStarted { agent_id: String, agent_name: String },
+    /// A step has finished
     StepFinished { result: String },
+    /// A tool has been called
     ToolCall { name: String, args: String },
+    /// A tool returned a result
     ToolResult { name: String, result: String },
-    /// Real-time stream delta from a sub-agent (maps to a subagent card in UI)
-    SubAgentStream { agent_id: String, event: ClaudeStreamEvent },
+    /// Orchestrator is waiting for the user's next message (multi-turn)
+    AwaitingUserInput { reply: String },
 }
 
 pub struct Orchestrator {
     main_agent: Arc<dyn Agent>,
-    sub_agents: std::collections::HashMap<String, Arc<dyn Agent>>,
     work_dir: std::sync::Mutex<std::path::PathBuf>,
 }
 
 impl Orchestrator {
     pub fn new(
         main_agent: Arc<dyn Agent>,
-        sub_agents: std::collections::HashMap<String, Arc<dyn Agent>>,
         work_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             main_agent,
-            sub_agents,
             work_dir: std::sync::Mutex::new(work_dir),
         }
     }
@@ -48,6 +48,7 @@ impl Orchestrator {
         workspace: &str,
         task_id: Option<usize>,
         cancel_flag: Option<Arc<AtomicBool>>,
+        mut user_input_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
         mut on_event: F,
     ) -> Result<String>
     where
@@ -55,77 +56,64 @@ impl Orchestrator {
     {
         let mut context = AgentContext::new(session_id);
 
-        // ── 检查取消信号 ───────────────────────────────────────────
-        if let Some(ref flag) = cancel_flag {
-            if flag.load(Ordering::SeqCst) {
-                return Ok("任务已被用户取消。".to_string());
-            }
+        // ── 取消检查 ─────────────────────────────────────────────────
+        if cancel_flag.as_ref().map(|f| f.load(Ordering::SeqCst)).unwrap_or(false) {
+            return Ok("任务已被用户取消。".to_string());
         }
 
-        // ── 主动注入记忆 (Active Memory Injection) ──────────────────────
+        // ── 主动注入记忆 ──────────────────────────────────────────────
         let mut all_facts = crate::memory::profile::get_global_facts();
         all_facts.extend(crate::memory::profile::get_all_facts(workspace));
-        
-        // 使用 HashSet 去重
         let set: std::collections::HashSet<String> = all_facts.into_iter().collect();
         let mut unique_facts: Vec<String> = set.into_iter().collect();
-        unique_facts.sort(); // 保持输出稳定性
+        unique_facts.sort();
 
         if !unique_facts.is_empty() {
             let memory_hint = format!(
                 "### User Profile & Project Context\n{}",
                 unique_facts.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
             );
-            context.add_message(crate::memory::types::ChatMessage::new("system", &memory_hint));
+            context.add_message(ChatMessage::new("system", &memory_hint));
         }
 
-        // ── 注入 L3 相关 task 上下文 (Phase 3) ────────────────────────
-        let l3_context = crate::memory::snapshot::build_memory_context(workspace, task_id.unwrap_or(0), task);
+        // ── L3 相关历史上下文 ─────────────────────────────────────────
+        let l3_context = crate::memory::snapshot::build_memory_context(
+            workspace,
+            task_id.unwrap_or(0),
+            task,
+        );
         if !l3_context.is_empty() {
-            context.add_message(crate::memory::types::ChatMessage::new("system", &l3_context));
+            context.add_message(ChatMessage::new("system", &l3_context));
         }
 
-        // 先加载历史消息（除最后一条 user 消息外，避免重复）
+        // ── 历史消息（去掉最后一条 user，避免重复） ──────────────────
         let msg_count = history.len();
         for msg in history.into_iter().take(msg_count.saturating_sub(1)) {
             context.add_message(msg);
         }
-        context.add_message(crate::memory::types::ChatMessage::new("user", task));
+        context.add_message(ChatMessage::new("user", task));
 
         let mut max_steps = 15;
         while max_steps > 0 {
             max_steps -= 1;
 
-            // ── 检查取消信号 ────────────────────────────────────────
-            if let Some(ref flag) = cancel_flag {
-                if flag.load(Ordering::SeqCst) {
-                    return Ok("任务已被用户取消。".to_string());
-                }
+            if cancel_flag.as_ref().map(|f| f.load(Ordering::SeqCst)).unwrap_or(false) {
+                return Ok("任务已被用户取消。".to_string());
             }
 
-            // StepStarted 仅在 run_sub_agent 中发送（真正启动子代理时）
-            // 主循环不发送，避免简单对话也创建空白的 subagent 卡片
-
+            // ── 流式调用 MainAgent ────────────────────────────────────
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let main_agent = self.main_agent.clone();
-            
-            // We need to capture the updated history from the inner step.
-            // Let's modify AgentResponse or the return type to include context,
-            // or just perform the step and return (Response, updated_history).
-            
-            // For now, let's just re-apply the response to our main context.
-            // In a real implementation, step_stream should probably take &mut context.
-            // To do that in a spawn, we'd need Arc<Mutex<AgentContext>>.
-            
+
             let mut context_inner = AgentContext::new(context.session_id.clone());
             context_inner.history = context.history.clone();
             context_inner.metadata = context.metadata.clone();
 
             let response = {
-                let mut step_fut = Box::pin(main_agent.step_stream(&mut context_inner, Box::new(move |delta| {
-                    let _ = delta_tx.send(delta);
-                })));
-
+                let mut step_fut = Box::pin(main_agent.step_stream(
+                    &mut context_inner,
+                    Box::new(move |delta| { let _ = delta_tx.send(delta); }),
+                ));
                 loop {
                     tokio::select! {
                         res = &mut step_fut => break res,
@@ -136,35 +124,41 @@ impl Orchestrator {
                 }
             }?;
 
-            // Sync history back: Assistant and Tool results are added to context in execute_tool_calls_and_feed_back
-            // But we need to make sure the Assistant message from the LLM is added.
-            // Actually, BaseAgent::call_llm_stream DOES NOT add the message to history.
-            // BaseAgent::step_with_tools DOES. 
-            // MainAgent::step_stream calls call_llm_stream.
-            
             match response {
                 AgentResponse::Answer(answer) => {
-                    // Add the assistant's answer to history
-                    context.add_message(crate::memory::types::ChatMessage {
+                    context.add_message(ChatMessage {
                         role: "assistant".to_string(),
                         content: answer.clone(),
                         tool_calls: None,
                         tool_call_id: None,
                     });
-                    on_event(OrchestratorEvent::StepFinished { result: answer.clone() });
-                    return Ok(answer);
+
+                    if let Some(ref mut input_rx) = user_input_rx {
+                        on_event(OrchestratorEvent::AwaitingUserInput { reply: answer.clone() });
+                        match input_rx.recv().await {
+                            Some(user_msg) => {
+                                context.add_message(ChatMessage::new("user", &user_msg));
+                                continue;
+                            }
+                            None => {
+                                on_event(OrchestratorEvent::StepFinished {
+                                    result: "用户取消了操作。".to_string(),
+                                });
+                                return Ok("用户取消了操作。".to_string());
+                            }
+                        }
+                    } else {
+                        on_event(OrchestratorEvent::StepFinished { result: answer.clone() });
+                        return Ok(answer);
+                    }
                 }
+
                 AgentResponse::ToolCalls(calls, thinking) => {
                     if !thinking.is_empty() {
                         on_event(OrchestratorEvent::Plan { plan: thinking });
                     }
-                    self.execute_tool_calls_and_feed_back(
-                        &mut context,
-                        &calls,
-                        cancel_flag.clone(),
-                        &mut on_event,
-                    )
-                    .await?;
+                    self.execute_tool_calls(&mut context, &calls, cancel_flag.clone(), &mut on_event)
+                        .await?;
                 }
             }
         }
@@ -172,9 +166,8 @@ impl Orchestrator {
         Ok("Reached maximum execution steps.".to_string())
     }
 
-    /// Execute a list of tool calls and feed results back into context.
-    /// Intercepts MainAgent tool calls that dispatch to specialized sub-agents.
-    async fn execute_tool_calls_and_feed_back<F>(
+    /// Execute tool calls from MainAgent and feed results back into context.
+    async fn execute_tool_calls<F>(
         &self,
         context: &mut AgentContext,
         calls: &[ToolCall],
@@ -184,21 +177,13 @@ impl Orchestrator {
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
-        let tool_calls_json: Vec<Value> = calls
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": {
-                        "name": c.name,
-                        "arguments": c.arguments
-                    }
-                })
-            })
-            .collect();
+        let tool_calls_json: Vec<Value> = calls.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "type": "function",
+            "function": { "name": c.name, "arguments": c.arguments }
+        })).collect();
 
-        context.add_message(crate::memory::types::ChatMessage {
+        context.add_message(ChatMessage {
             role: "assistant".to_string(),
             content: String::new(),
             tool_calls: Some(tool_calls_json),
@@ -211,146 +196,14 @@ impl Orchestrator {
                 args: call.arguments.clone(),
             });
 
-            let result = match call.name.as_str() {
-                "run_claude_code" => {
-                    let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-                    let instruction = args["instruction"].as_str().unwrap_or_default();
-                    if let Some(agent) = self.sub_agents.get("coding") {
-                        self.run_sub_agent(
-                            agent.clone(),
-                            instruction,
-                            &context.session_id,
-                            cancel_flag.clone(),
-                            on_event,
-                        ).await?
-                    } else {
-                        "Error: Coding agent not found".to_string()
-                    }
-                }
-                "run_system_task" => {
-                    let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-                    let skill_id = args
-                        .get("skill_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty());
-                    if let Some(skill_id) = skill_id {
-                        if let Some(skill) = crate::skills::registry().find(skill_id) {
-                            let apply = args
-                                .get("apply")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            let skill_args = args
-                                .get("args")
-                                .cloned()
-                                .unwrap_or(Value::Object(Default::default()));
-                            if apply {
-                                match skill.execute(skill_args, None).await {
-                                    Ok(exec) => serde_json::json!({
-                                        "stage": "execute",
-                                        "skill_id": skill_id,
-                                        "denied": exec.denied,
-                                        "summary": exec.summary,
-                                        "freed_bytes": exec.freed_bytes,
-                                        "success": exec.success_items,
-                                        "failed": exec.failed_items
-                                            .iter()
-                                            .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
-                                            .collect::<Vec<_>>(),
-                                    })
-                                    .to_string(),
-                                    Err(err) => format!("Error: skill execute failed: {}", err),
-                                }
-                            } else {
-                                match skill.preview(skill_args).await {
-                                    Ok(preview) => serde_json::json!({
-                                        "stage": "preview",
-                                        "skill_id": skill_id,
-                                        "summary": preview.summary,
-                                        "estimated_bytes": preview.estimated_bytes,
-                                        "items": preview.items
-                                            .iter()
-                                            .map(|it| serde_json::json!({
-                                                "label": it.label,
-                                                "detail": it.detail,
-                                                "bytes": it.bytes,
-                                            }))
-                                            .collect::<Vec<_>>(),
-                                        "warnings": preview.warnings,
-                                        "hint": "若用户同意继续，再次调用 run_system_task 时把 apply 设为 true。",
-                                    })
-                                    .to_string(),
-                                    Err(err) => format!("Error: skill preview failed: {}", err),
-                                }
-                            }
-                        } else {
-                            let known: Vec<String> = crate::skills::registry()
-                                .manifests()
-                                .into_iter()
-                                .map(|m| m.id)
-                                .collect();
-                            format!(
-                                "Error: skill_id '{}' not found. Available skills: {:?}",
-                                skill_id, known
-                            )
-                        }
-                    } else {
-                        let sub_task = args
-                            .get("task")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
-                        if let Some(agent) = self.sub_agents.get("system") {
-                            self.run_sub_agent(
-                                agent.clone(),
-                                sub_task,
-                                &context.session_id,
-                                cancel_flag.clone(),
-                                on_event,
-                            ).await?
-                        } else {
-                            "Error: System agent not found".to_string()
-                        }
-                    }
-                }
-                // Generic tool execution for tools owned by the MainAgent itself (e.g. remember, update_soul, update_work_dir)
-                "update_work_dir" => {
-                    let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-                    let new_path = args["path"].as_str().unwrap_or_default().to_string();
-                    if !new_path.is_empty() {
-                        let path = std::path::PathBuf::from(&new_path);
-                        if path.exists() {
-                            *self.work_dir.lock().unwrap() = path;
-                            serde_json::json!({
-                                "status": "success",
-                                "path": new_path,
-                                "message": format!("工作目录已切换至: {}", new_path)
-                            }).to_string()
-                        } else {
-                            format!("Error: 路径不存在: {}", new_path)
-                        }
-                    } else {
-                        "Error: 未提供路径参数".to_string()
-                    }
-                }
-                _ => {
-                    if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == call.name) {
-                        let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-                        match tool.call(args).await {
-                            Ok(res) => res.to_string(),
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    } else {
-                        format!("Error: Tool '{}' not found", call.name)
-                    }
-                }
-            };
+            let result = self.dispatch_tool(call, cancel_flag.clone(), on_event).await;
 
             on_event(OrchestratorEvent::ToolResult {
                 name: call.name.clone(),
                 result: result.clone(),
             });
 
-            context.add_message(crate::memory::types::ChatMessage {
+            context.add_message(ChatMessage {
                 role: "tool".to_string(),
                 content: result,
                 tool_calls: None,
@@ -361,106 +214,124 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn run_sub_agent<F>(
+    /// Dispatch a single tool call. Intercepts special tools; falls back to MainAgent tools.
+    async fn dispatch_tool<F>(
         &self,
-        agent: Arc<dyn Agent>,
-        task: &str,
-        session_id: &str,
-        cancel_flag: Option<Arc<AtomicBool>>,
-        on_event: &mut F,
-    ) -> Result<String>
+        call: &ToolCall,
+        _cancel_flag: Option<Arc<AtomicBool>>,
+        _on_event: &mut F,
+    ) -> String
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
-        let agent_id = agent.id().to_string();
-        let agent_name = agent.name().to_string();
+        let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
 
-        on_event(OrchestratorEvent::StepStarted {
-            agent_id: agent_id.clone(),
-            agent_name: agent_name.clone(),
-        });
+        match call.name.as_str() {
+            // ── Skill dispatch ───────────────────────────────────────
+            "run_system_task" => {
+                let skill_id = args.get("skill_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty());
 
-        // ── Coding agent: stream Claude Code output in real time ──────────────
-        if agent_id == "coding" {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ClaudeStreamEvent>();
-            let tx2 = tx.clone(); // keep sender alive until we drop it
-            let task_owned = task.to_string();
-            let project_dir = self.work_dir.lock().unwrap().clone();
-            let session_owned = session_id.to_string();
-            let cancel_flag_for_worker = cancel_flag.clone();
+                if let Some(skill_id) = skill_id {
+                    if let Some(skill) = crate::skills::registry().find(skill_id) {
+                        let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let skill_args = args.get("args").cloned().unwrap_or(Value::Object(Default::default()));
 
-            let handle = std::thread::spawn(move || {
-                crate::agents::claude_code::ClaudeCodeAgent::execute_instruction_stream(
-                    &project_dir,
-                    &task_owned,
-                    Some(&session_owned),
-                    tx,
-                    cancel_flag_for_worker,
-                    None,
-                )
-            });
-
-            let mut final_result = String::new();
-
-            loop {
-                match rx.recv().await {
-                    Some(event) => {
-                        let is_terminal = matches!(
-                            event,
-                            ClaudeStreamEvent::Finished { .. } | ClaudeStreamEvent::Failed { .. }
-                        );
-                        if let ClaudeStreamEvent::Finished { ref result } = event {
-                            final_result = result.clone();
-                        } else if let ClaudeStreamEvent::Failed { ref error } = event {
-                            final_result = format!("Error: {}", error);
+                        if apply {
+                            match skill.execute(skill_args, None).await {
+                                Ok(exec) => serde_json::json!({
+                                    "stage": "execute",
+                                    "skill_id": skill_id,
+                                    "denied": exec.denied,
+                                    "summary": exec.summary,
+                                    "freed_bytes": exec.freed_bytes,
+                                    "success": exec.success_items,
+                                    "failed": exec.failed_items.iter()
+                                        .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
+                                        .collect::<Vec<_>>(),
+                                }).to_string(),
+                                Err(e) => format!("Error: skill execute failed: {}", e),
+                            }
+                        } else {
+                            match skill.preview(skill_args).await {
+                                Ok(preview) => serde_json::json!({
+                                    "stage": "preview",
+                                    "skill_id": skill_id,
+                                    "summary": preview.summary,
+                                    "estimated_bytes": preview.estimated_bytes,
+                                    "items": preview.items.iter().map(|it| serde_json::json!({
+                                        "label": it.label,
+                                        "detail": it.detail,
+                                        "bytes": it.bytes,
+                                    })).collect::<Vec<_>>(),
+                                    "warnings": preview.warnings,
+                                    "hint": "若用户同意继续，再次调用 run_system_task 时把 apply 设为 true。",
+                                }).to_string(),
+                                Err(e) => format!("Error: skill preview failed: {}", e),
+                            }
                         }
-                        on_event(OrchestratorEvent::SubAgentStream {
-                            agent_id: agent_id.clone(),
-                            event,
-                        });
-                        if is_terminal {
-                            break;
-                        }
+                    } else {
+                        let known: Vec<String> = crate::skills::registry()
+                            .manifests()
+                            .into_iter()
+                            .map(|m| m.id)
+                            .collect();
+                        format!(
+                            "Error: skill_id '{}' not found. Available skills: {:?}",
+                            skill_id, known
+                        )
                     }
-                    None => break,
+                } else {
+                    // 没有 skill_id：提示用户使用具体的 Skill
+                    let known: Vec<String> = crate::skills::registry()
+                        .manifests()
+                        .into_iter()
+                        .map(|m| m.id)
+                        .collect();
+                    format!(
+                        "请通过 skill_id 参数指定要使用的 Skill。当前已安装：{:?}",
+                        known
+                    )
                 }
             }
 
-            // drain any remaining events
-            drop(tx2);
-            while let Ok(event) = rx.try_recv() {
-                if let ClaudeStreamEvent::Finished { ref result } = event {
-                    if final_result.is_empty() {
-                        final_result = result.clone();
+            // ── 工作目录切换（Orchestrator 拦截以实际修改 work_dir） ──
+            "update_work_dir" => {
+                let new_path = args["path"].as_str().unwrap_or_default().to_string();
+                if !new_path.is_empty() {
+                    let path = std::path::PathBuf::from(&new_path);
+                    if path.exists() {
+                        *self.work_dir.lock().unwrap() = path;
+                        serde_json::json!({
+                            "status": "success",
+                            "path": new_path,
+                            "message": format!("工作目录已切换至: {}", new_path)
+                        }).to_string()
+                    } else {
+                        format!("Error: 路径不存在: {}", new_path)
                     }
+                } else {
+                    "Error: 未提供路径参数".to_string()
                 }
-                on_event(OrchestratorEvent::SubAgentStream {
-                    agent_id: agent_id.clone(),
-                    event,
-                });
             }
 
-            // 等待子线程结束（在 spawn_blocking 中执行 join 避免阻塞 tokio worker）
-            let _ = tokio::task::spawn_blocking(move || handle.join()).await;
-            on_event(OrchestratorEvent::StepFinished { result: final_result.clone() });
-            return Ok(final_result);
-        }
-
-        // ── Other sub-agents: generic single-step ─────────────────────────────
-        let mut context =
-            AgentContext::new(format!("{}-{}", session_id, agent_id));
-        context.add_message(crate::memory::types::ChatMessage::new("user", task));
-
-        let response = agent.step(&mut context).await?;
-        match response {
-            AgentResponse::Answer(answer) => {
-                on_event(OrchestratorEvent::StepFinished { result: answer.clone() });
-                Ok(answer)
+            // ── 已废弃工具的友好提示 ─────────────────────────────────
+            "run_claude_code" => {
+                "run_claude_code 工具已移除。编码能力将通过 Skill Market 中的 coding_assistant Skill 提供，安装后通过 run_system_task(skill_id=\"coding_assistant\") 调用。".to_string()
             }
-            AgentResponse::ToolCalls(_, _) => {
-                let fallback = "Sub-agent did not produce an answer.".to_string();
-                on_event(OrchestratorEvent::StepFinished { result: fallback.clone() });
-                Ok(fallback)
+
+            // ── 其他工具：交给 MainAgent 自身处理 ────────────────────
+            _ => {
+                if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == call.name) {
+                    match tool.call(args).await {
+                        Ok(res) => res.to_string(),
+                        Err(e) => format!("Error: {}", e),
+                    }
+                } else {
+                    format!("Error: Tool '{}' not found", call.name)
+                }
             }
         }
     }

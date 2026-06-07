@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use crate::agents::types::ArtifactEntry;
 use crate::memory::types::ChatMessage;
 use crate::task_db;
 use crate::AppState;
@@ -73,10 +72,6 @@ impl AppState {
         Some(self.get_task_dir_for_ids(workspace_id, task_id, &title))
     }
 
-    pub fn get_claude_meta_dir_for_task_dir(task_dir: &std::path::Path) -> PathBuf {
-        task_dir.join(".claude")
-    }
-
     pub fn ensure_task_storage_dir(
         &self,
         workspace_id: usize,
@@ -85,64 +80,11 @@ impl AppState {
     ) -> PathBuf {
         let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
         let _ = std::fs::create_dir_all(&task_dir);
-        let _ = std::fs::create_dir_all(Self::get_claude_meta_dir_for_task_dir(&task_dir));
         task_dir
-    }
-
-    pub fn load_artifacts_for_task_dir(task_dir: &std::path::Path) -> Vec<ArtifactEntry> {
-        fn walk(
-            root: &std::path::Path,
-            dir: &std::path::Path,
-            out: &mut Vec<ArtifactEntry>,
-            depth: usize,
-        ) {
-            if depth > 4 {
-                return;
-            }
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                if path.is_dir() {
-                    if [".claude", ".git", "node_modules", "target"].contains(&name.as_str()) {
-                        continue;
-                    }
-                    walk(root, &path, out, depth + 1);
-                } else if path.is_file() {
-                    let relative_path = path
-                        .strip_prefix(root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    let kind = path
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext.to_ascii_lowercase())
-                        .unwrap_or_else(|| "file".to_string());
-                    out.push(ArtifactEntry {
-                        name,
-                        relative_path,
-                        absolute_path: path.to_string_lossy().to_string(),
-                        kind,
-                    });
-                }
-            }
-        }
-
-        let mut out = Vec::new();
-        if task_dir.exists() {
-            walk(task_dir, task_dir, &mut out, 0);
-        }
-        out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-        out
     }
 
     pub fn restore_task_context(&mut self) {
         // ── 清理前一个 task 的运行状态，防止污染新 task ───────────
-        // 保留 subagent_messages 和 orchestrator_agent_run_map 不清理，
-        // subagent 卡片由 UI 层按 task_id 过滤渲染，切换时不清除数据
         self.job_manager.request_in_flight = false;
         self.job_manager.request_kind = None;
         self.job_manager.request_status_text = None;
@@ -158,11 +100,8 @@ impl AppState {
                 .into_iter()
                 .map(|m| ChatMessage::new(&m.role, &m.content))
                 .collect();
-            self.job_manager.current_claude_run =
-                self.load_claude_state_for_task(workspace_id, task_id, &title);
         } else {
             self.messages.clear();
-            self.job_manager.current_claude_run = None;
         }
     }
 }

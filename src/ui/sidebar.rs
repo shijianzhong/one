@@ -49,16 +49,9 @@ impl AppState {
         let lang = self.current_lang;
 
         // Pull data we need up front (avoid borrow issues inside closures)
-        let run = self
-            .job_manager
-            .current_claude_run
-            .as_ref()
-            .filter(|r| r.task_id == self.active_task_id)
-            .cloned();
-
-        let artifacts = run.as_ref().map(|r| r.artifacts.clone()).unwrap_or_default();
-        let preview = run.as_ref().and_then(|r| r.preview.clone());
-        let task_dir = run.as_ref().map(|r| r.work_dir.clone()).unwrap_or_default();
+        let artifacts: Vec<crate::agents::types::ProcessDisplayInfo> = Vec::new();
+        let preview: Option<crate::agents::types::PreviewState> = None;
+        let task_dir: String = String::new();
 
         // ── outer container ──────────────────────────────────────────────────
         div()
@@ -104,8 +97,6 @@ impl AppState {
                         cx,
                     ))
                     // ── § Preview ───────────────────────────────────────────
-                    .child(self.render_sidebar_preview(lang, preview.as_ref(), cx))
-                    // ── § References ────────────────────────────────────────
                     .child(self.render_sidebar_references(lang)),
             )
     }
@@ -115,7 +106,7 @@ impl AppState {
     fn render_sidebar_artifacts(
         &mut self,
         lang: crate::i18n::Lang,
-        artifacts: &[crate::agents::types::ArtifactEntry],
+        artifacts: &[crate::agents::types::ProcessDisplayInfo],
         task_dir: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -151,107 +142,6 @@ impl AppState {
 
         if artifacts.is_empty() {
             section = section.child(empty_hint(t(lang, Translations::NO_ARTIFACTS_YET)));
-        } else {
-            let shown = artifacts.iter().take(12).cloned().collect::<Vec<_>>();
-            let total = artifacts.len();
-
-            let mut list = div().flex().flex_col().gap_1();
-            for artifact in shown {
-                let abs = artifact.absolute_path.clone();
-                let name = artifact.relative_path.clone();
-                let kind = artifact.kind.clone();
-                list = list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .px_2()
-                        .py_2()
-                        .rounded_md()
-                        .bg(CANVAS_BG())
-                        .border_1()
-                        .border_color(BORDER_LIGHT())
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .flex_1()
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .px_1()
-                                        .py_0p5()
-                                        .rounded_sm()
-                                        .bg(SURFACE_PANEL())
-                                        .text_xs()
-                                        .text_color(MUTED_TEXT())
-                                        .flex_none()
-                                        .child(kind),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(PRIMARY_TEXT())
-                                        .text_ellipsis()
-                                        .overflow_hidden()
-                                        .child(name),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(BRAND_BLUE())
-                                .flex_none()
-                                .cursor_pointer()
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
-                                        this.reveal_file_in_finder(&abs);
-                                    }),
-                                )
-                                .child(t(lang, Translations::REVEAL)),
-                        ),
-                );
-            }
-            section = section.child(list);
-
-            // overflow hint
-            if total > 12 {
-                let td2 = task_dir.clone();
-                section = section.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .mt_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(MUTED_TEXT())
-                                .child(format!(
-                                    "{} {} {}",
-                                    t(lang, Translations::ARTIFACTS_SHOWING_PREFIX),
-                                    total,
-                                    t(lang, Translations::ARTIFACTS_TOTAL_SUFFIX)
-                                )),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(BRAND_BLUE())
-                                .cursor_pointer()
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
-                                        this.open_folder_in_finder(&td2);
-                                    }),
-                                )
-                                .child(t(lang, Translations::VIEW_ALL)),
-                        ),
-                );
-            }
         }
 
         section

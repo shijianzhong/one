@@ -3,7 +3,6 @@ pub mod components;
 pub mod dialogs;
 pub mod nav;
 pub mod sidebar;
-pub mod subagent;
 pub mod terminal;
 
 pub use components::*;

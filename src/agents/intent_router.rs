@@ -49,10 +49,7 @@ impl IntentRouter {
         if Self::matches_any(msg_trimmed, &self.coding_keywords) {
             return (
                 IntentLevel::Coding,
-                Some(RoutingDecision::ClaudeCode {
-                    instruction: msg_trimmed.to_string(),
-                    session_id: None,
-                }),
+                None,
             );
         }
 

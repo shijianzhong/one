@@ -323,17 +323,9 @@ impl AppState {
                                                         }
 
                                                         // ── P2: 清理 JobManager 状态 ─
-                                                        this.job_manager.current_claude_run = this.job_manager.current_claude_run
-                                                            .as_ref()
-                                                            .filter(|r| r.task_id != Some(task_id))
-                                                            .cloned();
-
                                                         if this.job_manager.general_ai_task_id == Some(task_id) {
                                                             this.job_manager.reset_general_ai_run();
                                                         }
-
-                                                        this.job_manager.subagent_messages
-                                                            .retain(|_, s| s.task_id != Some(task_id));
 
                                                         this.task_active_states.remove(&task_id);
 

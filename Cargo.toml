@@ -42,7 +42,6 @@ which = "6"
 rust-embed = "8"
 chrono = "0.4"
 bcrypt = "0.19.1"
-uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []

@@ -33,18 +33,17 @@ impl MainAgent {
             "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。\n\n你有 remember 和 recall 两个记忆工具：\n\
              - 每次对话开始时先调 recall 查看已有信息，避免重复提问。\n\
              - 遇到关于用户个人的信息（姓名、偏好、职业、语言习惯）→ remember(scope=\"global\")。\n\
-             - 遇到关于当前项目/工作区的信息（技术栈、规范、路径、团队成员）→ remember(scope=\"workspace\")。\n\
+             - 遇到关于当前项目/工作区的信息（技术栈、规范、ed 路径、团队成员）→ remember(scope=\"workspace\")。\n\
              - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。\n\n\
-             你可以使用 update_work_dir 工具切换工作目录。默认工作目录是整个项目的根目录。\
-             如果需要在子项目目录中运行构建或测试命令（如 cargo test、npm run build），\
-             请先用 update_work_dir 切换至正确的子目录，再调用 run_claude_code 执行任务。",
+             你可以使用 update_work_dir 工具切换工作目录。\n\n\
+             目前没有安装编码相关的技能（skill）。如果用户需要编写代码，请告知用户当前没有编码技能可用，\
+             需要先在技能市场中安装后才能使用。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
             std::env::consts::OS,
         );
 
         let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(RunClaudeCodeTool),
             Arc::new(RunSystemTaskTool),
             Arc::new(AnalyzeDiskTool),
             Arc::new(CleanDiskTool),
@@ -91,25 +90,6 @@ impl Agent for MainAgent {
 // --- Tools for MainAgent ---
 
 /// 标识工具：触发 Claude Code 执行。由 Orchestrator 拦截并特殊处理。
-struct RunClaudeCodeTool;
-#[async_trait]
-impl Tool for RunClaudeCodeTool {
-    fn name(&self) -> &str { "run_claude_code" }
-    fn description(&self) -> &str { "当任务需要编写、修改、调试代码，或者进行复杂的文件系统操作时使用。" }
-    fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "instruction": { "type": "string", "description": "给 Claude Code 的详细编码任务指令" }
-            },
-            "required": ["instruction"]
-        })
-    }
-    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
-        Ok(json!({ "status": "intercepted_by_orchestrator" }))
-    }
-}
-
 /// 标识工具：触发 SkillRegistry / SystemAgent 执行系统任务。由 Orchestrator 拦截。
 struct RunSystemTaskTool;
 #[async_trait]

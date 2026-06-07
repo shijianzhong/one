@@ -7,7 +7,7 @@ use gpui::{
 use std::time::Duration;
 use menu::Confirm;
 
-use crate::agents::types::{ClaudeRunPanelState, RequestKind, SubagentMessageState};
+use crate::agents::types::RequestKind;
 use crate::i18n::{t, Lang, Translations};
 use crate::ui::{parse_think_content, render_icon_element, render_process_table, ContentPart};
 use crate::ui_theme::{
@@ -322,12 +322,6 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let messages = self.messages.clone();
-        let live_run = self
-            .job_manager
-            .current_claude_run
-            .as_ref()
-            .filter(|run| run.task_id == self.active_task_id && run.show_live_bubble)
-            .cloned();
         let general_ai_live_run_id = self.job_manager.general_ai_run_id.filter(|_| {
             self.job_manager.general_ai_show_live_bubble
                 && self.job_manager.general_ai_task_id == self.active_task_id
@@ -335,7 +329,6 @@ impl AppState {
         let general_ai_pending = self.job_manager.request_in_flight
             && matches!(self.job_manager.request_kind, Some(RequestKind::GeneralAi))
             && self.job_manager.general_ai_task_id == self.active_task_id
-            && live_run.is_none()
             && general_ai_live_run_id.is_none();
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
@@ -601,29 +594,12 @@ impl AppState {
                 message_container
             }));
 
-        if let Some(run) = live_run.as_ref() {
-            message_list = message_list.child(self.render_claude_live_message(run, cx));
-        }
-
         if let Some(run_id) = general_ai_live_run_id {
             message_list = message_list.child(self.render_general_ai_live_message(run_id, cx));
         }
 
         if general_ai_pending {
             message_list = message_list.child(self.render_general_ai_pending_message());
-        }
-
-        let current_task_id = self.active_task_id;
-        let active_subagents: Vec<(u64, SubagentMessageState)> = self
-            .job_manager
-            .subagent_messages
-            .iter()
-            .filter(|(_, state)| state.task_id == current_task_id)
-            .map(|(run_id, state)| (*run_id, state.clone()))
-            .collect();
-
-        for (run_id, state) in active_subagents {
-            message_list = message_list.child(self.render_subagent_card(run_id, &state, cx));
         }
 
         message_list
@@ -831,196 +807,6 @@ impl AppState {
             .child(content)
     }
 
-    fn render_claude_live_message(
-        &mut self,
-        run: &ClaudeRunPanelState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let lang = self.current_lang;
-        let preview = if run.live_text.trim().is_empty() {
-            run.status_message.clone()
-        } else {
-            run.live_text.clone()
-        };
-
-        let parts = parse_think_content(&preview);
-        let mut think_index = 0usize;
-
-        div()
-            .flex_col()
-            .items_start()
-            .gap_2()
-            .w_full()
-            .mb_8()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mb_1()
-                    .child(
-                        div()
-                            .size(px(26.0))
-                            .rounded_full()
-                            .bg(AVATAR_BG())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .shadow_sm()
-                            .child(render_icon_element("assistant", gpui::white(), 13.0))
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(SECONDARY_TEXT())
-                            .font_weight(FontWeight::BOLD)
-                            .child(format!("{} · {}", t(lang, Translations::CLAUDE_CODE), run.status.label(lang)))
-                    )
-            )
-            .child(
-                div()
-                    .flex_col()
-                    .items_start()
-                    .gap_4()
-                    .max_w(px(840.0))
-                    .min_w(px(35.0))
-                    .w_full()
-                    .px_6()
-                    .py_5()
-                    .rounded_xl()
-                    .bg(ASSISTANT_BUBBLE_BG())
-                    .border_1()
-                    .border_color(BORDER_LIGHT())
-                    .shadow_sm()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .mb_2()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(GHOST_SURFACE_BG())
-                                    .text_xs()
-                                    .text_color(BRAND_BLUE())
-                                    .child("LIVE")
-                                    .with_animation(
-                                        "claude-live-pulse",
-                                        Animation::new(Duration::from_secs(2)).repeat(),
-                                        |el, delta| el.opacity(0.5 + gpui::pulsating_between(0.0, 0.5)(delta))
-                                    )
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(TERTIARY_TEXT())
-                                    .child(run.status_message.clone())
-                            )
-                    )
-                    .child(
-                        div()
-                            .flex_col()
-                            .w_full()
-                            .children({
-                                let mut rendered_parts: Vec<gpui::AnyElement> = Vec::new();
-                                let mut prev_was_think = false;
-                                let parts_static = parts.clone();
-                                for part in &parts_static {
-                                    match part {
-                                        ContentPart::Normal(text) => {
-                                            let add_top_padding = prev_was_think;
-                                            prev_was_think = false;
-                                            let el = div()
-                                                .text_base()
-                                                .text_color(PRIMARY_TEXT())
-                                                .line_height(relative(1.6))
-                                                .whitespace_normal()
-                                                .child(text.clone());
-                                            let el = if add_top_padding { el.pt_2() } else { el };
-                                            rendered_parts.push(el.into_any_element());
-                                        }
-                                        ContentPart::ProcessTable { processes } => {
-                                            prev_was_think = false;
-                                            let el = render_process_table(processes);
-                                            rendered_parts.push(el.into_any_element());
-                                        }
-                                        ContentPart::Think { text, complete } => {
-                                            prev_was_think = true;
-                                            let current_think_index = think_index;
-                                            think_index += 1;
-                                            let complete = *complete;
-                                            let key = format!("live:{}:think:{}", run.run_id, current_think_index);
-                                            let collapsed = self
-                                                .think_collapsed
-                                                .get(&key)
-                                                .copied()
-                                                .unwrap_or(complete);
-                                            let header_text = if complete {
-                                                t(lang, Translations::THINKING_DONE)
-                                            } else {
-                                                t(lang, Translations::THINKING_IN_PROGRESS)
-                                            };
-                                            let icon_path = if collapsed { "fold.svg" } else { "expand.svg" };
-                                            let default_collapsed = complete;
-
-                                            let el = div()
-                                                .flex_col()
-                                                .w_full()
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .px_3()
-                                                        .py_1p5()
-                                                        .rounded_lg()
-                                                        .bg(GHOST_SURFACE_BG())
-                                                        .cursor_pointer()
-                                                        .hover(|this| this.bg(ACTIVE_BG()))
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                                            let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
-                                                            this.think_collapsed.insert(key.clone(), next);
-                                                            cx.notify();
-                                                        }))
-                                                        .child(
-                                                            svg()
-                                                                .path(icon_path)
-                                                                .size(px(14.0))
-                                                                .flex_none()
-                                                                .text_color(MUTED_TEXT())
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .text_color(MUTED_TEXT())
-                                                                .child(header_text)
-                                                        )
-                                                )
-                                                .when(!collapsed, |this| {
-                                                    this.child(
-                                                        div()
-                                                            .mt_2()
-                                                            .px_3()
-                                                            .text_xs()
-                                                            .text_color(TERTIARY_TEXT())
-                                                            .line_height(relative(1.5))
-                                                            .whitespace_normal()
-                                                            .child(text.clone())
-                                                    )
-                                                });
-                                            rendered_parts.push(el.into_any_element());
-                                        }
-                                    }
-                                }
-                                rendered_parts
-                            })
-                    )
-            )
-    }
-
     fn render_general_ai_pending_message(&self) -> impl IntoElement {
         let lang = self.current_lang;
         let status_text = self
@@ -1110,8 +896,10 @@ impl AppState {
         let composer_focus = composer_editor.read(cx).focus_handle(cx);
         let weak_composer = composer_editor.downgrade();
         let weak_composer_for_action = weak_composer.clone();
+        let weak_composer_for_subagent_answer = weak_composer.clone();
 
         let request_in_flight = self.is_task_active(self.active_task_id);
+
         let send_bg = BRAND_BLUE();
         let send_label = if request_in_flight {
             t(lang, Translations::STOP_GENERATING)
@@ -1137,6 +925,7 @@ impl AppState {
                     .border_1()
                     .border_color(BORDER_LIGHT())
                     .shadow_lg()
+                    // ── 选项按钮（当子代理提问有可选选项时） ──────────
                     .child(
                         div()
                             .flex()
@@ -1213,10 +1002,14 @@ impl AppState {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                        // ── 回答 Claude Code 问题（非 orchestrator 路径） ──
+                                        // ── 运行中 → 停止 ──────────────────────────────
                                         if this.job_manager.request_in_flight {
                                             this.cancel_current_run(cx);
                                             return;
                                         }
+
+                                        // ── 正常发送 ────────────────────────────────────
                                         if let Some(editor) = weak_composer.upgrade() {
                                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                                             if !text.is_empty() {

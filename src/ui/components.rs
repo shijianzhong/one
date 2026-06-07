@@ -3,7 +3,6 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
     Window,
 };
-use crate::agents::types::FormattedContent;
 use crate::ui_theme::{
     BORDER_LIGHT, BRAND_BLUE, CODE_BG, ERROR_TEXT, GHOST_SURFACE_BG, HOVER_BG, MUTED_TEXT,
     PRIMARY_TEXT, SECONDARY_TEXT,
@@ -419,51 +418,6 @@ pub fn render_icon_element(icon_key: &str, color: Hsla, size_px: f32) -> AnyElem
             .text_xs()
             .text_color(color)
             .child(icon_label(icon_key))
-            .into_any_element(),
-    }
-}
-
-pub fn render_formatted_content(
-    content: &FormattedContent,
-    plain_color: Hsla,
-    block_color: Hsla,
-) -> gpui::AnyElement {
-    match content {
-        FormattedContent::Plain(text) => div()
-            .text_xs()
-            .text_color(plain_color)
-            .whitespace_normal()
-            .child(text.clone())
-            .into_any_element(),
-        FormattedContent::Json(text) => div()
-            .p_2()
-            .rounded_md()
-            .bg(CODE_BG())
-            .border_1()
-            .border_color(BORDER_LIGHT())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(block_color)
-                    .font_family("Menlo")
-                    .whitespace_normal()
-                    .child(text.clone()),
-            )
-            .into_any_element(),
-        FormattedContent::Code(text) => div()
-            .p_2()
-            .rounded_md()
-            .bg(CODE_BG())
-            .border_1()
-            .border_color(BORDER_LIGHT())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(block_color)
-                    .font_family("Menlo")
-                    .whitespace_normal()
-                    .child(text.clone()),
-            )
             .into_any_element(),
     }
 }

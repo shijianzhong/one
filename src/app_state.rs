@@ -7,17 +7,6 @@ use gpui::{Context, Pixels, Point, ScrollHandle, Window};
 use crate::agents;
 use crate::agents::types::PreviewLaunchResult;
 
-/// A question from Claude Code waiting for user interaction
-#[derive(Debug, Clone)]
-pub(crate) struct PendingClaudeQuestion {
-    pub prompt: String,
-    pub options: Vec<String>,
-    /// Which sub-agent run_id this question belongs to (for answer routing)
-    pub source_run_id: u64,
-    /// session_id for continue_claude_with_answer routing
-    pub session_id: Option<String>,
-}
-
 use crate::i18n::{t, Lang, Translations};
 use crate::memory::types::ChatMessage;
 use crate::sandbox::backend::Backend;

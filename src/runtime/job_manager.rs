@@ -1,16 +1,10 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use gpui::Context;
 
-use crate::agents::claude_code::{ClaudeCodeAgent, ClaudeStreamEvent};
 use crate::agents::core::{AgentFactory, OrchestratorEvent};
-use crate::agents::types::{
-    ClaudeRunEvent, ClaudeRunPanelState, ClaudeRunStatus, ClaudeRunTone, PendingQuestion,
-    PreviewState, PreviewStatus, RequestKind, SubagentEventEntry, SubagentEventTone, SubagentMessageState,
-    SubagentStatus,
-};
+use crate::agents::types::RequestKind;
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
@@ -19,19 +13,13 @@ use crate::{
     log_think_boundary_newlines, normalize_single_line_label, parse_tools_from_json,
     strip_think_tags, task_db, AppState,
 };
-use super::events::*;
+use super::events::{GeneralAiStreamEvent, SummarizeEvent, OrchestratorWrapperEvent};
 
 pub struct JobManager {
-    pub current_claude_run: Option<ClaudeRunPanelState>,
     pub next_claude_run_id: u64,
     pub request_in_flight: bool,
     pub request_status_text: Option<String>,
     pub request_kind: Option<RequestKind>,
-    pub subagent_messages: HashMap<u64, SubagentMessageState>,
-    /// Maps orchestrator agent_id -> subagent card run_id for live stream routing
-    pub orchestrator_agent_run_map: HashMap<String, u64>,
-    /// Active Claude Code question waiting for user answer (from any path)
-    pub pending_claude_question: Option<crate::app_state::PendingClaudeQuestion>,
 
     pub next_general_ai_run_id: u64,
     pub general_ai_run_id: Option<u64>,
@@ -45,21 +33,17 @@ pub struct JobManager {
 
     /// 取消标志：停止按钮触发后设为 true
     pub cancel_flag: Arc<AtomicBool>,
-    /// Claude Code 子进程 PID（用于 kill），通过 AtomicU32 共享给 worker 线程
-    pub claude_child_pid: Option<Arc<std::sync::atomic::AtomicU32>>,
+    /// Orchestrator 等待用户输入时的通道（发送端，由 route_message 使用）
+    pub orchestrator_user_input_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl JobManager {
     pub fn new() -> Self {
         Self {
-            current_claude_run: None,
             next_claude_run_id: 0,
             request_in_flight: false,
             request_status_text: None,
             request_kind: None,
-            subagent_messages: HashMap::new(),
-            orchestrator_agent_run_map: HashMap::new(),
-            pending_claude_question: None,
             next_general_ai_run_id: 0,
             general_ai_run_id: None,
             general_ai_task_id: None,
@@ -69,13 +53,8 @@ impl JobManager {
             summarize_job_id: None,
             pending_confirmation_tools: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
-            claude_child_pid: None,
+            orchestrator_user_input_tx: None,
         }
-    }
-
-    pub(crate) fn allocate_claude_run_id(&mut self) -> u64 {
-        self.next_claude_run_id += 1;
-        self.next_claude_run_id
     }
 
     pub(crate) fn allocate_general_ai_run_id(&mut self) -> u64 {
@@ -111,553 +90,9 @@ impl JobManager {
         self.general_ai_show_live_bubble = false;
         self.general_ai_live_text.clear();
     }
-
-    pub(crate) fn toggle_subagent_collapsed(&mut self, run_id: u64) {
-        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
-            state.collapsed = !state.collapsed;
-        }
-    }
-
-    pub(crate) fn toggle_subagent_events_collapsed(&mut self, run_id: u64) {
-        if let Some(state) = self.subagent_messages.get_mut(&run_id) {
-            state.events_collapsed = !state.events_collapsed;
-        }
-    }
 }
 
 impl AppState {
-    /// 停止当前所有正在运行的任务（Claude Code / Orchestrator）
-    pub(crate) fn cancel_current_run(&mut self, cx: &mut Context<Self>) {
-        // 1. 设置取消标志
-        self.job_manager.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-
-        // 2. Kill Claude Code 子进程（如果有）
-        if let Some(pid_arc) = self.job_manager.claude_child_pid.take() {
-            let pid = pid_arc.load(std::sync::atomic::Ordering::SeqCst);
-            if pid > 0 {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .output();
-            }
-        }
-
-        // 3. 清理所有请求状态
-        self.job_manager.clear_request_full();
-        self.job_manager.reset_general_ai_run();
-        self.job_manager.current_claude_run = None;
-        self.job_manager.pending_claude_question = None;
-        self.job_manager.orchestrator_agent_run_map.clear();
-        self.job_manager.subagent_messages.clear();
-
-        // 4. 标记当前 task 不活跃
-        if let Some(tid) = self.active_task_id {
-            self.mark_task_inactive(Some(tid));
-        }
-
-        cx.notify();
-    }
-
-    pub(crate) fn persist_current_claude_state(&self) {
-        let Some(run) = self.job_manager.current_claude_run.as_ref() else {
-            return;
-        };
-        let Some(task_id) = run.task_id else {
-            return;
-        };
-        let Some(workspace_id) = self.active_workspace_id else {
-            return;
-        };
-        let task_title = self
-            .workspaces
-            .iter()
-            .find(|w| w.id == workspace_id)
-            .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
-            .map(|t| t.title.clone())
-            .unwrap_or_else(|| "task".to_string());
-        let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, &task_title);
-        let meta_dir = Self::get_claude_meta_dir_for_task_dir(&task_dir);
-        let _ = std::fs::create_dir_all(&meta_dir);
-        let state_path = meta_dir.join("run_state.json");
-        if let Ok(json) = serde_json::to_string_pretty(run) {
-            let _ = std::fs::write(state_path, json);
-        }
-    }
-
-    pub(crate) fn load_claude_state_for_task(
-        &self,
-        workspace_id: usize,
-        task_id: usize,
-        task_title: &str,
-    ) -> Option<ClaudeRunPanelState> {
-        let task_dir = self.get_task_dir_for_ids(workspace_id, task_id, task_title);
-        let state_path = Self::get_claude_meta_dir_for_task_dir(&task_dir).join("run_state.json");
-        let content = std::fs::read_to_string(state_path).ok()?;
-        let mut state = serde_json::from_str::<ClaudeRunPanelState>(&content).ok()?;
-        state.artifacts = Self::load_artifacts_for_task_dir(&task_dir);
-        Some(state)
-    }
-
-    pub(crate) fn begin_claude_run(&mut self, instruction: &str) -> u64 {
-        let run_id = self.job_manager.allocate_claude_run_id();
-        self.job_manager.set_request(
-            RequestKind::ClaudeCode,
-            Some(
-                t(
-                    self.current_lang,
-                    Translations::CLAUDE_CODE_RUNNING_ELLIPSIS,
-                )
-                .to_string(),
-            ),
-        );
-        let lang = self.current_lang;
-        self.job_manager.current_claude_run = Some(ClaudeRunPanelState {
-            run_id,
-            task_id: self.active_task_id,
-            instruction: instruction.to_string(),
-            work_dir: self.get_work_dir(),
-            command_preview: String::new(),
-            status: ClaudeRunStatus::Running,
-            status_message: t(lang, Translations::WAITING_FOR_CLAUDE_START).to_string(),
-            live_text: String::new(),
-            final_text: None,
-            stderr_lines: vec![],
-            events: vec![ClaudeRunEvent::info(
-                t(lang, Translations::RUN_QUEUED),
-                format!(
-                    "{}: {}",
-                    t(lang, Translations::INSTRUCTION_SUBMITTED),
-                    instruction
-                ),
-            )],
-            show_live_bubble: true,
-            preview: Some(PreviewState {
-                status: PreviewStatus::Idle,
-                entry_file: None,
-                url: None,
-                note: t(lang, Translations::PREVIEW_AFTER_RUN_NOTE).to_string(),
-            }),
-            session_id: None,
-            artifacts: self
-                .get_active_task_dir_path()
-                .map(|dir| Self::load_artifacts_for_task_dir(&dir))
-                .unwrap_or_default(),
-            pending_question: None,
-            modified_files: Vec::new(),
-        });
-        self.persist_current_claude_state();
-        self.insert_subagent_message(run_id, instruction.to_string());
-        if let Some(tid) = self.active_task_id {
-            self.mark_task_active(tid);
-        }
-        run_id
-    }
-
-    pub(crate) fn spawn_claude_code_run(
-        &mut self,
-        instruction: String,
-        session_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let run_id = self.begin_claude_run(&instruction);
-        let project_dir =
-            if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
-                self.ensure_task_storage_dir(workspace_id, task_id, &title)
-            } else {
-                std::path::PathBuf::from(self.get_work_dir())
-            };
-
-        let log_run_id = self.active_task_id.and_then(|task_id| {
-            RunRecorder::begin(
-                &self.db.conn,
-                task_id,
-                RunKind::ClaudeCode,
-                instruction.clone(),
-            )
-        });
-
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<ClaudeStreamEvent>();
-        let worker_sender = sender.clone();
-        let final_sender = sender;
-        let instruction_for_worker = instruction.clone();
-        let session_id_for_worker = session_id.clone();
-        let project_dir_for_worker = project_dir.clone();
-
-        // 创建取消标志的副本，传给 claude code 进程
-        let cancel_flag = self.job_manager.cancel_flag.clone();
-
-        // 用 AtomicU32 存储子进程 PID
-        let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let child_pid_for_worker = child_pid.clone();
-        self.job_manager.claude_child_pid = Some(child_pid);
-
-        gpui_tokio::Tokio::spawn(cx, async move {
-            let result = tokio::task::spawn_blocking(move || {
-                ClaudeCodeAgent::execute_instruction_stream(
-                    &project_dir_for_worker,
-                    &instruction_for_worker,
-                    session_id_for_worker.as_deref(),
-                    worker_sender,
-                    Some(cancel_flag),
-                    Some(&child_pid_for_worker),
-                )
-            })
-            .await;
-
-            match result {
-                Ok(Ok(output)) => {
-                    let _ = final_sender.send(ClaudeStreamEvent::Finished { result: output });
-                }
-                Ok(Err(error)) => {
-                    let _ = final_sender.send(ClaudeStreamEvent::Failed {
-                        error: error.to_string(),
-                    });
-                }
-                Err(error) => {
-                    let _ = final_sender.send(ClaudeStreamEvent::Failed {
-                        error: format!("Tokio join error: {}", error),
-                    });
-                }
-            }
-        })
-        .detach();
-
-        cx.spawn(async move |this, cx| {
-            while let Some(event) = receiver.recv().await {
-                let _ = this.update(cx, |this, cx| {
-                    if let Some(rid) = log_run_id {
-                        if let Some(mapped) = map_claude_to_run_event(&event) {
-                            let recorder = RunRecorder::attach(&this.db.conn, rid);
-                            recorder.record(&mapped);
-                            match mapped {
-                                RunEvent::Finished { .. } => {
-                                    recorder.finish(RunStatus::Finished);
-                                }
-                                RunEvent::Failed { .. } => {
-                                    recorder.finish(RunStatus::Failed);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    this.apply_claude_run_event(run_id, event);
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-    }
-
-    pub(crate) fn apply_claude_run_event(&mut self, run_id: u64, event: ClaudeStreamEvent) {
-        self.update_subagent_message_event(run_id, &event);
-
-        let lang = self.current_lang;
-        let mut final_message: Option<String> = None;
-        let mut persist_task_id: Option<usize> = None;
-        let mut finished_work_dir: Option<String> = None;
-
-        {
-            let Some(run) = self.job_manager.current_claude_run.as_mut() else {
-                return;
-            };
-
-            if run.run_id != run_id {
-                return;
-            }
-
-            match event {
-                ClaudeStreamEvent::Started { command, workdir } => {
-                    run.command_preview = command.clone();
-                    run.work_dir = workdir.clone();
-                    run.status_message = t(lang, Translations::CLAUDE_CODE_RUNNING).to_string();
-                    run.events.push(ClaudeRunEvent::info(
-                        t(lang, Translations::PROCESS_STARTED),
-                        format!(
-                            "{}: {}\n{}: {}",
-                            t(lang, Translations::WORKDIR),
-                            workdir,
-                            t(lang, Translations::COMMAND),
-                            command
-                        ),
-                    ));
-                }
-                ClaudeStreamEvent::AssistantText(text) => {
-                    if run.live_text.is_empty() {
-                        run.events.push(ClaudeRunEvent::info(
-                            t(lang, Translations::STREAMING_RESPONSE),
-                            t(lang, Translations::CLAUDE_STARTED_LIVE_CONTENT),
-                        ));
-                    }
-                    if !run.live_text.is_empty() {
-                        run.live_text.push('\n');
-                    }
-                    run.live_text.push_str(&text);
-                    run.status_message = t(lang, Translations::GENERATING_RESPONSE).to_string();
-                }
-                ClaudeStreamEvent::Progress { label, detail } => {
-                    run.status_message = format!("{}...", label);
-                    run.events.push(ClaudeRunEvent::info(label, detail));
-                }
-                ClaudeStreamEvent::Stderr(line) => {
-                    run.stderr_lines.push(line.clone());
-                    let tone = if line.to_lowercase().contains("error") {
-                        ClaudeRunTone::Error
-                    } else {
-                        ClaudeRunTone::Info
-                    };
-                    run.events.push(ClaudeRunEvent {
-                        title: t(lang, Translations::STDERR).to_string(),
-                        tone,
-                        formatted_detail: crate::agents::types::format_event_detail(&line),
-                    });
-                }
-                ClaudeStreamEvent::Finished { result } => {
-                    run.status = ClaudeRunStatus::Completed;
-                    run.status_message = t(lang, Translations::RUN_COMPLETED).to_string();
-                    if run.live_text.trim().is_empty() {
-                        run.live_text = result.clone();
-                    }
-                    run.final_text = Some(result.clone());
-                    run.events.push(ClaudeRunEvent::success(
-                        t(lang, Translations::RUN_COMPLETED),
-                        format!(
-                            "{}: {}",
-                            t(lang, Translations::GENERATED_CHARACTERS),
-                            result.len()
-                        ),
-                    ));
-                    final_message = Some(result);
-                    persist_task_id = run.task_id;
-                    finished_work_dir = Some(run.work_dir.clone());
-                    self.job_manager.clear_request();
-                }
-                ClaudeStreamEvent::Failed { error } => {
-                    run.status = ClaudeRunStatus::Failed;
-                    run.status_message = t(lang, Translations::RUN_FAILED).to_string();
-                    run.events.push(ClaudeRunEvent::error(
-                        t(lang, Translations::RUN_FAILED),
-                        format!("{}{}", t(lang, Translations::CLAUDE_EXECUTION_ERROR), error),
-                    ));
-                    final_message = Some(format!(
-                        "{} {} {}",
-                        t(lang, Translations::CLAUDE_CODE_TAG),
-                        t(lang, Translations::RUN_FAILED_TAG),
-                        error
-                    ));
-                    persist_task_id = run.task_id;
-                    self.job_manager.clear_request();
-                }
-                ClaudeStreamEvent::Session { session_id } => {
-                    run.session_id = Some(session_id.clone());
-                    run.events.push(ClaudeRunEvent::info(
-                        t(lang, Translations::SESSION_UPDATED),
-                        format!("{}: {}", t(lang, Translations::SESSION_ID), session_id),
-                    ));
-                }
-                ClaudeStreamEvent::ModifiedFiles { ref files } => {
-                    if !files.is_empty() {
-                        run.modified_files = files.clone();
-                        run.events.push(ClaudeRunEvent::info(
-                            "Modified Files".to_string(),
-                            format!("Modified: {}", files.join(", ")),
-                        ));
-                    }
-                }
-                ClaudeStreamEvent::AskUserQuestion {
-                    prompt,
-                    options,
-                } => {
-                    run.status_message = t(lang, Translations::CLAUDE_WAITING_FOR_ANSWER).to_string();
-                    run.events.push(ClaudeRunEvent::info(
-                        t(lang, Translations::QUESTION),
-                        format!("{}\n{}: {:?}", prompt, t(lang, Translations::OPTIONS), options),
-                    ));
-                    run.pending_question = Some(PendingQuestion {
-                        prompt,
-                        options,
-                        session_id: run.session_id.clone(),
-                    });
-                    self.job_manager.request_status_text =
-                        Some(t(lang, Translations::CLAUDE_WAITING_FOR_ANSWER).to_string());
-                }
-            }
-        }
-
-        if let Some(msg) = final_message {
-            if let Some(task_id) = persist_task_id {
-                self.mark_task_inactive(Some(task_id));
-                let _ = task_db::insert_message(&self.db.conn, task_id, "assistant", &msg);
-                if self.active_task_id == Some(task_id) {
-                    self.messages.push(ChatMessage::new("assistant", &msg));
-                    self.needs_auto_scroll = true;
-                }
-            }
-        }
-
-        if let Some(work_dir) = finished_work_dir {
-            // Re-scan artifacts and try to prepare preview
-            if let Some(run) = self.job_manager.current_claude_run.as_mut() {
-                run.artifacts = Self::load_artifacts_for_task_dir(&std::path::PathBuf::from(&work_dir));
-            }
-            let res = self.try_prepare_preview(&work_dir, "");
-            if let crate::agents::types::PreviewLaunchResult::Ready { url, entry_file, note } = res {
-                if let Some(run) = self.job_manager.current_claude_run.as_mut() {
-                    run.preview = Some(PreviewState {
-                        status: PreviewStatus::Ready,
-                        entry_file: Some(entry_file),
-                        url: Some(url),
-                        note,
-                    });
-                    run.events.push(ClaudeRunEvent::success(
-                        t(lang, Translations::PREVIEW_READY_EVENT),
-                        t(lang, Translations::OPENED_PREVIEW_URL),
-                    ));
-                }
-            }
-        }
-
-        self.persist_current_claude_state();
-    }
-
-    pub(crate) fn update_subagent_message_event(&mut self, run_id: u64, event: &ClaudeStreamEvent) {
-        let lang = self.current_lang;
-        let session_id_for_question = self
-            .job_manager.current_claude_run
-            .as_ref()
-            .and_then(|r| r.session_id.clone());
-
-        let Some(state) = self.job_manager.subagent_messages.get_mut(&run_id) else {
-            return;
-        };
-
-        match event {
-            ClaudeStreamEvent::Started { command: _, workdir } => {
-                state.status = SubagentStatus::Running;
-                state.status_message = t(lang, Translations::CLAUDE_CODE_RUNNING).to_string();
-                state.events.push(SubagentEventEntry {
-                    title: t(lang, Translations::PROCESS_STARTED).to_string(),
-                    detail: format!(
-                        "{}: {}",
-                        t(lang, Translations::WORKDIR),
-                        workdir
-                    ),
-                    tone: SubagentEventTone::Info,
-                });
-            }
-            ClaudeStreamEvent::AssistantText(text) => {
-                if !state.live_text.is_empty() {
-                    state.live_text.push('\n');
-                }
-                state.live_text.push_str(text);
-            }
-            ClaudeStreamEvent::Progress { label, detail } => {
-                state.status_message = format!("{}...", label);
-                state.events.push(SubagentEventEntry {
-                    title: label.clone(),
-                    detail: detail.clone(),
-                    tone: SubagentEventTone::Info,
-                });
-            }
-            ClaudeStreamEvent::Stderr(line) => {
-                state.stderr_lines.push(line.clone());
-                let tone = if line.to_lowercase().contains("error") {
-                    SubagentEventTone::Error
-                } else {
-                    SubagentEventTone::Info
-                };
-                state.events.push(SubagentEventEntry {
-                    title: t(lang, Translations::STDERR).to_string(),
-                    detail: line.clone(),
-                    tone,
-                });
-            }
-            ClaudeStreamEvent::Finished { result } => {
-                state.status = SubagentStatus::Completed;
-                state.status_message = t(lang, Translations::CLAUDE_COMPLETED).to_string();
-                if state.live_text.trim().is_empty() {
-                    state.live_text = result.clone();
-                }
-            }
-            ClaudeStreamEvent::Failed { error } => {
-                state.status = SubagentStatus::Failed;
-                state.status_message = t(lang, Translations::CLAUDE_FAILED).to_string();
-                state.events.push(SubagentEventEntry {
-                    title: t(lang, Translations::RUN_FAILED).to_string(),
-                    detail: error.clone(),
-                    tone: SubagentEventTone::Error,
-                });
-            }
-            ClaudeStreamEvent::AskUserQuestion { prompt, options: _ } => {
-                state.status_message = "Waiting for your answer...".to_string();
-                state.events.push(SubagentEventEntry {
-                    title: "Question".to_string(),
-                    detail: prompt.clone(),
-                    tone: SubagentEventTone::Info,
-                });
-            }
-            ClaudeStreamEvent::ModifiedFiles { files } => {
-                if !files.is_empty() {
-                    state.events.push(SubagentEventEntry {
-                        title: "Modified Files".to_string(),
-                        detail: format!("{} file(s) changed:\n{}", files.len(), files.join("\n")),
-                        tone: SubagentEventTone::Info,
-                    });
-                }
-            }
-            _ => {}
-        }
-
-        if let ClaudeStreamEvent::AskUserQuestion { prompt, options } = event {
-            self.job_manager.pending_claude_question = Some(crate::app_state::PendingClaudeQuestion {
-                prompt: prompt.clone(),
-                options: options.clone(),
-                source_run_id: run_id,
-                session_id: session_id_for_question,
-            });
-        }
-    }
-
-    pub(crate) fn continue_claude_with_answer(&mut self, answer: String, cx: &mut Context<Self>) {
-        let lang = self.current_lang;
-        let session_id = self
-            .job_manager.current_claude_run
-            .as_ref()
-            .and_then(|run| run.session_id.clone());
-        if let Some(run) = self.job_manager.current_claude_run.as_mut() {
-            run.pending_question = None;
-            run.status = ClaudeRunStatus::Running;
-            run.status_message = t(lang, Translations::CONTINUING_CLAUDE_RUN).to_string();
-            run.events.push(ClaudeRunEvent::info(
-                t(lang, Translations::USER_ANSWERED),
-                answer.clone(),
-            ));
-        }
-        self.job_manager.set_request(
-            RequestKind::ClaudeCode,
-            Some(t(lang, Translations::CLAUDE_CODE_CONTINUING_ELLIPSIS).to_string()),
-        );
-
-        self.spawn_claude_code_run(answer, session_id, cx);
-    }
-
-    pub(crate) fn insert_subagent_message(&mut self, run_id: u64, instruction: String) {
-        let task_id = self.active_task_id;
-        self.job_manager.subagent_messages.insert(
-            run_id,
-            SubagentMessageState {
-                instruction,
-                status: SubagentStatus::Pending,
-                status_message: t(self.current_lang, Translations::CLAUDE_CODE_RUNNING_ELLIPSIS)
-                    .to_string(),
-                live_text: String::new(),
-                events: Vec::new(),
-                stderr_lines: Vec::new(),
-                collapsed: false,
-                events_collapsed: false,
-                task_id,
-            },
-        );
-    }
-
     fn apply_general_ai_stream_event(
         &mut self,
         run_id: u64,
@@ -992,6 +427,24 @@ impl AppState {
         .detach();
     }
 
+    /// 停止当前所有正在运行的任务（Orchestrator）
+    pub(crate) fn cancel_current_run(&mut self, cx: &mut Context<Self>) {
+        // 1. 设置取消标志
+        self.job_manager.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // 2. 清理所有请求状态
+        self.job_manager.clear_request_full();
+        self.job_manager.reset_general_ai_run();
+        self.job_manager.orchestrator_user_input_tx = None;
+
+        // 3. 标记当前 task 不活跃
+        if let Some(tid) = self.active_task_id {
+            self.mark_task_inactive(Some(tid));
+        }
+
+        cx.notify();
+    }
+
     pub(crate) fn spawn_orchestrator_run(&mut self, instruction: String, cx: &mut Context<Self>) {
         let config = crate::services::load_config();
         let workspace_name = match self.get_active_workspace() {
@@ -999,10 +452,15 @@ impl AppState {
             None => "Default".to_string(),
         };
 
+        let workspace_root = self
+            .get_active_workspace()
+            .map(|w| w.path.clone())
+            .unwrap_or_else(|| self.default_work_dir.clone());
+
         let orchestrator = match AgentFactory::create_orchestrator(
             &config,
             &workspace_name,
-            std::path::PathBuf::from(self.get_work_dir()),
+            workspace_root,
         ) {
             Ok(o) => o,
             Err(e) => {
@@ -1043,7 +501,12 @@ impl AppState {
         let event_sender = sender.clone();
         let final_sender = sender;
 
-        let session_id = uuid::Uuid::new_v4().to_string();
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let session_id = format!(
+            "session-{}-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros(),
+            run_id,
+        );
         let instruction_for_task = instruction.clone();
         let history = self.messages.clone();
 
@@ -1052,11 +515,25 @@ impl AppState {
         let active_task_id = self.active_task_id;
         let cancel_flag = self.job_manager.cancel_flag.clone();
 
+        // ── 创建用户输入通道（支持多轮交互） ──────────────────────
+        let (user_input_tx, mut user_input_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        self.job_manager.orchestrator_user_input_tx = Some(user_input_tx);
+
         gpui_tokio::Tokio::spawn(cx, async move {
             let result = orchestrator
-                .run_task(&instruction_for_task, session_id, history, &workspace_name_for_orchestrator, active_task_id, Some(cancel_flag), |event| {
-                    let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
-                })
+                .run_task(
+                    &instruction_for_task,
+                    session_id,
+                    history,
+                    &workspace_name_for_orchestrator,
+                    active_task_id,
+                    Some(cancel_flag),
+                    Some(user_input_rx),
+                    |event| {
+                        let _ = event_sender.send(OrchestratorWrapperEvent::Event(event));
+                    },
+                )
                 .await;
 
             match result {
@@ -1074,187 +551,150 @@ impl AppState {
             while let Some(event) = receiver.recv().await {
                 let _ = this.update(cx, |this, cx| {
                     match event {
-                                OrchestratorWrapperEvent::Event(e) => match e {
-                                    OrchestratorEvent::Plan { plan } => {
-                                        if let Some(rid) = log_run_id {
-                                            RunRecorder::attach(&this.db.conn, rid).record(
-                                                &RunEvent::MessageDelta {
-                                                    text: plan.clone(),
-                                                },
-                                            );
-                                        }
-                                        this.job_manager.request_status_text = Some(format!("📋 Plan: {}", plan));
-                                    }
-                                    OrchestratorEvent::AssistantDelta(delta) => {
-                                        this.job_manager.general_ai_live_text.push_str(&delta);
-                                        this.job_manager.request_status_text =
-                                            Some(t(this.current_lang, Translations::GENERATING_RESPONSE).to_string());
-                                        this.needs_auto_scroll = true;
-                                    }
-                                    OrchestratorEvent::StepStarted {
-                                        agent_id,
-                                        agent_name,
-                                    } => {
-                                        let sub_run_id = this.job_manager.next_claude_run_id + 1;
-                                        this.job_manager.next_claude_run_id = sub_run_id;
-                                        this.insert_subagent_message(sub_run_id, format!("{}: thinking...", agent_name));
-                                        this.job_manager.orchestrator_agent_run_map.insert(agent_id.clone(), sub_run_id);
-                                        this.job_manager.request_status_text =
-                                            Some(format!("Agent {} is thinking...", agent_name));
-                                    }
-                                    OrchestratorEvent::ToolCall { name, args } => {
-                                        if let Some(rid) = log_run_id {
-                                            RunRecorder::attach(&this.db.conn, rid).record(
-                                                &RunEvent::ToolCall {
-                                                    name: name.clone(),
-                                                    args: args.clone(),
-                                                },
-                                            );
-                                        }
-                                        this.job_manager.request_status_text =
-                                            Some(format!("Calling tool {}...", name));
-                                    }
-                                    OrchestratorEvent::ToolResult { name, result } => {
-                                        if let Some(rid) = log_run_id {
-                                            RunRecorder::attach(&this.db.conn, rid).record(
-                                                &RunEvent::ToolResult { name, result },
-                                            );
-                                        }
-                                    }
-                                    OrchestratorEvent::StepFinished { result: _ } => {}
-                                    OrchestratorEvent::SubAgentStream { agent_id, event } => {
-                                        if let Some(&sub_run_id) = this.job_manager.orchestrator_agent_run_map.get(&agent_id) {
-                                            this.update_subagent_message_event(sub_run_id, &event);
-                                        }
-                                    }
-                                },
-                                OrchestratorWrapperEvent::Finished(result) => {
-                                    if let Some(rid) = log_run_id {
-                                        let recorder =
-                                            RunRecorder::attach(&this.db.conn, rid);
-                                        recorder.record(&RunEvent::Finished {
-                                            result: result.clone(),
-                                        });
-                                        recorder.finish(RunStatus::Finished);
-                                    }
-
-                                    // ── 异步生成记忆快照 (Phase 3) ──────────────────
-                                    if let Some(task_id) = active_task_id {
-                                        let messages = this.messages.clone();
-                                        let base_url = this.model_base_url.clone();
-                                        let api_key = this.model_api_key.clone();
-                                        let model = this.model_name.clone();
-                                        let ws_name = workspace_name_for_snapshot.clone();
-                                        let task_title = this.workspaces.iter()
-                                            .find(|w| w.name == ws_name)
-                                            .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
-                                            .map(|t| t.title.clone())
-                                            .unwrap_or_else(|| "task".to_string());
-
-                                        std::thread::spawn(move || {
-                                            crate::memory::snapshot::generate_snapshot_sync(
-                                                &base_url, &api_key, &model,
-                                                &messages, task_id, &task_title, &ws_name,
-                                            );
-                                            // ── 写入 L3 chunk ──────────────────────────
-                                            let _ = crate::memory::storage::save_task_memory_async(
-                                                ws_name, task_id, task_title, messages,
-                                            );
-                                        });
-                                    }
-
-                                    // 清理所有空的 subagent 卡片（兜底：如果子代理从未产生任何内容）
-                                    let empty_run_ids: Vec<u64> = this
-                                        .job_manager
-                                        .orchestrator_agent_run_map
-                                        .values()
-                                        .copied()
-                                        .filter(|run_id| {
-                                            this.job_manager
-                                                .subagent_messages
-                                                .get(run_id)
-                                                .map(|s| {
-                                                    s.live_text.is_empty()
-                                                        && s.events.is_empty()
-                                                        && s.stderr_lines.is_empty()
-                                                })
-                                                .unwrap_or(false)
-                                        })
-                                        .collect();
-                                    for rid in empty_run_ids {
-                                        this.job_manager.subagent_messages.remove(&rid);
-                                    }
-                                    this.job_manager.orchestrator_agent_run_map.clear();
-                                    this.job_manager.request_in_flight = false;
-                                    this.job_manager.request_status_text = None;
-                                    this.job_manager.general_ai_live_text.clear();
-                                    this.job_manager.general_ai_run_id = None;
-                                    this.job_manager.general_ai_show_live_bubble = false;
-                                    this.mark_task_inactive(active_task_id);
-                                    this.messages.push(ChatMessage::new("assistant", &result));
-                                    if let Some(task_id) = this.active_task_id {
-                                        task_db::insert_message(
-                                            &this.db.conn,
-                                            task_id,
-                                            "assistant",
-                                            &result,
-                                        )
-                                        .ok();
-                                    }
-                                    if this.pending_summarize && this.active_task_id.is_some() {
-                                        this.pending_summarize = false;
-                                        this.spawn_summarize_job(cx);
-                                    }
-                                    this.needs_auto_scroll = true;
+                        OrchestratorWrapperEvent::Event(e) => match e {
+                            OrchestratorEvent::Plan { plan } => {
+                                if let Some(rid) = log_run_id {
+                                    RunRecorder::attach(&this.db.conn, rid).record(
+                                        &RunEvent::MessageDelta {
+                                            text: plan.clone(),
+                                        },
+                                    );
                                 }
-                                OrchestratorWrapperEvent::Failed(error) => {
-                                    if let Some(rid) = log_run_id {
-                                        let recorder =
-                                            RunRecorder::attach(&this.db.conn, rid);
-                                        recorder.record(&RunEvent::Failed {
-                                            error: error.clone(),
-                                        });
-                                        recorder.finish(RunStatus::Failed);
-                                    }
-                                    // 清理所有空的 subagent 卡片（同 Finished 分支）
-                                    let empty_run_ids: Vec<u64> = this
-                                        .job_manager
-                                        .orchestrator_agent_run_map
-                                        .values()
-                                        .copied()
-                                        .filter(|run_id| {
-                                            this.job_manager
-                                                .subagent_messages
-                                                .get(run_id)
-                                                .map(|s| {
-                                                    s.live_text.is_empty()
-                                                        && s.events.is_empty()
-                                                        && s.stderr_lines.is_empty()
-                                                })
-                                                .unwrap_or(false)
-                                        })
-                                        .collect();
-                                    for rid in empty_run_ids {
-                                        this.job_manager.subagent_messages.remove(&rid);
-                                    }
-                                    this.job_manager.orchestrator_agent_run_map.clear();
-                                    this.job_manager.request_in_flight = false;
-                                    this.job_manager.request_status_text = None;
-                                    this.job_manager.general_ai_live_text.clear();
-                                    this.job_manager.general_ai_run_id = None;
-                                    this.job_manager.general_ai_show_live_bubble = false;
-                                    this.mark_task_inactive(active_task_id);
-                                    this.messages.push(ChatMessage::new(
-                                        "assistant",
-                                        &format!("Orchestrator failed: {}", error),
-                                    ));
-                                    this.needs_auto_scroll = true;
+                                this.job_manager.request_status_text = Some(format!("📋 Plan: {}", plan));
+                            }
+                            OrchestratorEvent::AssistantDelta(delta) => {
+                                this.job_manager.general_ai_live_text.push_str(&delta);
+                                this.job_manager.request_status_text =
+                                    Some(t(this.current_lang, Translations::GENERATING_RESPONSE).to_string());
+                                this.needs_auto_scroll = true;
+                            }
+                            OrchestratorEvent::StepStarted {
+                                agent_id: _,
+                                agent_name,
+                            } => {
+                                this.job_manager.request_status_text =
+                                    Some(format!("Agent {} is thinking...", agent_name));
+                            }
+                            OrchestratorEvent::ToolCall { name, args } => {
+                                if let Some(rid) = log_run_id {
+                                    RunRecorder::attach(&this.db.conn, rid).record(
+                                        &RunEvent::ToolCall {
+                                            name: name.clone(),
+                                            args: args.clone(),
+                                        },
+                                    );
+                                }
+                                this.job_manager.request_status_text =
+                                    Some(format!("Calling tool {}...", name));
+                            }
+                            OrchestratorEvent::ToolResult { name, result } => {
+                                if let Some(rid) = log_run_id {
+                                    RunRecorder::attach(&this.db.conn, rid).record(
+                                        &RunEvent::ToolResult { name, result },
+                                    );
                                 }
                             }
-                            cx.notify();
-                        });
+                            OrchestratorEvent::StepFinished { result: _ } => {}
+                            OrchestratorEvent::AwaitingUserInput { reply } => {
+                                // 将 MainAgent 的回复添加到对话历史
+                                this.messages.push(ChatMessage::new(
+                                    "assistant",
+                                    &reply,
+                                ));
+                                // 清理运行状态，让用户能够输入
+                                this.job_manager.request_in_flight = false;
+                                this.job_manager.request_kind = None;
+                                this.job_manager.request_status_text = None;
+                                this.job_manager.general_ai_show_live_bubble = false;
+                                this.mark_task_inactive(this.active_task_id);
+                                cx.notify();
+                            }
+                        },
+                        OrchestratorWrapperEvent::Finished(result) => {
+                            if let Some(rid) = log_run_id {
+                                let recorder =
+                                    RunRecorder::attach(&this.db.conn, rid);
+                                recorder.record(&RunEvent::Finished {
+                                    result: result.clone(),
+                                });
+                                recorder.finish(RunStatus::Finished);
+                            }
+
+                            // ── 异步生成记忆快照 ─────────────────────────────
+                            if let Some(task_id) = active_task_id {
+                                let messages = this.messages.clone();
+                                let base_url = this.model_base_url.clone();
+                                let api_key = this.model_api_key.clone();
+                                let model = this.model_name.clone();
+                                let ws_name = workspace_name_for_snapshot.clone();
+                                let task_title = this.workspaces.iter()
+                                    .find(|w| w.name == ws_name)
+                                    .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
+                                    .map(|t| t.title.clone())
+                                    .unwrap_or_else(|| "task".to_string());
+
+                                std::thread::spawn(move || {
+                                    crate::memory::snapshot::generate_snapshot_sync(
+                                        &base_url, &api_key, &model,
+                                        &messages, task_id, &task_title, &ws_name,
+                                    );
+                                    // ── 写入 L3 chunk ──────────────────────────
+                                    let _ = crate::memory::storage::save_task_memory_async(
+                                        ws_name, task_id, task_title, messages,
+                                    );
+                                });
+                            }
+
+                            this.job_manager.orchestrator_user_input_tx = None;
+                            this.job_manager.request_in_flight = false;
+                            this.job_manager.request_status_text = None;
+                            this.job_manager.general_ai_live_text.clear();
+                            this.job_manager.general_ai_run_id = None;
+                            this.job_manager.general_ai_show_live_bubble = false;
+                            this.mark_task_inactive(active_task_id);
+                            this.messages.push(ChatMessage::new("assistant", &result));
+                            if let Some(task_id) = this.active_task_id {
+                                task_db::insert_message(
+                                    &this.db.conn,
+                                    task_id,
+                                    "assistant",
+                                    &result,
+                                )
+                                .ok();
+                            }
+                            if this.pending_summarize && this.active_task_id.is_some() {
+                                this.pending_summarize = false;
+                                this.spawn_summarize_job(cx);
+                            }
+                            this.needs_auto_scroll = true;
+                        }
+                        OrchestratorWrapperEvent::Failed(error) => {
+                            if let Some(rid) = log_run_id {
+                                let recorder =
+                                    RunRecorder::attach(&this.db.conn, rid);
+                                recorder.record(&RunEvent::Failed {
+                                    error: error.clone(),
+                                });
+                                recorder.finish(RunStatus::Failed);
+                            }
+                            this.job_manager.orchestrator_user_input_tx = None;
+                            this.job_manager.request_in_flight = false;
+                            this.job_manager.request_status_text = None;
+                            this.job_manager.general_ai_live_text.clear();
+                            this.job_manager.general_ai_run_id = None;
+                            this.job_manager.general_ai_show_live_bubble = false;
+                            this.mark_task_inactive(active_task_id);
+                            this.messages.push(ChatMessage::new(
+                                "assistant",
+                                &format!("Orchestrator failed: {}", error),
+                            ));
+                            this.needs_auto_scroll = true;
+                        }
                     }
-                })
-                .detach();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 }

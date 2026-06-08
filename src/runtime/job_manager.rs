@@ -155,6 +155,10 @@ impl AppState {
                 task_db::insert_message(&self.db.conn, run_task_id, "assistant", &content).ok();
 
                 if let Some(task) = self.task_mut(Some(run_task_id)) {
+                    eprintln!(
+                        "[SUMMARIZE] GeneralAi Finished: pending_summarize={:?}",
+                        task.pending_summarize
+                    );
                     if task.pending_summarize {
                         task.pending_summarize = false;
                         self.spawn_summarize_job(run_task_id, cx);
@@ -186,6 +190,11 @@ impl AppState {
         let all_messages = self.task_mut(Some(task_id))
             .map(|t| t.messages.clone())
             .unwrap_or_default();
+        let msg_count = all_messages.len();
+        eprintln!(
+            "[SUMMARIZE] spawn_summarize_job called: task_id={}, messages_count={}",
+            task_id, msg_count
+        );
         let base_url = self.model_base_url.clone();
         let api_key = self.model_api_key.clone();
         let model = self.model_name.clone();
@@ -234,13 +243,25 @@ impl AppState {
                 task_id,
                 summary,
             } => {
+                eprintln!(
+                    "[SUMMARIZE] Finished event job_id={}, task_id={}, expected_job_id={:?}",
+                    job_id, task_id, self.job_manager.summarize_job_id
+                );
                 if self.job_manager.summarize_job_id != Some(job_id) {
+                    eprintln!(
+                        "[SUMMARIZE] Skipping stale summarize job job_id={} (expected {:?})",
+                        job_id, self.job_manager.summarize_job_id
+                    );
                     return;
                 }
                 self.job_manager.summarize_job_id = None;
                 let clean_sum = strip_think_tags(&summary);
                 let normalized = normalize_single_line_label(&clean_sum);
                 let short_title: String = normalized.chars().take(10).collect();
+                eprintln!(
+                    "[SUMMARIZE] Updating title task_id={} -> '{}'",
+                    task_id, short_title
+                );
                 task_db::update_task_title(&self.db.conn, task_id, &short_title).ok();
                 for ws in &mut self.workspaces {
                     for t in &mut ws.tasks {
@@ -256,7 +277,15 @@ impl AppState {
                 task_id,
                 error,
             } => {
+                eprintln!(
+                    "[SUMMARIZE] Failed event job_id={}, task_id={}, error={}, expected_job_id={:?}",
+                    job_id, task_id, error, self.job_manager.summarize_job_id
+                );
                 if self.job_manager.summarize_job_id != Some(job_id) {
+                    eprintln!(
+                        "[SUMMARIZE] Skipping stale summarize failure job_id={} (expected {:?})",
+                        job_id, self.job_manager.summarize_job_id
+                    );
                     return;
                 }
                 self.job_manager.summarize_job_id = None;
@@ -633,10 +662,35 @@ impl AppState {
                                 this.job_manager.request_status_text = None;
                                 this.job_manager.general_ai_show_live_bubble = false;
                                 this.mark_task_inactive(this.active_task_id);
+                                // ── 首次回复完成时触发 summarize ──────────────────
+                                // 如果用户不再继续对话，orchestrator 会一直等待输入而不会结束，
+                                // Finished 事件永远不会被发送。所以在 AwaitingUserInput 阶段
+                                // 就检查并触发 summarize，不等 Finished。
+                                if let Some(task) = this.task_mut(active_task_id) {
+                                    if task.pending_summarize {
+                                        eprintln!(
+                                            "[SUMMARIZE] AwaitingUserInput: triggering summarize for task_id={:?}",
+                                            active_task_id
+                                        );
+                                        task.pending_summarize = false;
+                                        if let Some(tid) = active_task_id {
+                                            this.spawn_summarize_job(tid, cx);
+                                        }
+                                        // 已经 summarize 过了，关闭用户输入通道
+                                        // 让 orchestrator 正常退出
+                                        this.job_manager.orchestrator_user_input_tx = None;
+                                    }
+                                }
                                 cx.notify();
                             }
                         },
-                        OrchestratorWrapperEvent::Finished(result) => {
+                        OrchestratorWrapperEvent::Finished(ref result) => {
+                            eprintln!(
+                                "[ORCH] Finished received: result_empty={}, has_active_task={:?}, summarize={:?}",
+                                result.is_empty(),
+                                active_task_id,
+                                this.active_task_ref().map(|t| t.pending_summarize),
+                            );
                             if let Some(rid) = log_run_id {
                                 let recorder =
                                     RunRecorder::attach(&this.db.conn, rid);
@@ -704,6 +758,10 @@ impl AppState {
                                 }
                             }
                             if let Some(task) = this.task_mut(active_task_id) {
+                                eprintln!(
+                                    "[SUMMARIZE] Orchestrator Finished: task_id={:?}, pending_summarize={:?}, result_empty={}",
+                                    active_task_id, task.pending_summarize, result.is_empty()
+                                );
                                 if task.pending_summarize {
                                     task.pending_summarize = false;
                                     if let Some(tid) = active_task_id {

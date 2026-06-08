@@ -12,6 +12,7 @@ pub mod desktop_organizer;
 pub mod doc_summarizer;
 pub mod media_dedup;
 pub mod system_cleaner;
+pub mod system_tools;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillCategory {
@@ -94,6 +95,7 @@ impl SkillRegistry {
                 Box::new(app_uninstaller::AppUninstallerSkill),
                 Box::new(doc_summarizer::DocSummarizerSkill),
                 Box::new(media_dedup::MediaDedupSkill),
+                Box::new(system_tools::SystemToolsSkill),
             ],
         }
     }

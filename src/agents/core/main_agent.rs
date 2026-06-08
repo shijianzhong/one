@@ -36,6 +36,11 @@ impl MainAgent {
              - 遇到关于当前项目/工作区的信息（技术栈、规范、ed 路径、团队成员）→ remember(scope=\"workspace\")。\n\
              - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。\n\n\
              你可以使用 update_work_dir 工具切换工作目录。\n\n\
+             你有系统工具能力（run_system_task），可以实时查看电脑状态：\n\
+             - 查看运行中的进程、CPU 占用、内存使用 → skill_id=\"system.tools\" args={{\"tool\": \"list_processes\"}}\n\
+             - 查看磁盘剩余空间 → skill_id=\"system.tools\" args={{\"tool\": \"disk_free\"}}\n\
+             - 查看目录内容、文件信息 → skill_id=\"system.tools\" args={{\"tool\": \"list_dir\", \"path\": \"...\"}}\n\
+             用户问系统相关问题时，务必通过 run_system_task 调用 system.tools 获取真实数据，不要猜测。\n\n\
              目前没有安装编码相关的技能（skill）。如果用户需要编写代码，请告知用户当前没有编码技能可用，\
              需要先在技能市场中安装后才能使用。",
             soul_content,
@@ -89,16 +94,16 @@ impl Agent for MainAgent {
 
 // --- Tools for MainAgent ---
 
-/// 标识工具：触发 Claude Code 执行。由 Orchestrator 拦截并特殊处理。
-/// 标识工具：触发 SkillRegistry / SystemAgent 执行系统任务。由 Orchestrator 拦截。
+/// 标识工具：触发 SkillRegistry 执行系统任务。由 Orchestrator 拦截并转发到注册的 Skill。
 struct RunSystemTaskTool;
 #[async_trait]
 impl Tool for RunSystemTaskTool {
     fn name(&self) -> &str { "run_system_task" }
     fn description(&self) -> &str {
-        "执行系统级任务。优先用 `skill_id` 直接调用已注册 Skill（当前可用：system.cleaner, desktop.organizer, app.uninstaller, doc.summarizer, media.dedup）；\
-         若调用 Skill，请先 `apply=false` 看 preview，再 `apply=true` 触发执行（执行时会经用户授权弹窗）。\
-         若没有合适的 Skill，可只填 `task` 字段，由系统专家 Agent 走通用路径（列进程/磁盘/文件等）。"
+        "执行系统级任务。通过 skill_id 调用已注册 Skill（当前可用：system.cleaner, desktop.organizer, app.uninstaller, doc.summarizer, media.dedup, system.tools）。\
+         先设置 apply=false 预览，再 apply=true 执行。\n\n\
+         **system.tools** 用于系统信息查询（进程/CPU/内存/磁盘）：用户问「查看进程」「CPU 占用」「内存使用」「运行中的应用」「磁盘空间」等时应当优先使用。\
+         支持的 tool：list_processes, top_memory_procs, get_process_detail, disk_usage, disk_free, list_dir, file_info。"
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
@@ -106,7 +111,7 @@ impl Tool for RunSystemTaskTool {
             "properties": {
                 "skill_id": {
                     "type": "string",
-                    "description": "目标 Skill 的 id，例如 \"system.cleaner\"。命中则走 Skill Registry 直调，否则回落到通用 SystemAgent。"
+                    "description": "目标 Skill 的 id，例如 system.tools。"
                 },
                 "apply": {
                     "type": "boolean",

@@ -67,10 +67,7 @@ pub(crate) struct AppState {
     pub(crate) editing_model_name: String,
     pub(crate) editing_base_url: String,
     pub(crate) editing_api_key: String,
-    pub(crate) messages: Vec<ChatMessage>,
     pub(crate) chat_scroll_handle: ScrollHandle,
-    pub(crate) needs_auto_scroll: bool,
-    pub(crate) pending_summarize: bool,
     pub(crate) next_summarize_job_id: u64,
     pub(crate) summarize_job_id: Option<u64>,
     pub(crate) sandbox_backend: Backend,
@@ -79,7 +76,6 @@ pub(crate) struct AppState {
     pub(crate) popup_position: Point<Pixels>,
     pub(crate) terminal_output: Vec<TerminalLine>,
     pub(crate) preview_process: Option<PreviewProcessHandle>,
-    pub(crate) think_collapsed: HashMap<String, bool>,
     pub(crate) titlebar_should_move: bool,
     pub(crate) intent_router: agents::intent_router::IntentRouter,
     pub(crate) job_manager: crate::runtime::JobManager,
@@ -156,6 +152,10 @@ impl AppState {
                             id: t.id,
                             title: t.title,
                             is_draft: t.is_draft,
+                            messages: vec![],
+                            pending_summarize: false,
+                            needs_auto_scroll: false,
+                            think_collapsed: HashMap::new(),
                         })
                         .collect();
                     Workspace {
@@ -194,9 +194,6 @@ impl AppState {
             editing_model_name: "gpt-4".to_string(),
             editing_base_url: "https://api.openai.com/v1".to_string(),
             editing_api_key: "".to_string(),
-            messages: vec![],
-            needs_auto_scroll: false,
-            pending_summarize: false,
             next_summarize_job_id: 0,
             summarize_job_id: None,
             chat_scroll_handle: ScrollHandle::default(),
@@ -206,7 +203,6 @@ impl AppState {
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
-            think_collapsed: HashMap::new(),
             titlebar_should_move: false,
             intent_router: agents::intent_router::IntentRouter::new(),
             job_manager: crate::runtime::JobManager::new(),
@@ -309,30 +305,37 @@ impl AppState {
         if let Some(prop) = self.pending_soul_proposal.take() {
             match crate::agents::soul::commit_proposal(&prop) {
                 Ok(()) => {
-                    self.messages.push(ChatMessage::new(
-                        "assistant",
-                        "✅ 已应用新的 soul.md 草案，重启或刷新后生效。",
-                    ));
+                    if let Some(task) = self.active_task_mut() {
+                        task.messages.push(ChatMessage::new(
+                            "assistant",
+                            "✅ 已应用新的 soul.md 草案，重启或刷新后生效。",
+                        ));
+                        task.needs_auto_scroll = true;
+                    }
                 }
                 Err(e) => {
-                    self.messages.push(ChatMessage::new(
-                        "assistant",
-                        &format!("⚠️ 写入 soul.md 失败：{}", e),
-                    ));
+                    if let Some(task) = self.active_task_mut() {
+                        task.messages.push(ChatMessage::new(
+                            "assistant",
+                            &format!("⚠️ 写入 soul.md 失败：{}", e),
+                        ));
+                        task.needs_auto_scroll = true;
+                    }
                 }
             }
-            self.needs_auto_scroll = true;
             cx.notify();
         }
     }
 
     pub(crate) fn deny_soul_proposal(&mut self, cx: &mut Context<Self>) {
         if self.pending_soul_proposal.take().is_some() {
-            self.messages.push(ChatMessage::new(
-                "assistant",
-                "❌ 已拒绝 soul.md 草案，未做任何改动。",
-            ));
-            self.needs_auto_scroll = true;
+            if let Some(task) = self.active_task_mut() {
+                task.messages.push(ChatMessage::new(
+                    "assistant",
+                    "❌ 已拒绝 soul.md 草案，未做任何改动。",
+                ));
+                task.needs_auto_scroll = true;
+            }
             cx.notify();
         }
     }
@@ -344,11 +347,13 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let Some(skill) = crate::skills::registry().find(skill_id) else {
-            self.messages.push(ChatMessage::new(
-                "assistant",
-                &format!("⚠️ Skill `{}` 不存在", skill_id),
-            ));
-            self.needs_auto_scroll = true;
+            if let Some(task) = self.active_task_mut() {
+                task.messages.push(ChatMessage::new(
+                    "assistant",
+                    &format!("⚠️ Skill `{}` 不存在", skill_id),
+                ));
+                task.needs_auto_scroll = true;
+            }
             cx.notify();
             return;
         };
@@ -470,9 +475,13 @@ impl AppState {
                 .into_iter()
                 .map(|t| TaskItem {
                     id: t.id,
-                    title: t.title,
-                    is_draft: t.is_draft,
-                })
+                        title: t.title,
+                        is_draft: t.is_draft,
+                        messages: vec![],
+                        pending_summarize: false,
+                        needs_auto_scroll: false,
+                        think_collapsed: HashMap::new(),
+                    })
                 .collect();
         }
 

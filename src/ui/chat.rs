@@ -321,7 +321,9 @@ impl AppState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let messages = self.messages.clone();
+        let messages = self.active_task_ref()
+            .map(|t| t.messages.clone())
+            .unwrap_or_default();
         let general_ai_live_run_id = self.job_manager.general_ai_run_id.filter(|_| {
             self.job_manager.general_ai_show_live_bubble
                 && self.job_manager.general_ai_task_id == self.active_task_id
@@ -333,9 +335,14 @@ impl AppState {
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
 
-        if self.needs_auto_scroll && !messages.is_empty() {
+        let should_scroll = self.active_task_ref()
+            .map(|t| t.needs_auto_scroll)
+            .unwrap_or(false);
+        if should_scroll && !messages.is_empty() {
             scroll_handle.scroll_to_bottom();
-            self.needs_auto_scroll = false;
+            if let Some(task) = self.active_task_mut() {
+                task.needs_auto_scroll = false;
+            }
         }
 
         let mut message_list = div()
@@ -474,10 +481,8 @@ impl AppState {
                                                 let complete = *complete;
                                                 let key = format!("task:{}:msg:{}:think:{}", task_id, msg_index, current_think_index);
                                                 let key_for_animation = key.clone();
-                                                let collapsed = self
-                                                    .think_collapsed
-                                                    .get(&key)
-                                                    .copied()
+                                                let collapsed = self.active_task_ref()
+                                                    .and_then(|t| t.think_collapsed.get(&key).copied())
                                                     .unwrap_or(complete);
                                                 let header_text = if complete {
                                                     t(lang, Translations::THINKING_DONE)
@@ -498,8 +503,12 @@ impl AppState {
                                                             .cursor_pointer()
                                                             .hover(|this| this.bg(SURFACE_ELEVATED()))
                                                             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                                                let next = !this.think_collapsed.get(&key).copied().unwrap_or(default_collapsed);
-                                                                this.think_collapsed.insert(key.clone(), next);
+                                                                let next = !this.active_task_ref()
+                                                                    .and_then(|t| t.think_collapsed.get(&key).copied())
+                                                                    .unwrap_or(default_collapsed);
+                                                                if let Some(task) = this.active_task_mut() {
+                                                                    task.think_collapsed.insert(key.clone(), next);
+                                                                }
                                                                 cx.notify();
                                                             }))
                                                             .child(
@@ -659,7 +668,9 @@ impl AppState {
                         think_index += 1;
                         let complete = *complete;
                         let key = format!("general:{}:think:{}", run_id, current_think_index);
-                        let collapsed = self.think_collapsed.get(&key).copied().unwrap_or(false);
+                        let collapsed = self.active_task_ref()
+                            .and_then(|t| t.think_collapsed.get(&key).copied())
+                            .unwrap_or(false);
                         let header_text = if complete {
                             t(lang, Translations::THINKING_DONE)
                         } else {
@@ -688,11 +699,12 @@ impl AppState {
                                         cx.listener(
                                             move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                 let next = !this
-                                                    .think_collapsed
-                                                    .get(&key)
-                                                    .copied()
+                                                    .active_task_ref()
+                                                    .and_then(|t| t.think_collapsed.get(&key).copied())
                                                     .unwrap_or(false);
-                                                this.think_collapsed.insert(key.clone(), next);
+                                                if let Some(task) = this.active_task_mut() {
+                                                    task.think_collapsed.insert(key.clone(), next);
+                                                }
                                                 cx.notify();
                                             },
                                         ),
@@ -963,10 +975,14 @@ impl AppState {
                                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                                             if !text.is_empty() {
                                                 let user_message = text.clone();
-                                                let is_first_message = this.messages.is_empty();
-                                                if is_first_message {
-                                                    this.pending_summarize = true;
-                                                }
+                                                let is_first_message = this.active_task_ref()
+                                                            .map(|t| t.messages.is_empty())
+                                                            .unwrap_or(true);
+                                                        if is_first_message {
+                                                            if let Some(task) = this.active_task_mut() {
+                                                                task.pending_summarize = true;
+                                                            }
+                                                        }
 
                                                 editor.update(cx, |editor, cx| {
                                                     editor.set_text("", _window, cx);
@@ -1014,10 +1030,14 @@ impl AppState {
                                             let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
                                             if !text.is_empty() {
                                                 let user_message = text.clone();
-                                                let is_first_message = this.messages.is_empty();
-                                                if is_first_message {
-                                                    this.pending_summarize = true;
-                                                }
+                                                let is_first_message = this.active_task_ref()
+                                                            .map(|t| t.messages.is_empty())
+                                                            .unwrap_or(true);
+                                                        if is_first_message {
+                                                            if let Some(task) = this.active_task_mut() {
+                                                                task.pending_summarize = true;
+                                                            }
+                                                        }
 
                                                 editor.update(cx, |editor, cx| {
                                                     editor.set_text("", _window, cx);

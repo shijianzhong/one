@@ -8,11 +8,13 @@ use crate::{task_db, AppState, RequestKind};
 impl AppState {
     pub(crate) fn route_message(&mut self, message: String, cx: &mut Context<Self>) {
         let captured_task_id = self.active_task_id; // ✅ 入口 capture，防止切换 task 后写错 DB
-        self.messages.push(ChatMessage::new("user", &message));
+        if let Some(task) = self.active_task_mut() {
+            task.messages.push(ChatMessage::new("user", &message));
+            task.needs_auto_scroll = true;
+        }
         if let Some(task_id) = captured_task_id {
             task_db::insert_message(&self.db.conn, task_id, "user", &message).ok();
         }
-        self.needs_auto_scroll = true;
         cx.notify();
 
         // ── 如果 Orchestrator 正在等待用户输入，通过通道发送 ──────
@@ -54,7 +56,9 @@ impl AppState {
             }
             RoutingDecision::GeneralAI { .. } => {
                 eprintln!("[ROUTER] Routing to General AI (via Orchestrator)");
-                let last_msg = self.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+                let last_msg = self.active_task_ref()
+                .and_then(|t| t.messages.last().map(|m| m.content.clone()))
+                .unwrap_or_default();
                 self.spawn_orchestrator_run(last_msg, cx);
             }
         }

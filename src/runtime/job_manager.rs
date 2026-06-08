@@ -103,7 +103,10 @@ impl AppState {
             return;
         }
 
-        let run_task_id = self.job_manager.general_ai_task_id;
+        let Some(run_task_id) = self.job_manager.general_ai_task_id else {
+            return;
+        };
+        let current_active_id = self.active_task_id;
         match event {
             GeneralAiStreamEvent::Delta(delta) => {
                 if self.job_manager.general_ai_live_text.is_empty() {
@@ -111,7 +114,6 @@ impl AppState {
                         Some(t(self.current_lang, Translations::GENERATING_RESPONSE).to_string());
                 }
                 self.job_manager.general_ai_live_text.push_str(&delta);
-                self.needs_auto_scroll = run_task_id == self.active_task_id;
             }
             GeneralAiStreamEvent::Finished { result } => {
                 let content = if result.trim().is_empty() {
@@ -127,9 +129,11 @@ impl AppState {
 
                     self.job_manager.pending_confirmation_tools = Some((Vec::new(), tools_json.to_string()));
 
-                    if run_task_id == self.active_task_id {
-                        self.messages.push(ChatMessage::new("assistant", &dangerous_msg));
-                        self.needs_auto_scroll = true;
+                    if let Some(task) = self.task_mut(Some(run_task_id)) {
+                        task.messages.push(ChatMessage::new("assistant", &dangerous_msg));
+                        if run_task_id == current_active_id.unwrap_or(0) {
+                            task.needs_auto_scroll = true;
+                        }
                     }
 
                     self.job_manager.clear_request();
@@ -142,17 +146,19 @@ impl AppState {
                 self.job_manager.clear_request_full();
                 self.job_manager.reset_general_ai_run();
 
-                if run_task_id == self.active_task_id {
-                    self.messages.push(ChatMessage::new("assistant", &content));
-                    self.needs_auto_scroll = true;
+                if let Some(task) = self.task_mut(Some(run_task_id)) {
+                    task.messages.push(ChatMessage::new("assistant", &content));
+                    if run_task_id == current_active_id.unwrap_or(0) {
+                        task.needs_auto_scroll = true;
+                    }
                 }
-                if let Some(task_id) = run_task_id {
-                    task_db::insert_message(&self.db.conn, task_id, "assistant", &content).ok();
-                }
+                task_db::insert_message(&self.db.conn, run_task_id, "assistant", &content).ok();
 
-                if self.pending_summarize && run_task_id == self.active_task_id {
-                    self.pending_summarize = false;
-                    self.spawn_summarize_job(cx);
+                if let Some(task) = self.task_mut(Some(run_task_id)) {
+                    if task.pending_summarize {
+                        task.pending_summarize = false;
+                        self.spawn_summarize_job(run_task_id, cx);
+                    }
                 }
             }
             GeneralAiStreamEvent::Failed { error } => {
@@ -164,28 +170,25 @@ impl AppState {
                 self.job_manager.clear_request_full();
                 self.job_manager.reset_general_ai_run();
 
-                if run_task_id == self.active_task_id {
-                    self.messages.push(ChatMessage::new("assistant", &error_message));
-                    self.needs_auto_scroll = true;
+                if let Some(task) = self.task_mut(Some(run_task_id)) {
+                    task.messages.push(ChatMessage::new("assistant", &error_message));
+                    if run_task_id == current_active_id.unwrap_or(0) {
+                        task.needs_auto_scroll = true;
+                    }
                 }
-                if let Some(task_id) = run_task_id {
-                    task_db::insert_message(&self.db.conn, task_id, "assistant", &error_message)
-                        .ok();
-                }
+                task_db::insert_message(&self.db.conn, run_task_id, "assistant", &error_message)
+                    .ok();
             }
         }
     }
 
-    fn spawn_summarize_job(&mut self, cx: &mut Context<Self>) {
-        let task_id = self.active_task_id;
-        let all_messages = self.messages.clone();
+    fn spawn_summarize_job(&mut self, task_id: usize, cx: &mut Context<Self>) {
+        let all_messages = self.task_mut(Some(task_id))
+            .map(|t| t.messages.clone())
+            .unwrap_or_default();
         let base_url = self.model_base_url.clone();
         let api_key = self.model_api_key.clone();
         let model = self.model_name.clone();
-        let Some(tid) = task_id else {
-            return;
-        };
-
         let job_id = self.job_manager.allocate_summarize_job_id();
         self.job_manager.summarize_job_id = Some(job_id);
 
@@ -198,14 +201,14 @@ impl AppState {
                 Ok(summary) => {
                     let _ = sender_ok.send(SummarizeEvent::Finished {
                         job_id,
-                        task_id: tid,
+                        task_id,
                         summary,
                     });
                 }
                 Err(error) => {
                     let _ = sender_err.send(SummarizeEvent::Failed {
                         job_id,
-                        task_id: tid,
+                        task_id,
                         error,
                     });
                 }
@@ -362,7 +365,9 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         if !confirmed {
-            self.messages.push(ChatMessage::new("assistant", "操作已取消。"));
+            if let Some(task) = self.active_task_mut() {
+                task.messages.push(ChatMessage::new("assistant", "操作已取消。"));
+            }
             self.job_manager.pending_confirmation_tools = None;
             cx.notify();
             return;
@@ -372,8 +377,9 @@ impl AppState {
         if let Some((_tools, task_json)) = tools_data {
             let tools = parse_tools_from_json(&task_json);
             if tools.is_empty() {
-                self.messages
-                    .push(ChatMessage::new("assistant", "无法解析操作指令。"));
+                if let Some(task) = self.active_task_mut() {
+                    task.messages.push(ChatMessage::new("assistant", "无法解析操作指令。"));
+                }
                 cx.notify();
                 return;
             }
@@ -464,10 +470,12 @@ impl AppState {
         ) {
             Ok(o) => o,
             Err(e) => {
-                self.messages.push(ChatMessage::new(
-                    "assistant",
-                    &format!("Failed to create orchestrator: {}", e),
-                ));
+                if let Some(task) = self.active_task_mut() {
+                    task.messages.push(ChatMessage::new(
+                        "assistant",
+                        &format!("Failed to create orchestrator: {}", e),
+                    ));
+                }
                 return;
             }
         };
@@ -508,7 +516,9 @@ impl AppState {
             run_id,
         );
         let instruction_for_task = instruction.clone();
-        let history = self.messages.clone();
+        let history = self.active_task_ref()
+            .map(|t| t.messages.clone())
+            .unwrap_or_default();
 
         let workspace_name_for_orchestrator = workspace_name.clone();
         let workspace_name_for_snapshot = workspace_name;
@@ -568,7 +578,9 @@ impl AppState {
                                 this.job_manager.general_ai_live_text.push_str(&delta);
                                 this.job_manager.request_status_text =
                                     Some(t(this.current_lang, Translations::GENERATING_RESPONSE).to_string());
-                                this.needs_auto_scroll = true;
+                                if let Some(task) = this.task_mut(active_task_id) {
+                                    task.needs_auto_scroll = true;
+                                }
                             }
                             OrchestratorEvent::StepStarted {
                                 agent_id: _,
@@ -598,10 +610,9 @@ impl AppState {
                             }
                             OrchestratorEvent::StepFinished { result: _ } => {}
                             OrchestratorEvent::AwaitingUserInput { reply } => {
-                                // 将 MainAgent 的回复添加到对话历史
-                                // 只在当前显示的 task 与 AI 所属的 task 一致时才 push
-                                if this.active_task_id == active_task_id {
-                                    this.messages.push(ChatMessage::new(
+                                // 将 MainAgent 的回复添加到对应 task 的消息列表
+                                if let Some(task) = this.task_mut(active_task_id) {
+                                    task.messages.push(ChatMessage::new(
                                         "assistant",
                                         &reply,
                                     ));
@@ -675,9 +686,12 @@ impl AppState {
                             // 如果 result 为空，说明结果已通过 AwaitingUserInput 处理（channel 关闭），
                             // 不再重复写入。
                             if !result.is_empty() {
-                                // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
-                                if this.active_task_id == active_task_id {
-                                    this.messages.push(ChatMessage::new("assistant", &result));
+                                let cur_active_id = this.active_task_id;
+                                if let Some(task) = this.task_mut(active_task_id) {
+                                    task.messages.push(ChatMessage::new("assistant", &result));
+                                    if cur_active_id == active_task_id {
+                                        task.needs_auto_scroll = true;
+                                    }
                                 }
                                 if let Some(task_id) = active_task_id {
                                     task_db::insert_message(
@@ -689,11 +703,14 @@ impl AppState {
                                     .ok();
                                 }
                             }
-                            if this.pending_summarize && this.active_task_id.is_some() {
-                                this.pending_summarize = false;
-                                this.spawn_summarize_job(cx);
+                            if let Some(task) = this.task_mut(active_task_id) {
+                                if task.pending_summarize {
+                                    task.pending_summarize = false;
+                                    if let Some(tid) = active_task_id {
+                                        this.spawn_summarize_job(tid, cx);
+                                    }
+                                }
                             }
-                            this.needs_auto_scroll = true;
                         }
                         OrchestratorWrapperEvent::Failed(error) => {
                             if let Some(rid) = log_run_id {
@@ -711,12 +728,15 @@ impl AppState {
                             this.job_manager.general_ai_run_id = None;
                             this.job_manager.general_ai_show_live_bubble = false;
                             this.mark_task_inactive(active_task_id);
-                            // 只在当前显示的 task 与 AI 所属的 task 一致时才 push 到内存
-                            if this.active_task_id == active_task_id {
-                                this.messages.push(ChatMessage::new(
+                            let cur_active_id = this.active_task_id;
+                            if let Some(task) = this.task_mut(active_task_id) {
+                                task.messages.push(ChatMessage::new(
                                     "assistant",
                                     &format!("Orchestrator failed: {}", error),
                                 ));
+                                if cur_active_id == active_task_id {
+                                    task.needs_auto_scroll = true;
+                                }
                             }
                             // ✅ 写 DB（用 captured active_task_id）
                             if let Some(task_id) = active_task_id {
@@ -728,7 +748,6 @@ impl AppState {
                                 )
                                 .ok();
                             }
-                            this.needs_auto_scroll = true;
                         }
                     }
                     cx.notify();

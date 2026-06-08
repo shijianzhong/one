@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::memory::types::ChatMessage;
 use crate::task_db;
@@ -17,6 +18,10 @@ pub struct TaskItem {
     pub id: usize,
     pub title: String,
     pub is_draft: bool,
+    pub messages: Vec<ChatMessage>,
+    pub pending_summarize: bool,
+    pub needs_auto_scroll: bool,
+    pub think_collapsed: HashMap<String, bool>,
 }
 
 pub fn slugify_task_title(title: &str) -> String {
@@ -100,12 +105,36 @@ impl AppState {
         if let Some((workspace_id, task_id, title)) = self.get_active_task_location() {
             let _ = self.ensure_task_storage_dir(workspace_id, task_id, &title);
             let msgs = task_db::load_messages(&self.db.conn, task_id).unwrap_or_default();
-            self.messages = msgs
+            let msg_vec: Vec<ChatMessage> = msgs
                 .into_iter()
                 .map(|m| ChatMessage::new(&m.role, &m.content))
                 .collect();
-        } else {
-            self.messages.clear();
+            if let Some(task) = self.task_mut(Some(task_id)) {
+                task.messages = msg_vec;
+            }
+        } else if let Some(task) = self.active_task_mut() {
+            task.messages.clear();
         }
+    }
+
+    pub(crate) fn active_task_ref(&self) -> Option<&TaskItem> {
+        let tid = self.active_task_id?;
+        self.workspaces.iter()
+            .flat_map(|w| &w.tasks)
+            .find(|t| t.id == tid)
+    }
+
+    pub(crate) fn active_task_mut(&mut self) -> Option<&mut TaskItem> {
+        let tid = self.active_task_id?;
+        self.workspaces.iter_mut()
+            .flat_map(|w| &mut w.tasks)
+            .find(|t| t.id == tid)
+    }
+
+    pub(crate) fn task_mut(&mut self, task_id: Option<usize>) -> Option<&mut TaskItem> {
+        let tid = task_id?;
+        self.workspaces.iter_mut()
+            .flat_map(|w| &mut w.tasks)
+            .find(|t| t.id == tid)
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use gpui::{
     div, prelude::*, px, svg, AnyElement, Context, FontWeight, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled, Window,
@@ -360,6 +361,10 @@ impl AppState {
                                                                         id: t.id,
                                                                         title: t.title,
                                                                         is_draft: t.is_draft,
+                                                                        messages: vec![],
+                                                                        pending_summarize: false,
+                                                                        needs_auto_scroll: false,
+                                                                        think_collapsed: HashMap::new(),
                                                                     })
                                                                     .collect();
                                                             }

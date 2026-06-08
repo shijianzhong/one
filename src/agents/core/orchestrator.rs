@@ -26,17 +26,15 @@ pub enum OrchestratorEvent {
 
 pub struct Orchestrator {
     main_agent: Arc<dyn Agent>,
-    work_dir: std::sync::Mutex<std::path::PathBuf>,
 }
 
 impl Orchestrator {
     pub fn new(
         main_agent: Arc<dyn Agent>,
-        work_dir: std::path::PathBuf,
+        _work_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             main_agent,
-            work_dir: std::sync::Mutex::new(work_dir),
         }
     }
 
@@ -241,17 +239,24 @@ impl Orchestrator {
 
                         if apply {
                             match skill.execute(skill_args, None).await {
-                                Ok(exec) => serde_json::json!({
-                                    "stage": "execute",
-                                    "skill_id": skill_id,
-                                    "denied": exec.denied,
-                                    "summary": exec.summary,
-                                    "freed_bytes": exec.freed_bytes,
-                                    "success": exec.success_items,
-                                    "failed": exec.failed_items.iter()
-                                        .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
-                                        .collect::<Vec<_>>(),
-                                }).to_string(),
+                                Ok(exec) => {
+                                    // 对于 system.tools 直接返回总结内容，避免 JSON 嵌套让 LLM 困惑
+                                    if skill_id == "system.tools" {
+                                        exec.summary
+                                    } else {
+                                        serde_json::json!({
+                                            "stage": "execute",
+                                            "skill_id": skill_id,
+                                            "denied": exec.denied,
+                                            "summary": exec.summary,
+                                            "freed_bytes": exec.freed_bytes,
+                                            "success": exec.success_items,
+                                            "failed": exec.failed_items.iter()
+                                                .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
+                                                .collect::<Vec<_>>(),
+                                        }).to_string()
+                                    }
+                                }
                                 Err(e) => format!("Error: skill execute failed: {}", e),
                             }
                         } else {
@@ -294,26 +299,6 @@ impl Orchestrator {
                         "请通过 skill_id 参数指定要使用的 Skill。当前已安装：{:?}",
                         known
                     )
-                }
-            }
-
-            // ── 工作目录切换（Orchestrator 拦截以实际修改 work_dir） ──
-            "update_work_dir" => {
-                let new_path = args["path"].as_str().unwrap_or_default().to_string();
-                if !new_path.is_empty() {
-                    let path = std::path::PathBuf::from(&new_path);
-                    if path.exists() {
-                        *self.work_dir.lock().unwrap() = path;
-                        serde_json::json!({
-                            "status": "success",
-                            "path": new_path,
-                            "message": format!("工作目录已切换至: {}", new_path)
-                        }).to_string()
-                    } else {
-                        format!("Error: 路径不存在: {}", new_path)
-                    }
-                } else {
-                    "Error: 未提供路径参数".to_string()
                 }
             }
 

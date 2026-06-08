@@ -25,7 +25,7 @@ mod util;
 mod workspace;
 mod ui;
 
-pub(crate) use app_state::{AppState, MainView, TerminalLine};
+pub(crate) use app_state::{AppState, MainView, TerminalLine, ToastInfo, ToastLevel};
 pub(crate) use agents::types::RequestKind;
 pub(crate) use ui::*;
 use services::load_config;

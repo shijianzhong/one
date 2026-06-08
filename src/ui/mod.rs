@@ -7,10 +7,10 @@ pub mod terminal;
 
 pub use components::*;
 
-use gpui::{div, prelude::*, px, Context, IntoElement, Window};
+use gpui::{div, prelude::*, px, Context, FontWeight, IntoElement, Window};
 
-use crate::ui_theme::{BORDER_LIGHT, CARD_BG};
-use crate::AppState;
+use crate::ui_theme::{BORDER_LIGHT, CARD_BG, SURFACE_ELEVATED, FLOATING_PANEL_BG, PRIMARY_TEXT, SECONDARY_TEXT, SUCCESS_TEXT, ERROR_TEXT};
+use crate::{AppState, ToastInfo, ToastLevel};
 
 impl gpui::Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -98,5 +98,48 @@ impl gpui::Render for AppState {
             .when(self.show_cipher_dialog, |this| {
                 this.child(self.render_cipher_dialog(window, cx))
             })
+            .when(!self.toasts.is_empty(), |this| {
+                this.child(self.render_toast_overlay(cx))
+            })
+    }
+}
+
+impl AppState {
+    fn render_toast_overlay(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let max_show = 5usize;
+        let toasts: Vec<&ToastInfo> = self.toasts.iter().rev().take(max_show).collect();
+
+        div()
+            .absolute()
+            .bottom(px(20.0))
+            .right(px(20.0))
+            .flex_col()
+            .gap_2()
+            .children(toasts.into_iter().map(|toast| {
+                let color = match toast.level {
+                    ToastLevel::Success => SUCCESS_TEXT(),
+                    ToastLevel::Error => ERROR_TEXT(),
+                    ToastLevel::Warning => SECONDARY_TEXT(),
+                    ToastLevel::Info => SECONDARY_TEXT(),
+                };
+                div()
+                    .px_4()
+                    .py_3()
+                    .rounded_lg()
+                    .bg(FLOATING_PANEL_BG())
+                    .border_1()
+                    .border_color(BORDER_LIGHT())
+                    .shadow_lg()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(color)
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(toast.message.clone()),
+                    )
+            }))
     }
 }

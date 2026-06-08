@@ -273,13 +273,11 @@ impl AppState {
 
                                                 // ── P1: 运行时禁止删除 ────────────────
                                                 if this.is_task_active(Some(task_id)) {
-                                                    this.messages.push(
-                                                        crate::memory::types::ChatMessage::new(
-                                                            "system",
-                                                            "⚠️ 任务正在运行，无法删除。请等待任务完成后重试。",
-                                                        ),
+                                                    this.push_toast(
+                                                        crate::app_state::ToastLevel::Warning,
+                                                        "⚠️ 任务正在运行，无法删除。请等待任务完成后重试。".to_string(),
+                                                        cx,
                                                     );
-                                                    cx.notify();
                                                     return;
                                                 }
 
@@ -330,14 +328,13 @@ impl AppState {
                                                         this.task_active_states.remove(&task_id);
 
                                                         // ── 删除成功提示 ────────────
-                                                        this.messages.push(
-                                                            crate::memory::types::ChatMessage::new(
-                                                                "system",
-                                                                &format!(
-                                                                    "✅ 任务已删除: {} (id={})",
-                                                                    task_title, task_id,
-                                                                ),
+                                                        this.push_toast(
+                                                            crate::app_state::ToastLevel::Success,
+                                                            format!(
+                                                                "✅ 任务已删除: {} (id={})",
+                                                                task_title, task_id,
                                                             ),
+                                                            cx,
                                                         );
                                                     }
                                                     Err(e) => {
@@ -368,14 +365,13 @@ impl AppState {
                                                             }
                                                         }
 
-                                                        this.messages.push(
-                                                            crate::memory::types::ChatMessage::new(
-                                                                "system",
-                                                                &format!(
-                                                                    "❌ 删除任务失败 (id={}): {}",
-                                                                    task_id, e,
-                                                                ),
+                                                        this.push_toast(
+                                                            crate::app_state::ToastLevel::Error,
+                                                            format!(
+                                                                "❌ 删除任务失败 (id={}): {}",
+                                                                task_id, e,
                                                             ),
+                                                            cx,
                                                         );
                                                     }
                                                 }

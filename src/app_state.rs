@@ -27,6 +27,21 @@ pub(crate) enum MainView {
     SkillsMarket,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ToastLevel {
+    Success,
+    Error,
+    Warning,
+    Info,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToastInfo {
+    pub(crate) id: u64,
+    pub(crate) level: ToastLevel,
+    pub(crate) message: String,
+}
+
 pub(crate) struct AppState {
     pub(crate) db: task_db::Database,
     pub(crate) workspaces: Vec<Workspace>,
@@ -84,6 +99,8 @@ pub(crate) struct AppState {
     pub(crate) telegram_bind_error: bool,
     /// 每个 task 的运行状态（true=有请求在运行）
     pub(crate) task_active_states: HashMap<usize, bool>,
+    pub(crate) toasts: Vec<ToastInfo>,
+    pub(crate) toast_next_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +222,8 @@ impl AppState {
             telegram_bind_status: String::new(),
             telegram_bind_error: false,
             task_active_states: HashMap::new(),
+            toasts: vec![],
+            toast_next_id: 0,
         };
 
         if state.workspaces.is_empty() {
@@ -266,6 +285,24 @@ impl AppState {
             req.deny();
             cx.notify();
         }
+    }
+
+    pub(crate) fn push_toast(&mut self, level: ToastLevel, message: String, cx: &mut Context<Self>) {
+        let id = self.toast_next_id;
+        self.toast_next_id += 1;
+        self.toasts.push(ToastInfo { id, level, message });
+        cx.notify();
+
+        let toast_id = id;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let _ = this.update(cx, |this, _cx| {
+                this.toasts.retain(|t| t.id != toast_id);
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn approve_soul_proposal(&mut self, cx: &mut Context<Self>) {

@@ -25,6 +25,8 @@ pub enum OrchestratorEvent {
     ToolResult { name: String, result: String },
     /// Orchestrator is waiting for the user's next message (multi-turn)
     AwaitingUserInput { reply: String },
+    /// Agent wants to run a command in the terminal
+    RunInTerminal { command: String, work_dir: String },
 }
 
 pub struct Orchestrator {
@@ -88,6 +90,26 @@ impl Orchestrator {
         );
         if !l3_context.is_empty() {
             context.add_message(ChatMessage::new("system", &l3_context));
+        }
+
+        // ── 已安装 Skill 信息注入 ────────────────────────────────────
+        let skill_info: Vec<String> = crate::skills::registry()
+            .manifests()
+            .into_iter()
+            .map(|m| {
+                format!(
+                    "- **{}**: {}。调用方式：`run_system_task(skill_id=\"{}\", apply=true)` 获取详细使用说明。",
+                    m.name, m.description, m.id
+                )
+            })
+            .collect();
+
+        if !skill_info.is_empty() {
+            let skill_context = format!(
+                "### 已安装的 Skill\n以下 Skill 当前已安装：\n{}\n\n先调用 `run_system_task` 查看 Skill 的使用说明，再按说明执行。",
+                skill_info.join("\n")
+            );
+            context.add_message(ChatMessage::new("system", &skill_context));
         }
 
         // ── 历史消息（去掉最后一条 user，避免重复） ──────────────────
@@ -265,7 +287,18 @@ impl Orchestrator {
             }
         }
 
-        // ── 2. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
+        // ── 2. run_in_terminal → 发送 RunInTerminal 事件 ────────
+        if name == "run_in_terminal" {
+            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            if !command.is_empty() {
+                let work_dir = args.get("work_dir").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+                _on_event(OrchestratorEvent::RunInTerminal { command, work_dir });
+                return "命令已发送到终端执行。用户可以在终端中查看实时输出。".to_string();
+            }
+            return "请提供要执行的命令。".to_string();
+        }
+
+        // ── 3. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
         if name == "run_system_task" {
             let skill_id = args.get("skill_id")
                 .and_then(|v| v.as_str())

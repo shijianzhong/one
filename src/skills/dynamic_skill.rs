@@ -311,9 +311,14 @@ impl Skill for DynamicSkill {
         _args: serde_json::Value,
         _source: Option<&str>,
     ) -> Result<SkillExecution> {
-        // 实际执行由 MCP 或命令处理
-        // 这里返回一个占位结果，真正的执行由 ToolRegistry 或 Orchestrator 路由
-        Ok(self.build_execution("Skill execution delegated to executor".to_string()))
+        // SKILL.md 的 body 是给 AI 阅读的操作指南。
+        // 直接返回 body 内容，Agent 阅读后自行决定如何执行
+        // （例如调用终端命令 claude -p 等）
+        Ok(self.build_execution(format!(
+            "## Skill: {}\n\n以下是从 SKILL.md 加载的使用指南：\n\n{}\n\n请按照上述指南执行任务。",
+            self.manifest.name,
+            self.body
+        )))
     }
 }
 

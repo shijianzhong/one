@@ -10,9 +10,10 @@ use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
 use crate::services::summarize_conversation_async;
+use crate::sandbox::backend::{Backend, SandboxBackend};
 use crate::{
     log_think_boundary_newlines, normalize_single_line_label, parse_tools_from_json,
-    strip_think_tags, task_db, AppState,
+    strip_think_tags, task_db, AppState, TerminalLine,
 };
 use super::events::{GeneralAiStreamEvent, SummarizeEvent, OrchestratorWrapperEvent};
 
@@ -648,6 +649,60 @@ impl AppState {
                                 }
                             }
                             OrchestratorEvent::StepFinished { result: _ } => {}
+                            OrchestratorEvent::RunInTerminal { command, work_dir } => {
+                                // 展开终端并执行命令
+                                this.terminal_visible = true;
+                                let task_id = this.active_task_id.unwrap_or(0);
+                                let backend = this.sandbox_backend.clone();
+
+                                // 使用当前 workspace 的工作目录 + task_id
+                                let ws_dir = this.get_work_dir();
+                                let project_dir = format!("{}/{}", ws_dir, task_id);
+                                let _ = std::fs::create_dir_all(&project_dir);
+
+                                // 在命令前加入 cd 到项目目录
+                                let cmd = if !command.starts_with("cd ") {
+                                    format!("cd {} && {}", project_dir, command)
+                                } else {
+                                    command.clone()
+                                };
+
+                                // 先显示命令
+                                this.terminal_output.push(TerminalLine {
+                                    command: Some(cmd.clone()),
+                                    output: String::new(),
+                                });
+                                cx.notify();
+
+                                // 在后台执行命令（通过 sh -c 包装，并 cd 到工作目录）
+                                cx.spawn(async move |this, cx| {
+                                    let exec_result = gpui_tokio::Tokio::spawn(cx, async move {
+                                        let sh_cmd = vec!["sh", "-c", &cmd];
+                                        match &backend {
+                                            Backend::Docker(b) => {
+                                                b.exec_command(task_id, sh_cmd).await
+                                            }
+                                            Backend::Pty(b) => {
+                                                b.exec_command(task_id, sh_cmd).await
+                                            }
+                                        }
+                                    }).await;
+
+                                    let output = match exec_result {
+                                        Ok(Ok(out)) => out,
+                                        Ok(Err(e)) => format!("Error: {}", e),
+                                        Err(e) => format!("Spawn error: {}", e),
+                                    };
+
+                                    let _ = this.update(cx, |this, cx| {
+                                        // 更新最后一条输出
+                                        if let Some(last) = this.terminal_output.last_mut() {
+                                            last.output = output;
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
+                            }
                             OrchestratorEvent::AwaitingUserInput { reply } => {
                                 // 将 MainAgent 的回复添加到对应 task 的消息列表
                                 if let Some(task) = this.task_mut(active_task_id) {

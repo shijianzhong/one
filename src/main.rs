@@ -11,6 +11,7 @@ mod app_state;
 mod runtime;
 mod assets;
 mod i18n;
+mod mcp;
 mod memory;
 mod routing;
 mod run_log;

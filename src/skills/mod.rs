@@ -10,6 +10,7 @@ use crate::agents::permission::DangerLevel;
 pub mod app_uninstaller;
 pub mod desktop_organizer;
 pub mod doc_summarizer;
+pub mod dynamic_skill;
 pub mod media_dedup;
 pub mod system_cleaner;
 pub mod system_tools;
@@ -72,9 +73,7 @@ pub struct SkillExecution {
 #[async_trait]
 pub trait Skill: Send + Sync {
     fn manifest(&self) -> SkillManifest;
-
     async fn preview(&self, args: serde_json::Value) -> anyhow::Result<SkillPreview>;
-
     async fn execute(
         &self,
         args: serde_json::Value,
@@ -82,33 +81,82 @@ pub trait Skill: Send + Sync {
     ) -> anyhow::Result<SkillExecution>;
 }
 
+/// 统一的 Skill 枚举（解决 dyn Skill 的兼容性问题）
+pub enum AnySkill {
+    Builtin(Box<dyn Skill>),
+    Dynamic(dynamic_skill::DynamicSkill),
+}
+
+#[async_trait]
+impl Skill for AnySkill {
+    fn manifest(&self) -> SkillManifest {
+        match self {
+            AnySkill::Builtin(s) => s.manifest(),
+            AnySkill::Dynamic(s) => s.manifest(),
+        }
+    }
+
+    async fn preview(&self, args: serde_json::Value) -> anyhow::Result<SkillPreview> {
+        match self {
+            AnySkill::Builtin(s) => s.preview(args).await,
+            AnySkill::Dynamic(s) => s.preview(args).await,
+        }
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        source: Option<&str>,
+    ) -> anyhow::Result<SkillExecution> {
+        match self {
+            AnySkill::Builtin(s) => s.execute(args, source).await,
+            AnySkill::Dynamic(s) => s.execute(args, source).await,
+        }
+    }
+}
+
 pub struct SkillRegistry {
-    skills: Vec<Box<dyn Skill>>,
+    skills: Vec<AnySkill>,
 }
 
 impl SkillRegistry {
     fn new() -> Self {
-        Self {
-            skills: vec![
-                Box::new(system_cleaner::SystemCleanerSkill),
-                Box::new(desktop_organizer::DesktopOrganizerSkill),
-                Box::new(app_uninstaller::AppUninstallerSkill),
-                Box::new(doc_summarizer::DocSummarizerSkill),
-                Box::new(media_dedup::MediaDedupSkill),
-                Box::new(system_tools::SystemToolsSkill),
-            ],
-        }
+        let builtin: Vec<AnySkill> = vec![
+            AnySkill::Builtin(Box::new(system_cleaner::SystemCleanerSkill)),
+            AnySkill::Builtin(Box::new(desktop_organizer::DesktopOrganizerSkill)),
+            AnySkill::Builtin(Box::new(app_uninstaller::AppUninstallerSkill)),
+            AnySkill::Builtin(Box::new(doc_summarizer::DocSummarizerSkill)),
+            AnySkill::Builtin(Box::new(media_dedup::MediaDedupSkill)),
+            AnySkill::Builtin(Box::new(system_tools::SystemToolsSkill)),
+        ];
+
+        let dynamic: Vec<AnySkill> = dynamic_skill::scan_skills_dir()
+            .into_iter()
+            .map(AnySkill::Dynamic)
+            .collect();
+
+        let mut skills = builtin;
+        skills.extend(dynamic);
+        Self { skills }
+    }
+
+    pub fn refresh_dynamic(&mut self) {
+        // 移除旧的动态 Skill
+        self.skills.retain(|s| matches!(s, AnySkill::Builtin(_)));
+        // 添加新的动态 Skill
+        let dynamic: Vec<AnySkill> = dynamic_skill::scan_skills_dir()
+            .into_iter()
+            .map(AnySkill::Dynamic)
+            .collect();
+        self.skills.extend(dynamic);
     }
 
     pub fn manifests(&self) -> Vec<SkillManifest> {
         self.skills.iter().map(|s| s.manifest()).collect()
     }
 
-    pub fn find(&self, id: &str) -> Option<&dyn Skill> {
-        self.skills
-            .iter()
-            .find(|s| s.manifest().id == id)
-            .map(|b| b.as_ref())
+    pub fn find(&self, id: &str) -> Option<&AnySkill> {
+        self.skills.iter().find(|s| s.manifest().id == id)
     }
 }
 
@@ -116,6 +164,17 @@ static REGISTRY: OnceLock<SkillRegistry> = OnceLock::new();
 
 pub fn registry() -> &'static SkillRegistry {
     REGISTRY.get_or_init(SkillRegistry::new)
+}
+
+/// 刷新动态 Skill
+pub fn refresh_dynamic_skills() {
+    // 确保 REGISTRY 已初始化
+    let reg = registry();
+    // 安全：GPUI 是单线程的
+    let ptr = reg as *const SkillRegistry as *mut SkillRegistry;
+    unsafe {
+        (*ptr).refresh_dynamic();
+    }
 }
 
 #[cfg(test)]

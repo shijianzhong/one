@@ -3,16 +3,22 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
+pub mod agent;
+pub mod agent_factory;
+pub mod tool_registry;
 pub mod orchestrator;
-pub mod tools;
 pub mod factory;
 pub mod main_agent;
 
-pub use main_agent::MainAgent;
+// 新架构的导出
+pub use agent::{AgentTrait, AgentBuilder, AgentRunContext, ToolDefinition, ToolResult, ToolSource};
+pub use tool_registry::{ToolRegistry, format_tool_descriptions, tool_registry, init_tool_registry};
 pub use orchestrator::{Orchestrator, OrchestratorEvent};
-pub use factory::AgentFactory;
+pub use main_agent::{MainAgent, MainAgentBuilder};
 
-/// Trait for tools that agents can use
+// ── 以下为旧架构类型（保留向后兼容，逐步迁移到新架构） ───────────────────────
+
+/// 旧 Tool trait（用于现有实现，逐步迁移到 ToolTrait）
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -21,7 +27,7 @@ pub trait Tool: Send + Sync {
     async fn call(&self, arguments: Value) -> Result<Value>;
 }
 
-/// Context for agent execution
+/// 旧 Agent 上下文
 pub struct AgentContext {
     pub session_id: String,
     pub history: Vec<crate::memory::types::ChatMessage>,
@@ -42,11 +48,10 @@ impl AgentContext {
     }
 }
 
-/// Response from an agent
+/// 旧 Agent 响应
 #[derive(Debug, Clone)]
 pub enum AgentResponse {
     Answer(String),
-    /// Tool calls with optional accompanying thinking text
     ToolCalls(Vec<ToolCall>, String),
 }
 
@@ -57,7 +62,7 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// Core Agent trait
+/// 旧 Agent trait（用于现有 MainAgent，逐步迁移到 AgentTrait）
 #[async_trait]
 pub trait Agent: Send + Sync {
     fn id(&self) -> &str;

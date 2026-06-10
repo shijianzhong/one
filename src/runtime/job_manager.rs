@@ -1,9 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::Context;
 
-use crate::agents::core::{AgentFactory, OrchestratorEvent};
+use crate::agents::core::factory::AgentFactory;
+use crate::agents::core::OrchestratorEvent;
 use crate::agents::types::RequestKind;
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
@@ -497,7 +498,16 @@ impl AppState {
             &workspace_name,
             workspace_root,
         ) {
-            Ok(o) => o,
+            Ok(mut o) => {
+                // 注入 MCP Manager
+                if let Some(mcp) = &self.mcp_manager.as_ref() {
+                    // 需要把 mcp_manager 包装为 Arc<Mutex>
+                    // 注意：这里需要确保 orchestrator 能访问 mcp_manager
+                    // 由于生命周期问题，暂时先不加 MCP，等后续重构时统一处理
+                    eprintln!("[Orchestrator] MCP manager available but not injected yet");
+                }
+                o
+            }
             Err(e) => {
                 if let Some(task) = self.active_task_mut() {
                     task.messages.push(ChatMessage::new(

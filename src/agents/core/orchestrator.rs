@@ -4,7 +4,10 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::{Agent, AgentContext, AgentResponse, ToolCall};
+use crate::agents::core::agent::ToolSource;
+use crate::skills::Skill;
 use crate::memory::types::ChatMessage;
+use crate::mcp::McpClientManager;
 
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
@@ -26,15 +29,18 @@ pub enum OrchestratorEvent {
 
 pub struct Orchestrator {
     main_agent: Arc<dyn Agent>,
+    mcp_manager: Option<Arc<std::sync::Mutex<McpClientManager>>>,
 }
 
 impl Orchestrator {
     pub fn new(
         main_agent: Arc<dyn Agent>,
         _work_dir: std::path::PathBuf,
+        mcp_manager: Option<Arc<std::sync::Mutex<McpClientManager>>>,
     ) -> Self {
         Self {
             main_agent,
+            mcp_manager,
         }
     }
 
@@ -212,7 +218,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Dispatch a single tool call. Intercepts special tools; falls back to MainAgent tools.
+    /// Dispatch a single tool call. Routes through ToolRegistry for unified dispatch.
+    /// Builtin tools → direct execution
+    /// Skill tools (skill: prefix) → SkillRegistry
+    /// MCP tools (mcp: prefix) → McpClientManager
     async fn dispatch_tool<F>(
         &self,
         call: &ToolCall,
@@ -223,101 +232,127 @@ impl Orchestrator {
         F: FnMut(OrchestratorEvent) + Send,
     {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+        let name = &call.name;
 
-        match call.name.as_str() {
-            // ── Skill dispatch ───────────────────────────────────────
-            "run_system_task" => {
-                let skill_id = args.get("skill_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty());
-
-                if let Some(skill_id) = skill_id {
-                    if let Some(skill) = crate::skills::registry().find(skill_id) {
-                        let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let skill_args = args.get("args").cloned().unwrap_or(Value::Object(Default::default()));
-
-                        if apply {
-                            match skill.execute(skill_args, None).await {
-                                Ok(exec) => {
-                                    // 对于 system.tools 直接返回总结内容，避免 JSON 嵌套让 LLM 困惑
-                                    if skill_id == "system.tools" {
-                                        exec.summary
-                                    } else {
-                                        serde_json::json!({
-                                            "stage": "execute",
-                                            "skill_id": skill_id,
-                                            "denied": exec.denied,
-                                            "summary": exec.summary,
-                                            "freed_bytes": exec.freed_bytes,
-                                            "success": exec.success_items,
-                                            "failed": exec.failed_items.iter()
-                                                .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
-                                                .collect::<Vec<_>>(),
-                                        }).to_string()
-                                    }
-                                }
-                                Err(e) => format!("Error: skill execute failed: {}", e),
-                            }
-                        } else {
-                            match skill.preview(skill_args).await {
-                                Ok(preview) => serde_json::json!({
-                                    "stage": "preview",
-                                    "skill_id": skill_id,
-                                    "summary": preview.summary,
-                                    "estimated_bytes": preview.estimated_bytes,
-                                    "items": preview.items.iter().map(|it| serde_json::json!({
-                                        "label": it.label,
-                                        "detail": it.detail,
-                                        "bytes": it.bytes,
-                                    })).collect::<Vec<_>>(),
-                                    "warnings": preview.warnings,
-                                    "hint": "若用户同意继续，再次调用 run_system_task 时把 apply 设为 true。",
-                                }).to_string(),
-                                Err(e) => format!("Error: skill preview failed: {}", e),
+        // ── 1. 尝试通过 ToolRegistry 路由已知工具名称 ──────────────
+        if let Some(source) = crate::agents::core::tool_registry::tool_registry()
+            .lock()
+            .ok()
+            .and_then(|reg| reg.resolve_tool_source(name))
+        {
+            match source {
+                crate::agents::core::agent::ToolSource::Skill(skill_id) => {
+                    return self.execute_skill(&skill_id, args).await;
+                }
+                crate::agents::core::agent::ToolSource::Mcp { server, tool_name } => {
+                    if let Some(mcp) = &self.mcp_manager {
+                        if let Ok(mut mcp) = mcp.lock() {
+                            match mcp.call_tool(&server, &tool_name, args) {
+                                Ok(result) => return result,
+                                Err(e) => return format!("MCP Error: {}", e),
                             }
                         }
-                    } else {
-                        let known: Vec<String> = crate::skills::registry()
-                            .manifests()
-                            .into_iter()
-                            .map(|m| m.id)
-                            .collect();
-                        format!(
-                            "Error: skill_id '{}' not found. Available skills: {:?}",
-                            skill_id, known
-                        )
                     }
-                } else {
-                    // 没有 skill_id：提示用户使用具体的 Skill
-                    let known: Vec<String> = crate::skills::registry()
-                        .manifests()
-                        .into_iter()
-                        .map(|m| m.id)
-                        .collect();
-                    format!(
-                        "请通过 skill_id 参数指定要使用的 Skill。当前已安装：{:?}",
-                        known
-                    )
+                    return format!("MCP server '{}' not connected", server);
                 }
-            }
-
-            // ── 已废弃工具的友好提示 ─────────────────────────────────
-            "run_claude_code" => {
-                "run_claude_code 工具已移除。编码能力将通过 Skill Market 中的 coding_assistant Skill 提供，安装后通过 run_system_task(skill_id=\"coding_assistant\") 调用。".to_string()
-            }
-
-            // ── 其他工具：交给 MainAgent 自身处理 ────────────────────
-            _ => {
-                if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == call.name) {
+                crate::agents::core::agent::ToolSource::Builtin(tool) => {
+                    // 内置工具直接调用
                     match tool.call(args).await {
-                        Ok(res) => res.to_string(),
-                        Err(e) => format!("Error: {}", e),
+                        Ok(res) => return res.to_string(),
+                        Err(e) => return format!("Error: {}", e),
                     }
-                } else {
-                    format!("Error: Tool '{}' not found", call.name)
                 }
             }
+        }
+
+        // ── 2. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
+        if name == "run_system_task" {
+            let skill_id = args.get("skill_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+
+            if let Some(sid) = skill_id {
+                return self.execute_skill(sid, args.clone()).await;
+            } else {
+                let known: Vec<String> = crate::skills::registry()
+                    .manifests()
+                    .into_iter()
+                    .map(|m| m.id)
+                    .collect();
+                return format!("请在 skill_id 参数中指定 Skill。当前已安装：{:?}", known);
+            }
+        }
+
+        // ── 3. 已废弃工具的友好提示 ─────────────────────────────────
+        if name == "run_claude_code" {
+            return "run_claude_code 工具已移除。编码能力通过 Skill Market 中的 coding_assistant Skill 提供。".to_string();
+        }
+
+        // ── 4. 未知工具：交给 MainAgent 自身处理 ────────────────────
+        if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == *name) {
+            match tool.call(args).await {
+                Ok(res) => res.to_string(),
+                Err(e) => format!("Error: {}", e),
+            }
+        } else {
+            format!("Error: Tool '{}' not found", name)
+        }
+    }
+
+    /// 执行 Skill（支持 skill: 前缀匹配）
+    async fn execute_skill(&self, skill_id: &str, args: Value) -> String {
+        let sid = skill_id.strip_prefix("skill:").unwrap_or(skill_id);
+        let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+        let skill_args = args.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+
+        if let Some(skill) = crate::skills::registry().find(sid) {
+            if apply {
+                match skill.execute(skill_args, None).await {
+                    Ok(exec) => {
+                        if sid == "system.tools" {
+                            exec.summary
+                        } else {
+                            serde_json::json!({
+                                "stage": "execute",
+                                "skill_id": sid,
+                                "denied": exec.denied,
+                                "summary": exec.summary,
+                                "freed_bytes": exec.freed_bytes,
+                                "success": exec.success_items,
+                                "failed": exec.failed_items.iter()
+                                    .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
+                                    .collect::<Vec<_>>(),
+                            }).to_string()
+                        }
+                    }
+                    Err(e) => format!("Error: skill execute failed: {}", e),
+                }
+            } else {
+                match skill.preview(skill_args).await {
+                    Ok(preview) => serde_json::json!({
+                        "stage": "preview",
+                        "skill_id": sid,
+                        "summary": preview.summary,
+                        "estimated_bytes": preview.estimated_bytes,
+                        "items": preview.items.iter().map(|it| serde_json::json!({
+                            "label": it.label,
+                            "detail": it.detail,
+                            "bytes": it.bytes,
+                        })).collect::<Vec<_>>(),
+                        "warnings": preview.warnings,
+                        "hint": "若用户同意继续，再次调用时把 apply 设为 true。",
+                    }).to_string(),
+                    Err(e) => format!("Error: skill preview failed: {}", e),
+                }
+            }
+        } else {
+            let known: Vec<String> = crate::skills::registry()
+                .manifests()
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            format!("Error: skill_id '{}' not found. Available: {:?}", sid, known)
         }
     }
 }

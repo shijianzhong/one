@@ -35,15 +35,19 @@ impl MainAgent {
              - 遇到关于用户个人的信息（姓名、偏好、职业、语言习惯）→ remember(scope=\"global\")。\n\
              - 遇到关于当前项目/工作区的信息（技术栈、规范、ed 路径、团队成员）→ remember(scope=\"workspace\")。\n\
              - 不确定时 → remember(scope=\"both\")，宁可多存不要漏存。\n\n\
-             系统工具统一通过 run_system_task 调用：\n\
+             工具统一通过 run_system_task 调用 skill_id 或 skill: 前缀调用：\n\
              - 查看进程/CPU/内存 → skill_id=\"system.tools\" args={{\"tool\": \"list_processes\"}}\n\
              - 查看磁盘空间 → skill_id=\"system.tools\" args={{\"tool\": \"disk_free\"}}\n\
              - 查看目录内容/文件信息 → skill_id=\"system.tools\" args={{\"tool\": \"list_dir\", \"path\": \"...\"}}\n\
              - 分析磁盘占用 → skill_id=\"system.tools\" args={{\"tool\": \"disk_usage\", \"path\": \"...\"}}\n\
              - 清理废纸篓/缓存 → skill_id=\"system.cleaner\" args={{\"targets\": [\"用户缓存\"]}}\n\
+             - 列出所有已安装的 Skill → run_system_task(skill_id=\"技能查询\") args={{\"tool\": \"list\"}}\n\
+             如果安装了 MCP 工具（前缀 mcp:），也可以通过 tool calling 调用：\n\
+             - mcp:claude-code:claude_code_run → 通过 Claude Code 执行编码任务\n\
+             - mcp:claude-code:claude_code_status → 检查 Claude Code 是否可用\n\
              用户问系统相关问题时，务必通过 run_system_task 获取真实数据，不要猜测。\n\n\
-             目前没有安装编码相关的技能（skill）。如果用户需要编写代码，请告知用户当前没有编码技能可用，\
-             需要先在技能市场中安装后才能使用。",
+             目前可以通过 Skill Market 安装更多技能（编码、设计等）。如果用户需要安装技能，请引导用户到技能市场。\n\
+             已安装的技能清单请使用 run_system_task(skill_id=\"技能查询\") 查看。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
             std::env::consts::OS,
@@ -229,5 +233,52 @@ impl Tool for ProposeSoulUpdateTool {
             })),
             None => Err(anyhow::anyhow!("soul proposal queue unavailable")),
         }
+    }
+}
+
+// ── MainAgentBuilder ────────────────────────────────────────────────────────────
+
+/// MainAgent 的构建器，用于 AgentRegistry 注册。
+pub struct MainAgentBuilder;
+
+#[async_trait]
+impl super::AgentBuilder for MainAgentBuilder {
+    fn agent_id(&self) -> &str {
+        "main"
+    }
+
+    fn agent_name(&self) -> &str {
+        "Main Agent"
+    }
+
+    fn build(&self, config: &crate::services::Config, workspace: &str) -> Box<dyn super::AgentTrait> {
+        // 创建 MainAgent 实例
+        let agent = MainAgent::with_workspace(
+            config.model_name.clone(),
+            config.model_base_url.clone(),
+            config.model_api_key.clone(),
+            workspace.to_string(),
+        );
+        Box::new(MainAgentWrapper { inner: agent })
+    }
+}
+
+/// 包装 MainAgent 以适配 AgentTrait
+struct MainAgentWrapper {
+    inner: MainAgent,
+}
+
+#[async_trait]
+impl super::AgentTrait for MainAgentWrapper {
+    fn id(&self) -> &str {
+        "main"
+    }
+
+    fn name(&self) -> &str {
+        "Main Agent"
+    }
+
+    fn soul_prompt(&self) -> &str {
+        &self.inner.base.system_prompt
     }
 }

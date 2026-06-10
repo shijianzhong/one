@@ -25,6 +25,7 @@ use serde::Deserialize;
 use super::{Trigger, TriggerEvent, TriggerReply};
 use crate::agents::permission::DangerLevel;
 use crate::services::Config;
+use crate::skills::Skill;
 
 const DEFAULT_API_BASE: &str = "https://api.telegram.org";
 const LONG_POLL_TIMEOUT: u64 = 50;
@@ -547,7 +548,7 @@ impl Trigger for TelegramTrigger {
 
                             // 6. 在 Telegram 线程跑 Orchestrator
                             let config = crate::services::load_config();
-                            match crate::agents::core::AgentFactory::create_orchestrator(
+                            match crate::agents::core::factory::AgentFactory::create_orchestrator(
                                 &config,
                                 &ws_name,
                                 ws_path,

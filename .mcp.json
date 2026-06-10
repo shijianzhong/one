@@ -1,5 +1,13 @@
 {
   "mcpServers": {
+    "claude-code": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["./scripts/claude_code_mcp_server.py"],
+      "env": {
+        "CLAUDE_CODE_AUTO_MODE": "1"
+      }
+    },
     "stitch": {
       "transport": "http",
       "url": "https://stitch.googleapis.com/mcp",

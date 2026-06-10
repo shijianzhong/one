@@ -16,6 +16,7 @@ use crate::task_db;
 use crate::ui_theme::{set_theme_mode, ThemeMode};
 use crate::util;
 use crate::workspace::{TaskItem, Workspace};
+use crate::skills::Skill;
 use crate::{
     CancelModelConfig, ExportChat, OpenCipherDialog, OpenModelConfigDialog, SaveModelConfig,
     ToggleLang, ToggleTheme,
@@ -93,6 +94,8 @@ pub(crate) struct AppState {
     pub(crate) telegram_bind_token: String,
     pub(crate) telegram_bind_status: String,
     pub(crate) telegram_bind_error: bool,
+    /// MCP 客户端管理器
+    pub(crate) mcp_manager: Option<crate::mcp::McpClientManager>,
     /// 每个 task 的运行状态（true=有请求在运行）
     pub(crate) task_active_states: HashMap<usize, bool>,
     pub(crate) toasts: Vec<ToastInfo>,
@@ -217,6 +220,7 @@ impl AppState {
             telegram_bind_token: String::new(),
             telegram_bind_status: String::new(),
             telegram_bind_error: false,
+            mcp_manager: None,
             task_active_states: HashMap::new(),
             toasts: vec![],
             toast_next_id: 0,
@@ -234,6 +238,7 @@ impl AppState {
         }
 
         state.start_approval_pump(cx);
+        state.init_mcp(cx);
         state
     }
 
@@ -782,6 +787,56 @@ impl AppState {
     pub(crate) fn close_cipher_dialog(&mut self, cx: &mut Context<Self>) {
         self.show_cipher_dialog = false;
         cx.notify();
+    }
+
+    /// 初始化 MCP 客户端连接
+    pub(crate) fn init_mcp(&mut self, cx: &mut Context<Self>) {
+        // 初始化 ToolRegistry（含所有已注册 Skill 工具）
+        crate::agents::core::tool_registry::init_tool_registry();
+
+        let config = match crate::mcp::config::McpConfig::load_default() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[MCP] Failed to load config: {}", e);
+                return;
+            }
+        };
+
+        if config.mcp_servers.is_empty() {
+            return;
+        }
+
+        eprintln!("[MCP] Loading {} MCP server(s)...", config.mcp_servers.len());
+
+        cx.spawn(async move |this, cx| {
+            let manager = crate::mcp::McpClientManager::connect(&config).await;
+            let tool_count = manager.tool_count();
+            let server_count = manager.server_count();
+
+            // 注册 MCP 工具到 ToolRegistry
+            let all_tools = manager.all_tools();
+            if !all_tools.is_empty() {
+                let mcp_tools: Vec<_> = all_tools.into_iter().map(|t| {
+                    crate::agents::core::tool_registry::McpToolRegistration {
+                        server_name: t.server_name,
+                        tool_name: t.tool_name,
+                        description: t.description,
+                        input_schema: t.input_schema,
+                    }
+                }).collect();
+                if let Ok(mut treg) = crate::agents::core::tool_registry::tool_registry().lock() {
+                    treg.register_mcp_batch(mcp_tools);
+                    eprintln!("[MCP] Registered {} MCP tool(s) to ToolRegistry", treg.mcp_tools().len());
+                }
+            }
+
+            let _ = this.update(cx, |state, cx| {
+                state.mcp_manager = Some(manager);
+                eprintln!("[MCP] Connected: {} server(s), {} tool(s)", server_count, tool_count);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn export_chat(&mut self, _: &ExportChat, _: &mut Window, cx: &mut Context<Self>) {

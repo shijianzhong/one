@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use super::TriggerReply;
 use crate::agents::permission::DangerLevel;
+use crate::skills::Skill;
 
 #[derive(Debug, Clone)]
 pub enum TriggerCommand {

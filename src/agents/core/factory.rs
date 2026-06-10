@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::Result;
 
-use super::{Orchestrator, MainAgent};
+use super::orchestrator::Orchestrator;
+use super::main_agent::MainAgent;
 use crate::services::config::Config;
 
 pub struct AgentFactory;
@@ -20,6 +21,6 @@ impl AgentFactory {
             workspace_name.to_string(),
         ));
 
-        Ok(Orchestrator::new(main_agent, work_dir))
+        Ok(Orchestrator::new(main_agent, work_dir, None))
     }
 }

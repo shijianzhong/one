@@ -154,6 +154,8 @@ impl SkillsMarketState {
         self.status_text = Some("安装成功".to_string());
         self.error_text = None;
         self.refresh();
+        // 刷新全局 SkillRegistry，使新增的动态 Skill 可用
+        crate::skills::refresh_dynamic_skills();
         Ok(())
     }
 }

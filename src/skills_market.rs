@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gpui::{
-    div, prelude::*, px, relative, svg, AnyElement, Context, InteractiveElement,
-    StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, relative, svg, AnyElement, Context, InteractiveElement, Styled, Window,
 };
 
 use crate::i18n::{t, Translations};
@@ -264,17 +263,25 @@ pub(crate) fn render_skills_market_titlebar(
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_title(t(this.current_lang, Translations::UPLOAD_SKILL_PACKAGE))
-                                    .add_filter("Skill", &["skill", "zip"])
-                                    .pick_file()
-                                {
-                                    if let Err(err) = this.skills_market.install_from_file(path) {
-                                        this.skills_market.status_text = None;
-                                        this.skills_market.error_text = Some(err);
-                                    }
-                                    cx.notify();
-                                }
+                                let lang = this.current_lang;
+                                cx.spawn(async move |this, cx| {
+                                    let path = rfd::AsyncFileDialog::new()
+                                        .set_title(t(lang, Translations::UPLOAD_SKILL_PACKAGE))
+                                        .add_filter("Skill", &["skill", "zip"])
+                                        .pick_file()
+                                        .await
+                                        .map(|fh| fh.path().to_path_buf());
+                                    let _ = this.update(cx, |this, cx| {
+                                        if let Some(path) = path {
+                                            if let Err(err) = this.skills_market.install_from_file(path) {
+                                                this.skills_market.status_text = None;
+                                                this.skills_market.error_text = Some(err);
+                                            }
+                                            cx.notify();
+                                        }
+                                    });
+                                })
+                                .detach();
                             }),
                         )
                         .px_4()

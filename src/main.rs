@@ -20,6 +20,7 @@ mod services;
 mod skills_market;
 mod skills;
 mod task_db;
+mod terminal_emulator;
 mod triggers;
 pub(crate) mod ui_theme;
 mod util;

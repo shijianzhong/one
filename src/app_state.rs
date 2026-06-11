@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use gpui::{AppContext, Context, Pixels, Point, ScrollHandle, Window};
+use gpui::{AppContext, Context, FocusHandle, Pixels, Point, ScrollHandle, Window};
 
 use crate::agents;
 use crate::agents::types::PreviewLaunchResult;
@@ -96,6 +96,10 @@ pub(crate) struct AppState {
     pub(crate) telegram_bind_error: bool,
     /// MCP 客户端管理器
     pub(crate) mcp_manager: Option<crate::mcp::McpClientManager>,
+    /// 真实的终端模拟器
+    pub(crate) terminal_emulator: Option<std::sync::Arc<std::sync::Mutex<crate::terminal_emulator::TerminalEmulator>>>,
+    /// 终端的焦点句柄
+    pub(crate) terminal_focus_handle: FocusHandle,
     /// 每个 task 的运行状态（true=有请求在运行）
     pub(crate) task_active_states: HashMap<usize, bool>,
     pub(crate) toasts: Vec<ToastInfo>,
@@ -221,6 +225,8 @@ impl AppState {
             telegram_bind_status: String::new(),
             telegram_bind_error: false,
             mcp_manager: None,
+            terminal_emulator: None,
+            terminal_focus_handle: cx.focus_handle(),
             task_active_states: HashMap::new(),
             toasts: vec![],
             toast_next_id: 0,

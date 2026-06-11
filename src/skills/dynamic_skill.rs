@@ -280,16 +280,12 @@ pub fn scan_skills_dir() -> Vec<DynamicSkill> {
     skills
 }
 
-/// 获取 Skills 根目录
+/// 获取 Skills 根目录（~/.one/skills/）
 fn skills_root_dir() -> PathBuf {
-    if let Some(data_dir) = dirs::data_dir() {
-        data_dir.join("one").join("skills")
-    } else {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".one")
-            .join("skills")
-    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".one")
+        .join("skills")
 }
 
 // ── Skill trait 实现 ────────────────────────────────────────────────────────────

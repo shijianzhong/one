@@ -93,9 +93,9 @@ impl McpConfig {
         if project_path.exists() {
             return Self::load(project_path);
         }
-        // 其次从 ONE 配置目录加载
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_path = config_dir.join(".one").join("mcp.json");
+        // 其次从 ~/.one/ 加载
+        if let Some(home) = dirs::home_dir() {
+            let user_path = home.join(".one").join("mcp.json");
             if user_path.exists() {
                 return Self::load(user_path);
             }

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 
 use gpui::Context;
 
@@ -652,17 +653,36 @@ impl AppState {
                             OrchestratorEvent::RunInTerminal { command, work_dir } => {
                                 // 展开终端并执行命令
                                 this.terminal_visible = true;
-                                let task_id = this.active_task_id.unwrap_or(0);
+                                let task_id = active_task_id.unwrap_or(0);
                                 let backend = this.sandbox_backend.clone();
 
-                                // 使用当前 workspace 的工作目录 + task_id
-                                let ws_dir = this.get_work_dir();
-                                let project_dir = format!("{}/{}", ws_dir, task_id);
+                                let base_dir = active_task_id
+                                    .and_then(|tid| {
+                                        this.workspaces.iter().find_map(|workspace| {
+                                            workspace.tasks.iter().find(|task| task.id == tid).map(|task| {
+                                                this.get_task_dir_for_ids(workspace.id, tid, &task.title)
+                                            })
+                                        })
+                                    })
+                                    .unwrap_or_else(|| PathBuf::from(this.get_work_dir()));
+                                let requested_dir = work_dir.trim();
+                                let project_dir = if requested_dir.is_empty() || requested_dir == "." {
+                                    base_dir
+                                } else {
+                                    let requested_path = PathBuf::from(requested_dir);
+                                    if requested_path.is_absolute() {
+                                        requested_path
+                                    } else {
+                                        base_dir.join(requested_path)
+                                    }
+                                };
                                 let _ = std::fs::create_dir_all(&project_dir);
+                                let project_dir_str = project_dir.to_string_lossy().to_string();
+                                let quoted_project_dir = project_dir_str.replace('\'', "'\\''");
 
                                 // 在命令前加入 cd 到项目目录
                                 let cmd = if !command.starts_with("cd ") {
-                                    format!("cd {} && {}", project_dir, command)
+                                    format!("cd '{}' && {}", quoted_project_dir, command)
                                 } else {
                                     command.clone()
                                 };

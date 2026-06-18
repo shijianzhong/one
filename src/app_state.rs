@@ -98,6 +98,12 @@ pub(crate) struct AppState {
     pub(crate) mcp_manager: Option<crate::mcp::McpClientManager>,
     /// 真实的终端模拟器
     pub(crate) terminal_emulator: Option<std::sync::Arc<std::sync::Mutex<crate::terminal_emulator::TerminalEmulator>>>,
+    /// 当前终端对应的工作目录；切换 task 后用于判断是否需要重建终端。
+    pub(crate) terminal_work_dir: Option<PathBuf>,
+    /// 终端刷新循环代号；重建终端时递增，让旧刷新循环退出。
+    pub(crate) terminal_refresh_generation: u64,
+    /// 当前是否已有终端刷新循环在运行。
+    pub(crate) terminal_refresh_running: bool,
     /// 终端的焦点句柄
     pub(crate) terminal_focus_handle: FocusHandle,
     /// 每个 task 的运行状态（true=有请求在运行）
@@ -226,6 +232,9 @@ impl AppState {
             telegram_bind_error: false,
             mcp_manager: None,
             terminal_emulator: None,
+            terminal_work_dir: None,
+            terminal_refresh_generation: 0,
+            terminal_refresh_running: false,
             terminal_focus_handle: cx.focus_handle(),
             task_active_states: HashMap::new(),
             toasts: vec![],

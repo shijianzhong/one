@@ -30,76 +30,72 @@ fn term_bg() -> Hsla {
 
 impl AppState {
     fn ensure_terminal(&mut self, cx: &mut Context<Self>) {
-        let work_dir = self.get_work_dir();
-        let work_dir_path = std::path::PathBuf::from(&work_dir);
-        let project_dir = if let Some(task_id) = self.active_task_id {
-            work_dir_path.join(task_id.to_string())
-        } else {
-            work_dir_path
-        };
+        let project_dir = std::path::PathBuf::from(self.get_work_dir());
         let _ = std::fs::create_dir_all(&project_dir);
 
-        if self.terminal_emulator.is_some() {
-            return; // 终端已存在，不需要重复 cd
+        if self.terminal_emulator.is_some()
+            && self.terminal_work_dir.as_ref() == Some(&project_dir)
+        {
+            self.ensure_terminal_refresh_loop(cx);
+            return;
         }
+
+        self.terminal_emulator = None;
+        self.terminal_work_dir = None;
+        self.terminal_refresh_generation = self.terminal_refresh_generation.wrapping_add(1);
+        self.terminal_refresh_running = false;
 
         match TerminalEmulator::new(None, Some(&project_dir), 80, 24) {
             Ok(term) => {
                 let project_dir_str = project_dir.to_string_lossy().to_string();
                 self.terminal_emulator = Some(Arc::new(Mutex::new(term)));
+                self.terminal_work_dir = Some(project_dir.clone());
                 eprintln!("[Terminal] Terminal emulator initialized, target dir: {}", project_dir_str);
 
-                // 反复发送 cd 命令直到生效（shell profile 可能会重置目录）
-                let term_arc = self.terminal_emulator.as_ref().unwrap().clone();
-                let cd_cmd = format!("cd '{}'\n", project_dir_str.replace('\'', "'\\''"));
-                cx.spawn(async move |this, cx| {
-                    // 延迟 300ms 让 shell 初步启动
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(300))
-                        .await;
-                    if let Ok(term_lock) = term_arc.lock() {
-                        term_lock.write(cd_cmd.as_bytes());
-                    }
-
-                    // 再等 200ms 发第二次
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(200))
-                        .await;
-                    if let Ok(term_lock) = term_arc.lock() {
-                        term_lock.write(cd_cmd.as_bytes());
-                    }
-
-                    // 再等 500ms 发第三次并 clear
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(500))
-                        .await;
-                    if let Ok(term_lock) = term_arc.lock() {
-                        term_lock.write(cd_cmd.as_bytes());
-                        term_lock.write(b"clear\n");
-                    }
-                    eprintln!("[Terminal] Sent cd commands to project dir");
-
-                    // 之后每 50ms 刷新终端
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(50))
-                            .await;
-                        let _ = this.update(cx, |this, cx| {
-                            if let Some(ref ta) = this.terminal_emulator {
-                                if let Ok(t) = ta.lock() {
-                                    t.process_events();
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }
-                })
-                .detach();
+                self.ensure_terminal_refresh_loop(cx);
             }
             Err(e) => {
                 eprintln!("[Terminal] Failed to initialize: {}", e);
             }
         }
+    }
+
+    fn ensure_terminal_refresh_loop(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_refresh_running {
+            return;
+        }
+
+        self.terminal_refresh_running = true;
+        let generation = self.terminal_refresh_generation;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                let should_continue = this
+                    .update(cx, |this, cx| {
+                        if this.terminal_refresh_generation != generation
+                            || !this.terminal_visible
+                            || this.terminal_emulator.is_none()
+                        {
+                            this.terminal_refresh_running = false;
+                            return false;
+                        }
+                        if let Some(ref ta) = this.terminal_emulator {
+                            if let Ok(t) = ta.lock() {
+                                t.process_events();
+                            }
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn render_terminal_resizer(

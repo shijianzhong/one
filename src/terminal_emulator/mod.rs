@@ -103,7 +103,9 @@ impl TerminalEmulator {
             shell: shell.map(|s| Shell::new(s.to_string(), Vec::new())),
             working_directory: working_dir.map(|p| p.to_path_buf()),
             drain_on_exit: false,
-            env: std::collections::HashMap::new(),
+            env: std::collections::HashMap::from([
+                ("PWD".to_string(), working_dir.map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
+            ]),
         };
 
         let pty = tty::new(&pty_config, (&size).into(), 0)
@@ -158,7 +160,9 @@ impl TerminalEmulator {
     /// 写入数据到 PTY
     pub fn write(&self, data: &[u8]) {
         if let Some(ref tx) = self.pty_sender {
-            let _ = tx.send(Msg::Input(std::borrow::Cow::Owned(data.to_vec())));
+            if let Err(e) = tx.send(Msg::Input(std::borrow::Cow::Owned(data.to_vec()))) {
+                log::error!("[Terminal] Failed to send data to PTY: {}", e);
+            }
         }
     }
 

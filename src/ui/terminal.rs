@@ -47,20 +47,37 @@ impl AppState {
             Ok(term) => {
                 let project_dir_str = project_dir.to_string_lossy().to_string();
                 self.terminal_emulator = Some(Arc::new(Mutex::new(term)));
-                eprintln!("[Terminal] Terminal emulator initialized, work_dir: {}", project_dir_str);
+                eprintln!("[Terminal] Terminal emulator initialized, target dir: {}", project_dir_str);
 
-                // 延迟发送 cd 命令（等 shell 初始化完成）
+                // 反复发送 cd 命令直到生效（shell profile 可能会重置目录）
                 let term_arc = self.terminal_emulator.as_ref().unwrap().clone();
-                let cd_cmd = format!("cd {} && clear\n", project_dir_str);
+                let cd_cmd = format!("cd '{}'\n", project_dir_str.replace('\'', "'\\''"));
                 cx.spawn(async move |this, cx| {
-                    // 等待 500ms 让 shell 启动完成
+                    // 延迟 300ms 让 shell 初步启动
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(300))
+                        .await;
+                    if let Ok(term_lock) = term_arc.lock() {
+                        term_lock.write(cd_cmd.as_bytes());
+                    }
+
+                    // 再等 200ms 发第二次
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                    if let Ok(term_lock) = term_arc.lock() {
+                        term_lock.write(cd_cmd.as_bytes());
+                    }
+
+                    // 再等 500ms 发第三次并 clear
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(500))
                         .await;
                     if let Ok(term_lock) = term_arc.lock() {
                         term_lock.write(cd_cmd.as_bytes());
-                        eprintln!("[Terminal] Sent cd to project dir");
+                        term_lock.write(b"clear\n");
                     }
+                    eprintln!("[Terminal] Sent cd commands to project dir");
 
                     // 之后每 50ms 刷新终端
                     loop {
@@ -68,7 +85,6 @@ impl AppState {
                             .timer(std::time::Duration::from_millis(50))
                             .await;
                         let _ = this.update(cx, |this, cx| {
-                            // 处理终端事件
                             if let Some(ref ta) = this.terminal_emulator {
                                 if let Ok(t) = ta.lock() {
                                     t.process_events();
@@ -213,8 +229,9 @@ impl AppState {
                         let mode = TermMode::default();
                         if let Some(esc) = to_esc_str(&event.keystroke, &mode, false) {
                             term.write(esc.as_bytes());
+                        } else if event.keystroke.key == "space" {
+                            term.write(b" ");
                         } else if event.keystroke.key.len() == 1 {
-                            // 普通可打印字符直接写入
                             let c = event.keystroke.key.as_bytes();
                             term.write(c);
                         }
@@ -231,18 +248,21 @@ impl AppState {
                     .font_family("Menlo")
                     .text_sm()
                     .children(output_lines.iter().map(|(text, has_cursor)| {
-                        let bg_color = if *has_cursor {
-                            Hsla { h: 0.61, s: 0.35, l: 0.18, a: 0.6 }
+                        let display_text = if *has_cursor && !text.is_empty() {
+                            // 在光标位置插入光标符号
+                            let cursor_pos = text.trim_end().len();
+                            let prefix = &text[..cursor_pos];
+                            let suffix = &text[cursor_pos..];
+                            format!("{}█{}", prefix, suffix)
                         } else {
-                            Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 }
+                            text.clone()
                         };
                         div()
                             .h(px(18.0))
                             .flex()
                             .items_center()
-                            .bg(bg_color)
                             .text_color(PRIMARY_TEXT())
-                            .child(text.clone())
+                            .child(display_text)
                             .into_any_element()
                     }))
             )

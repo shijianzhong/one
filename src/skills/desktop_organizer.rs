@@ -20,14 +20,22 @@ struct OrganizerArgs {
 }
 
 const CATEGORIES: &[(&str, &[&str])] = &[
-    ("图片", &["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "svg"]),
+    (
+        "图片",
+        &["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "svg"],
+    ),
     ("视频", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]),
     ("音频", &["mp3", "wav", "flac", "m4a", "aac", "ogg"]),
     ("文档", &["pdf", "doc", "docx", "txt", "md", "rtf", "pages"]),
     ("表格", &["xls", "xlsx", "csv", "numbers"]),
     ("演示", &["ppt", "pptx", "key"]),
     ("压缩包", &["zip", "tar", "gz", "rar", "7z", "dmg", "iso"]),
-    ("代码", &["rs", "py", "js", "ts", "tsx", "jsx", "go", "swift", "java", "c", "cpp", "h"]),
+    (
+        "代码",
+        &[
+            "rs", "py", "js", "ts", "tsx", "jsx", "go", "swift", "java", "c", "cpp", "h",
+        ],
+    ),
 ];
 
 impl DesktopOrganizerSkill {
@@ -67,10 +75,7 @@ impl DesktopOrganizerSkill {
             if name.starts_with('.') {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let category = Self::classify(ext).to_string();
             out.push((category, path, meta.len()));
         }
@@ -110,7 +115,8 @@ impl Skill for DesktopOrganizerSkill {
             });
         }
 
-        let mut groups: std::collections::BTreeMap<String, (u64, u64)> = std::collections::BTreeMap::new();
+        let mut groups: std::collections::BTreeMap<String, (u64, u64)> =
+            std::collections::BTreeMap::new();
         let mut total: u64 = 0;
         for (cat, _, size) in &files {
             let entry = groups.entry(cat.clone()).or_insert((0, 0));

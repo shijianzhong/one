@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::{Agent, AgentContext, AgentResponse, ToolCall};
+use super::{AgentResponse, AgentRunContext, AgentTrait, ToolCall};
 use crate::agents::permission::{classify_mcp_tool_kind, PermissionDecision};
 use crate::mcp::McpClientManager;
 use crate::memory::types::ChatMessage;
@@ -41,13 +41,13 @@ pub enum OrchestratorEvent {
 }
 
 pub struct Orchestrator {
-    main_agent: Arc<dyn Agent>,
+    main_agent: Arc<dyn AgentTrait>,
     mcp_manager: Option<Arc<std::sync::Mutex<McpClientManager>>>,
 }
 
 impl Orchestrator {
     pub fn new(
-        main_agent: Arc<dyn Agent>,
+        main_agent: Arc<dyn AgentTrait>,
         _work_dir: std::path::PathBuf,
         mcp_manager: Option<Arc<std::sync::Mutex<McpClientManager>>>,
     ) -> Self {
@@ -71,7 +71,10 @@ impl Orchestrator {
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
-        let mut context = AgentContext::new(session_id);
+        let mut context = AgentRunContext::new(session_id);
+        context.cancel_flag = cancel_flag.clone();
+        context.user_input_rx = user_input_rx.take();
+        self.refresh_agent_tools(&mut context);
 
         // ── 取消检查 ─────────────────────────────────────────────────
         if cancel_flag
@@ -151,9 +154,11 @@ impl Orchestrator {
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let main_agent = self.main_agent.clone();
 
-            let mut context_inner = AgentContext::new(context.session_id.clone());
+            let mut context_inner = AgentRunContext::new(context.session_id.clone());
             context_inner.history = context.history.clone();
             context_inner.metadata = context.metadata.clone();
+            context_inner.cancel_flag = context.cancel_flag.clone();
+            self.refresh_agent_tools(&mut context_inner);
 
             let response = {
                 let mut step_fut = Box::pin(main_agent.step_stream(
@@ -181,7 +186,7 @@ impl Orchestrator {
                         tool_call_id: None,
                     });
 
-                    if let Some(ref mut input_rx) = user_input_rx {
+                    if let Some(ref mut input_rx) = context.user_input_rx {
                         on_event(OrchestratorEvent::AwaitingUserInput {
                             reply: answer.clone(),
                         });
@@ -226,7 +231,7 @@ impl Orchestrator {
     /// Execute tool calls from MainAgent and feed results back into context.
     async fn execute_tool_calls<F>(
         &self,
-        context: &mut AgentContext,
+        context: &mut AgentRunContext,
         calls: &[ToolCall],
         cancel_flag: Option<Arc<AtomicBool>>,
         on_event: &mut F,
@@ -278,6 +283,14 @@ impl Orchestrator {
         Ok(())
     }
 
+    fn refresh_agent_tools(&self, context: &mut AgentRunContext) {
+        let filter = self.main_agent.tool_filter();
+        if let Ok(registry) = crate::agents::core::tool_registry::tool_registry().lock() {
+            context.tool_sources = registry.tool_sources(filter.as_deref());
+            context.tool_definitions = registry.tool_definitions(filter.as_deref());
+        }
+    }
+
     /// Dispatch a single tool call. Routes through ToolRegistry for unified dispatch.
     /// Builtin tools → direct execution
     /// Skill tools (skill: prefix) → SkillRegistry
@@ -293,6 +306,79 @@ impl Orchestrator {
     {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
         let name = &call.name;
+
+        // Runtime bridge tools are exposed through ToolRegistry but executed
+        // here because they produce UI/runtime events rather than direct values.
+        if name == "start_coding_workflow" {
+            let user_request = args
+                .get("user_request")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let main_agent_summary = args
+                .get("main_agent_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let known_constraints = string_array_arg(&args, "known_constraints");
+            let suggested_direction = args
+                .get("suggested_direction")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let clarification_focus = string_array_arg(&args, "clarification_focus");
+
+            if user_request.trim().is_empty() {
+                return "请提供 user_request。".to_string();
+            }
+
+            _on_event(OrchestratorEvent::CodingWorkflowRequested {
+                user_request,
+                main_agent_summary,
+                known_constraints,
+                suggested_direction,
+                clarification_focus,
+            });
+            return "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。"
+                .to_string();
+        }
+
+        if name == "run_in_terminal" {
+            let command = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !command.is_empty() {
+                let work_dir = args
+                    .get("work_dir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".")
+                    .to_string();
+                _on_event(OrchestratorEvent::RunInTerminal { command, work_dir });
+                return "命令已发送到终端执行。用户可以在终端中查看实时输出。".to_string();
+            }
+            return "请提供要执行的命令。".to_string();
+        }
+
+        if name == "run_system_task" {
+            let skill_id = args
+                .get("skill_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+
+            if let Some(sid) = skill_id {
+                return self.execute_skill(sid, args.clone()).await;
+            } else {
+                let known: Vec<String> = crate::skills::registry()
+                    .manifests()
+                    .into_iter()
+                    .map(|m| m.id)
+                    .collect();
+                return format!("请在 skill_id 参数中指定 Skill。当前已安装：{:?}", known);
+            }
+        }
 
         // ── 1. 尝试通过 ToolRegistry 路由已知工具名称 ──────────────
         if let Some(source) = crate::agents::core::tool_registry::tool_registry()
@@ -344,94 +430,7 @@ impl Orchestrator {
             }
         }
 
-        // ── 2. start_coding_workflow → 发送编码工作流事件 ────────
-        if name == "start_coding_workflow" {
-            let user_request = args
-                .get("user_request")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let main_agent_summary = args
-                .get("main_agent_summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let known_constraints = string_array_arg(&args, "known_constraints");
-            let suggested_direction = args
-                .get("suggested_direction")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            let clarification_focus = string_array_arg(&args, "clarification_focus");
-
-            if user_request.trim().is_empty() {
-                return "请提供 user_request。".to_string();
-            }
-
-            _on_event(OrchestratorEvent::CodingWorkflowRequested {
-                user_request,
-                main_agent_summary,
-                known_constraints,
-                suggested_direction,
-                clarification_focus,
-            });
-            return "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。"
-                .to_string();
-        }
-
-        // ── 3. run_in_terminal → 发送 RunInTerminal 事件 ────────
-        if name == "run_in_terminal" {
-            let command = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if !command.is_empty() {
-                let work_dir = args
-                    .get("work_dir")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".")
-                    .to_string();
-                _on_event(OrchestratorEvent::RunInTerminal { command, work_dir });
-                return "命令已发送到终端执行。用户可以在终端中查看实时输出。".to_string();
-            }
-            return "请提供要执行的命令。".to_string();
-        }
-
-        // ── 4. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
-        if name == "run_system_task" {
-            let skill_id = args
-                .get("skill_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty());
-
-            if let Some(sid) = skill_id {
-                return self.execute_skill(sid, args.clone()).await;
-            } else {
-                let known: Vec<String> = crate::skills::registry()
-                    .manifests()
-                    .into_iter()
-                    .map(|m| m.id)
-                    .collect();
-                return format!("请在 skill_id 参数中指定 Skill。当前已安装：{:?}", known);
-            }
-        }
-
-        // ── 3. 已废弃工具的友好提示 ─────────────────────────────────
-        if name == "run_claude_code" {
-            return "run_claude_code 工具已移除。编码能力通过 Skill Market 中的 coding_assistant Skill 提供。".to_string();
-        }
-
-        // ── 4. 未知工具：交给 MainAgent 自身处理 ────────────────────
-        if let Some(tool) = self.main_agent.tools().iter().find(|t| t.name() == *name) {
-            match tool.call(args).await {
-                Ok(res) => res.to_string(),
-                Err(e) => format!("Error: {}", e),
-            }
-        } else {
-            format!("Error: Tool '{}' not found", name)
-        }
+        format!("Error: Tool '{}' not found", name)
     }
 
     /// 执行 Skill（支持 skill: 前缀匹配）

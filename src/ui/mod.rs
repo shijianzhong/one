@@ -9,9 +9,12 @@ pub use components::*;
 
 use gpui::{div, prelude::*, px, Context, DragMoveEvent, FontWeight, IntoElement, Window};
 
-use crate::ui_theme::{BORDER_LIGHT, CARD_BG, SURFACE_ELEVATED, FLOATING_PANEL_BG, PRIMARY_TEXT, SECONDARY_TEXT, SUCCESS_TEXT, ERROR_TEXT};
-use crate::{AppState, ToastInfo, ToastLevel};
 use crate::ui::terminal::DraggedResizer;
+use crate::ui_theme::{
+    BORDER_LIGHT, CARD_BG, ERROR_TEXT, FLOATING_PANEL_BG, PRIMARY_TEXT, SECONDARY_TEXT,
+    SUCCESS_TEXT, SURFACE_ELEVATED,
+};
+use crate::{AppState, ToastInfo, ToastLevel};
 
 impl gpui::Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -22,12 +25,10 @@ impl gpui::Render for AppState {
         let right_panel_width = self.right_panel_width;
 
         // 始终提前渲染两个面板，用 Option 包装以支持按分支 move
-        let mut terminal_panel: Option<gpui::AnyElement> = Some(
-            self.render_terminal(window, cx).into_any_element()
-        );
-        let mut sidebar_panel: Option<gpui::AnyElement> = Some(
-            self.render_sidebar(window, cx).into_any_element()
-        );
+        let mut terminal_panel: Option<gpui::AnyElement> =
+            Some(self.render_terminal(window, cx).into_any_element());
+        let mut sidebar_panel: Option<gpui::AnyElement> =
+            Some(self.render_sidebar(window, cx).into_any_element());
 
         div()
             .flex_col()
@@ -40,22 +41,24 @@ impl gpui::Render for AppState {
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
-                    .on_drag_move::<DraggedResizer>(cx.listener(|this, event: &DragMoveEvent<DraggedResizer>, _window, cx| {
-                        let Some(start_x) = this.right_panel_resize_initial_mouse_x else {
-                            return;
-                        };
-                        let Some(start_width) = this.right_panel_resize_initial_width else {
-                            return;
-                        };
+                    .on_drag_move::<DraggedResizer>(cx.listener(
+                        |this, event: &DragMoveEvent<DraggedResizer>, _window, cx| {
+                            let Some(start_x) = this.right_panel_resize_initial_mouse_x else {
+                                return;
+                            };
+                            let Some(start_width) = this.right_panel_resize_initial_width else {
+                                return;
+                            };
 
-                        let current_x = f32::from(event.event.position.x);
-                        let available_width = f32::from(event.bounds.size.width);
-                        let min_width = 280.0;
-                        let max_width = (available_width - 320.0).max(min_width);
-                        this.right_panel_width = (start_width - (current_x - start_x))
-                            .clamp(min_width, max_width);
-                        cx.notify();
-                    }))
+                            let current_x = f32::from(event.event.position.x);
+                            let available_width = f32::from(event.bounds.size.width);
+                            let min_width = 280.0;
+                            let max_width = (available_width - 320.0).max(min_width);
+                            this.right_panel_width =
+                                (start_width - (current_x - start_x)).clamp(min_width, max_width);
+                            cx.notify();
+                        },
+                    ))
                     .child(self.render_nav(cx))
                     .child(div().w(px(1.0)).bg(BORDER_LIGHT()))
                     .child(
@@ -66,32 +69,33 @@ impl gpui::Render for AppState {
                             .child(self.render_main_content(window, cx)),
                     )
                     .when(right_panel_visible, |this| {
-                        this.child(self.render_terminal_resizer(cx))
-                            .child({
-                                let mut panel = div()
-                                    .flex()
-                                    .flex_col()
-                                    .w(px(right_panel_width))
-                                    .h_full()
-                                    .overflow_hidden();
-                                if sidebar_visible && terminal_visible {
-                                    if let (Some(s), Some(t)) = (sidebar_panel.take(), terminal_panel.take()) {
-                                        panel = panel
-                                            .child(div().flex_1().child(s))
-                                            .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
-                                            .child(div().flex_1().child(t));
-                                    }
-                                } else if sidebar_visible {
-                                    if let Some(s) = sidebar_panel.take() {
-                                        panel = panel.child(s);
-                                    }
-                                } else if terminal_visible {
-                                    if let Some(t) = terminal_panel.take() {
-                                        panel = panel.child(t);
-                                    }
+                        this.child(self.render_terminal_resizer(cx)).child({
+                            let mut panel = div()
+                                .flex()
+                                .flex_col()
+                                .w(px(right_panel_width))
+                                .h_full()
+                                .overflow_hidden();
+                            if sidebar_visible && terminal_visible {
+                                if let (Some(s), Some(t)) =
+                                    (sidebar_panel.take(), terminal_panel.take())
+                                {
+                                    panel = panel
+                                        .child(div().flex_1().child(s))
+                                        .child(div().h(px(1.0)).bg(BORDER_LIGHT()))
+                                        .child(div().flex_1().child(t));
                                 }
-                                panel
-                            })
+                            } else if sidebar_visible {
+                                if let Some(s) = sidebar_panel.take() {
+                                    panel = panel.child(s);
+                                }
+                            } else if terminal_visible {
+                                if let Some(t) = terminal_panel.take() {
+                                    panel = panel.child(t);
+                                }
+                            }
+                            panel
+                        })
                     }),
             )
             .when(self.show_model_config_dialog, |this| {

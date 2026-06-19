@@ -88,10 +88,16 @@ pub(crate) fn strip_think_tags(text: &str) -> String {
             // Check for <think>
             let mut matched = false;
             if let Some(&'t') = chars.peek() {
-                let remaining: String = text.chars().skip(text.chars().count() - chars.clone().count()).take(6).collect();
+                let remaining: String = text
+                    .chars()
+                    .skip(text.chars().count() - chars.clone().count())
+                    .take(6)
+                    .collect();
                 if remaining == "think>" {
                     inside_think = true;
-                    for _ in 0..6 { chars.next(); }
+                    for _ in 0..6 {
+                        chars.next();
+                    }
                     matched = true;
                 }
             }
@@ -102,10 +108,16 @@ pub(crate) fn strip_think_tags(text: &str) -> String {
             // Check for </think>
             let mut matched = false;
             if let Some(&'/') = chars.peek() {
-                let remaining: String = text.chars().skip(text.chars().count() - chars.clone().count()).take(7).collect();
+                let remaining: String = text
+                    .chars()
+                    .skip(text.chars().count() - chars.clone().count())
+                    .take(7)
+                    .collect();
                 if remaining == "/think>" {
                     inside_think = false;
-                    for _ in 0..7 { chars.next(); }
+                    for _ in 0..7 {
+                        chars.next();
+                    }
                     matched = true;
                 }
             }

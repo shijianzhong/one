@@ -109,7 +109,8 @@ impl RemoteAuth {
         // 检查是否锁定
         if let Some(locked_until_str) = &store.locked_until {
             let now = Utc::now();
-            let locked_until = locked_until_str.parse::<chrono::DateTime<Utc>>()
+            let locked_until = locked_until_str
+                .parse::<chrono::DateTime<Utc>>()
                 .or_else(|_| {
                     chrono::DateTime::parse_from_rfc3339(locked_until_str)
                         .map(|dt| dt.with_timezone(&Utc))
@@ -145,8 +146,8 @@ impl RemoteAuth {
                 // 验证失败，记录失败次数
                 store.failed_attempts += 1;
                 if store.failed_attempts >= store.max_failed_attempts {
-                    let until = Utc::now()
-                        + chrono::Duration::seconds(store.lock_duration_secs as i64);
+                    let until =
+                        Utc::now() + chrono::Duration::seconds(store.lock_duration_secs as i64);
                     store.locked_until = Some(until.to_rfc3339());
                     let _ = save_store(&store);
                     return Err(format!(
@@ -156,10 +157,7 @@ impl RemoteAuth {
                 }
                 let remaining = store.max_failed_attempts - store.failed_attempts;
                 let _ = save_store(&store);
-                Err(format!(
-                    "暗号错误，还剩 {} 次机会",
-                    remaining
-                ))
+                Err(format!("暗号错误，还剩 {} 次机会", remaining))
             }
             Err(e) => Err(format!("验证过程出错：{}", e)),
         }
@@ -185,11 +183,13 @@ impl RemoteAuth {
         match &store.locked_until {
             Some(locked_until_str) => {
                 let now = Utc::now();
-                let locked_until = locked_until_str.parse::<chrono::DateTime<Utc>>()
-                    .or_else(|_| {
-                        chrono::DateTime::parse_from_rfc3339(locked_until_str)
-                            .map(|dt| dt.with_timezone(&Utc))
-                    });
+                let locked_until =
+                    locked_until_str
+                        .parse::<chrono::DateTime<Utc>>()
+                        .or_else(|_| {
+                            chrono::DateTime::parse_from_rfc3339(locked_until_str)
+                                .map(|dt| dt.with_timezone(&Utc))
+                        });
                 if let Ok(locked_until) = locked_until {
                     (locked_until - now).num_seconds().max(0) as u64
                 } else {

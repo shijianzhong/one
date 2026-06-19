@@ -79,7 +79,8 @@ impl AppUninstallerSkill {
             lib.join("Caches").join(app_name),
             lib.join("Preferences").join(format!("{}.plist", app_name)),
             lib.join("Logs").join(app_name),
-            lib.join("Saved Application State").join(format!("{}.savedState", app_name)),
+            lib.join("Saved Application State")
+                .join(format!("{}.savedState", app_name)),
             lib.join("Containers").join(app_name),
         ];
         for c in candidates {
@@ -115,7 +116,10 @@ impl Skill for AppUninstallerSkill {
         let parsed: UninstallArgs = serde_json::from_value(args).unwrap_or_default();
         let Some(target) = parsed.app else {
             let installed = Self::list_installed();
-            let summary = format!("发现 {} 个 .app；请用 args.app 指定要卸载的应用名（不含 .app）", installed.len());
+            let summary = format!(
+                "发现 {} 个 .app；请用 args.app 指定要卸载的应用名（不含 .app）",
+                installed.len()
+            );
             let items = installed
                 .into_iter()
                 .take(20)
@@ -202,7 +206,10 @@ impl Skill for AppUninstallerSkill {
                 .join("\n")
         );
 
-        match permission().request_async(ToolKind::File, detail, source).await {
+        match permission()
+            .request_async(ToolKind::File, detail, source)
+            .await
+        {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

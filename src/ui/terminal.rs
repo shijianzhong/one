@@ -1,16 +1,16 @@
 use gpui::{
-    div, prelude::*, px, Context, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, Context, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::i18n::{t, Translations};
-use crate::terminal_emulator::TerminalEmulator;
 use crate::terminal_emulator::mappings::keys::to_esc_str;
+use crate::terminal_emulator::TerminalEmulator;
 use crate::ui_theme::{
-    BORDER_LIGHT, CANVAS_BG, INPUT_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
-    SURFACE_ELEVATED, TERTIARY_TEXT,
+    BORDER_LIGHT, CANVAS_BG, INPUT_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_ELEVATED,
+    TERTIARY_TEXT,
 };
 use crate::AppState;
 
@@ -33,8 +33,7 @@ impl AppState {
         let project_dir = std::path::PathBuf::from(self.get_work_dir());
         let _ = std::fs::create_dir_all(&project_dir);
 
-        if self.terminal_emulator.is_some()
-            && self.terminal_work_dir.as_ref() == Some(&project_dir)
+        if self.terminal_emulator.is_some() && self.terminal_work_dir.as_ref() == Some(&project_dir)
         {
             self.ensure_terminal_refresh_loop(cx);
             return;
@@ -50,7 +49,10 @@ impl AppState {
                 let project_dir_str = project_dir.to_string_lossy().to_string();
                 self.terminal_emulator = Some(Arc::new(Mutex::new(term)));
                 self.terminal_work_dir = Some(project_dir.clone());
-                eprintln!("[Terminal] Terminal emulator initialized, target dir: {}", project_dir_str);
+                eprintln!(
+                    "[Terminal] Terminal emulator initialized, target dir: {}",
+                    project_dir_str
+                );
 
                 self.ensure_terminal_refresh_loop(cx);
             }
@@ -67,41 +69,36 @@ impl AppState {
 
         self.terminal_refresh_running = true;
         let generation = self.terminal_refresh_generation;
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(50))
-                    .await;
-                let should_continue = this
-                    .update(cx, |this, cx| {
-                        if this.terminal_refresh_generation != generation
-                            || !this.terminal_visible
-                            || this.terminal_emulator.is_none()
-                        {
-                            this.terminal_refresh_running = false;
-                            return false;
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+            let should_continue = this
+                .update(cx, |this, cx| {
+                    if this.terminal_refresh_generation != generation
+                        || !this.terminal_visible
+                        || this.terminal_emulator.is_none()
+                    {
+                        this.terminal_refresh_running = false;
+                        return false;
+                    }
+                    if let Some(ref ta) = this.terminal_emulator {
+                        if let Ok(t) = ta.lock() {
+                            t.process_events();
                         }
-                        if let Some(ref ta) = this.terminal_emulator {
-                            if let Ok(t) = ta.lock() {
-                                t.process_events();
-                            }
-                        }
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
+                    }
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !should_continue {
+                break;
             }
         })
         .detach();
     }
 
-    pub(crate) fn render_terminal_resizer(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(crate) fn render_terminal_resizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("terminal-resizer")
             .w(px(6.0))
@@ -115,16 +112,22 @@ impl AppState {
                 this.bg(BORDER_LIGHT().opacity(0.9))
                     .border_color(SECONDARY_TEXT().opacity(0.55))
             })
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                this.right_panel_resize_initial_mouse_x = Some(f32::from(event.position.x));
-                this.right_panel_resize_initial_width = Some(this.right_panel_width);
-                cx.notify();
-            }))
-            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, _window, cx| {
-                this.right_panel_resize_initial_mouse_x = None;
-                this.right_panel_resize_initial_width = None;
-                cx.notify();
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                    this.right_panel_resize_initial_mouse_x = Some(f32::from(event.position.x));
+                    this.right_panel_resize_initial_width = Some(this.right_panel_width);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _window, cx| {
+                    this.right_panel_resize_initial_mouse_x = None;
+                    this.right_panel_resize_initial_width = None;
+                    cx.notify();
+                }),
+            )
             .on_drag(DraggedResizer, |_, _, _, cx| cx.new(|_| DraggedResizer))
     }
 
@@ -165,12 +168,12 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .size(px(8.0))
-                            .rounded_full()
-                            .bg(Hsla { h: 0.33, s: 0.7, l: 0.55, a: 1.0 })
-                    )
+                    .child(div().size(px(8.0)).rounded_full().bg(Hsla {
+                        h: 0.33,
+                        s: 0.7,
+                        l: 0.55,
+                        a: 1.0,
+                    }))
                     .child(
                         div()
                             .text_xs()
@@ -183,7 +186,7 @@ impl AppState {
                             .text_color(TERTIARY_TEXT())
                             .ml_auto()
                             .child(work_dir),
-                    )
+                    ),
             )
     }
 
@@ -246,10 +249,13 @@ impl AppState {
             .flex_col()
             .key_context("terminal")
             .track_focus(&focus_handle)
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| {
-                window.focus(&this.terminal_focus_handle, cx);
-                eprintln!("[Terminal] Focus set");
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| {
+                    window.focus(&this.terminal_focus_handle, cx);
+                    eprintln!("[Terminal] Focus set");
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 if let Some(ref term_arc) = this.terminal_emulator {
                     if let Ok(term) = term_arc.lock() {
@@ -292,7 +298,7 @@ impl AppState {
                             .text_color(PRIMARY_TEXT())
                             .child(display_text)
                             .into_any_element()
-                    }))
+                    })),
             )
             .child(
                 div()
@@ -306,19 +312,14 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(SECONDARY_TEXT())
-                            .child("$")
-                    )
+                    .child(div().text_xs().text_color(SECONDARY_TEXT()).child("$"))
                     .child(
                         div()
                             .flex_1()
                             .text_xs()
                             .text_color(PRIMARY_TEXT())
-                            .child("Terminal ready — click and type")
-                    )
+                            .child("Terminal ready — click and type"),
+                    ),
             )
             .into_any_element()
     }

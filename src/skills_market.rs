@@ -224,9 +224,15 @@ pub(crate) fn render_skills_market_titlebar(
                                 .px_4()
                                 .py_1()
                                 .rounded_lg()
-                                .when(tab_market_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
+                                .when(tab_market_active, |this| {
+                                    this.bg(SURFACE_PANEL()).shadow_sm()
+                                })
                                 .text_xs()
-                                .text_color(if tab_market_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
+                                .text_color(if tab_market_active {
+                                    ACCENT_TEXT()
+                                } else {
+                                    SECONDARY_TEXT()
+                                })
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .cursor_pointer()
                                 .on_mouse_down(
@@ -243,9 +249,15 @@ pub(crate) fn render_skills_market_titlebar(
                                 .px_4()
                                 .py_1()
                                 .rounded_lg()
-                                .when(tab_installed_active, |this| this.bg(SURFACE_PANEL()).shadow_sm())
+                                .when(tab_installed_active, |this| {
+                                    this.bg(SURFACE_PANEL()).shadow_sm()
+                                })
                                 .text_xs()
-                                .text_color(if tab_installed_active { ACCENT_TEXT() } else { SECONDARY_TEXT() })
+                                .text_color(if tab_installed_active {
+                                    ACCENT_TEXT()
+                                } else {
+                                    SECONDARY_TEXT()
+                                })
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .cursor_pointer()
                                 .on_mouse_down(
@@ -255,7 +267,11 @@ pub(crate) fn render_skills_market_titlebar(
                                         cx.notify();
                                     }),
                                 )
-                                .child(format!("{} ({})", t(lang, Translations::INSTALLED), installed_count)),
+                                .child(format!(
+                                    "{} ({})",
+                                    t(lang, Translations::INSTALLED),
+                                    installed_count
+                                )),
                         ),
                 )
                 .child(
@@ -275,7 +291,9 @@ pub(crate) fn render_skills_market_titlebar(
                                         .map(|fh| fh.path().to_path_buf());
                                     let _ = this.update(cx, |this, cx| {
                                         if let Some(path) = path {
-                                            if let Err(err) = this.skills_market.install_from_file(path) {
+                                            if let Err(err) =
+                                                this.skills_market.install_from_file(path)
+                                            {
                                                 this.skills_market.status_text = None;
                                                 this.skills_market.error_text = Some(err);
                                             }
@@ -329,7 +347,8 @@ pub(crate) fn render_skills_market(
 
     let available_w = (main_w - SIDE_PAD * 2.0).max(MIN_CARD_W);
     let cols = (((available_w + GAP) / (MIN_CARD_W + GAP)).floor() as usize).clamp(1, MAX_COLS);
-    let card_w = ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
+    let card_w =
+        ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
     let category_items: Vec<(&'static str, &'static str)> = vec![
         (t(lang, Translations::ALL), "capabilities"),
@@ -342,19 +361,16 @@ pub(crate) fn render_skills_market(
         (t(lang, Translations::SOCIAL), "share"),
     ];
 
-    let render_sidebar = |active_idx: usize, cx: &mut Context<crate::AppState>| {
-        div()
-            .w(px(SIDEBAR_W))
-            .h_full()
-            .border_r_1()
-            .border_color(BORDER_LIGHT())
-            .bg(SURFACE_PANEL())
-            .child(
-                div()
-                    .flex_col()
-                    .gap_1()
-                    .p_4()
-                    .children(category_items.iter().enumerate().map(|(i, (label, icon))| {
+    let render_sidebar =
+        |active_idx: usize, cx: &mut Context<crate::AppState>| {
+            div()
+                .w(px(SIDEBAR_W))
+                .h_full()
+                .border_r_1()
+                .border_color(BORDER_LIGHT())
+                .bg(SURFACE_PANEL())
+                .child(div().flex_col().gap_1().p_4().children(
+                    category_items.iter().enumerate().map(|(i, (label, icon))| {
                         let idx = i;
                         let is_active = i == active_idx;
                         div()
@@ -364,7 +380,9 @@ pub(crate) fn render_skills_market(
                             .px_3()
                             .py_2p5()
                             .rounded_xl()
-                            .when(is_active, |this| this.bg(GHOST_SURFACE_BG()).text_color(BRAND_BLUE()))
+                            .when(is_active, |this| {
+                                this.bg(GHOST_SURFACE_BG()).text_color(BRAND_BLUE())
+                            })
                             .when(!is_active, |this| {
                                 this.text_color(SECONDARY_TEXT())
                                     .hover(|this| this.bg(HOVER_BG()))
@@ -377,16 +395,28 @@ pub(crate) fn render_skills_market(
                                     cx.notify();
                                 }),
                             )
-                            .child(crate::render_icon_element(icon, if is_active { BRAND_BLUE() } else { MUTED_TEXT() }, 14.0))
+                            .child(crate::render_icon_element(
+                                icon,
+                                if is_active {
+                                    BRAND_BLUE()
+                                } else {
+                                    MUTED_TEXT()
+                                },
+                                14.0,
+                            ))
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(if is_active { gpui::FontWeight::BOLD } else { gpui::FontWeight::MEDIUM })
-                                    .child(*label)
+                                    .font_weight(if is_active {
+                                        gpui::FontWeight::BOLD
+                                    } else {
+                                        gpui::FontWeight::MEDIUM
+                                    })
+                                    .child(*label),
                             )
-                    }))
-            )
-    };
+                    }),
+                ))
+        };
 
     let render_card = |title: String, tag: &'static str, description: String, icon: AnyElement| {
         div()
@@ -448,7 +478,7 @@ pub(crate) fn render_skills_market(
                                             .text_color(PRIMARY_TEXT())
                                             .font_weight(gpui::FontWeight::BOLD)
                                             .text_ellipsis()
-                                            .child(title)
+                                            .child(title),
                                     )
                                     .child(
                                         div()
@@ -467,20 +497,15 @@ pub(crate) fn render_skills_market(
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child("v1.0.2")
-                            )
+                            .child(div().text_xs().text_color(MUTED_TEXT()).child("v1.0.2"))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(BRAND_BLUE())
                                     .font_weight(gpui::FontWeight::BOLD)
-                                    .child("Details →")
-                            )
-                                        ),
+                                    .child("Details →"),
+                            ),
+                    ),
             )
     };
 
@@ -522,10 +547,19 @@ pub(crate) fn render_skills_market(
                     .flex_col()
                     .items_center()
                     .gap_4()
-                    .child(crate::render_icon_element("capabilities", MUTED_TEXT(), 32.0))
-                    .child(div().text_sm().text_color(MUTED_TEXT()).child("No capabilities found.")),
+                    .child(crate::render_icon_element(
+                        "capabilities",
+                        MUTED_TEXT(),
+                        32.0,
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(MUTED_TEXT())
+                            .child("No capabilities found."),
+                    ),
             );
-} else {
+        } else {
             let mut i = 0usize;
             while i < cards.len() {
                 let row_items = &cards[i..cards.len().min(i + cols)];
@@ -558,7 +592,12 @@ pub(crate) fn render_skills_market(
                     .items_center()
                     .gap_4()
                     .child(crate::render_icon_element("skill", MUTED_TEXT(), 32.0))
-                    .child(div().text_sm().text_color(MUTED_TEXT()).child(t(lang, Translations::NO_SKILLS))),
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(MUTED_TEXT())
+                            .child(t(lang, Translations::NO_SKILLS)),
+                    ),
             );
         } else {
             let mut i = 0usize;
@@ -569,13 +608,21 @@ pub(crate) fn render_skills_market(
                     let skill_for_click = skill.clone();
                     let icon = crate::render_icon_element("skill", BRAND_BLUE(), 16.0);
                     row = row.child(
-                        render_card(skill.name.clone(), "LOCAL", skill.path.to_string_lossy().to_string(), icon)
-                            .cursor_pointer()
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                        render_card(
+                            skill.name.clone(),
+                            "LOCAL",
+                            skill.path.to_string_lossy().to_string(),
+                            icon,
+                        )
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
                                 this.skills_market.selected = Some(skill_for_click.clone());
                                 this.skills_market.show_detail = true;
                                 cx.notify();
-                            }))
+                            }),
+                        ),
                     );
                 }
                 inner = inner.child(row);
@@ -714,7 +761,13 @@ pub(crate) fn render_skills_market(
                 )
                 .into_any_element();
 
-            return div().relative().flex().flex_1().child(page).child(overlay).into_any_element();
+            return div()
+                .relative()
+                .flex()
+                .flex_1()
+                .child(page)
+                .child(overlay)
+                .into_any_element();
         }
     }
 

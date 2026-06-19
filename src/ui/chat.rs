@@ -1,11 +1,11 @@
 use editor::Editor;
 use gpui::{
-    div, prelude::*, px, relative, svg, Animation, AnimationExt, Context, Focusable,
-    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
-    StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, relative, svg, Animation, AnimationExt, Context, Focusable, FontWeight,
+    Hsla, InteractiveElement, IntoElement, ParentElement, ScrollHandle, StatefulInteractiveElement,
+    Styled, Window,
 };
-use std::time::Duration;
 use menu::Confirm;
+use std::time::Duration;
 
 use crate::agents::types::RequestKind;
 use crate::i18n::{t, Lang, Translations};
@@ -276,11 +276,7 @@ impl AppState {
                         }
                         Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
                         Some("skill-cleaner") => {
-                            this.launch_skill_card(
-                                "system.cleaner",
-                                serde_json::json!({}),
-                                cx,
-                            );
+                            this.launch_skill_card("system.cleaner", serde_json::json!({}), cx);
                         }
                         _ => {}
                     },
@@ -321,7 +317,8 @@ impl AppState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let messages = self.active_task_ref()
+        let messages = self
+            .active_task_ref()
             .map(|t| t.messages.clone())
             .unwrap_or_default();
         let general_ai_live_run_id = self.job_manager.general_ai_run_id.filter(|_| {
@@ -335,7 +332,8 @@ impl AppState {
         let is_user = |role: &str| role == "user";
         let lang = self.current_lang;
 
-        let should_scroll = self.active_task_ref()
+        let should_scroll = self
+            .active_task_ref()
             .map(|t| t.needs_auto_scroll)
             .unwrap_or(false);
         if should_scroll && !messages.is_empty() {
@@ -452,7 +450,7 @@ impl AppState {
                                                     .whitespace_normal()
                                                     .child(text.clone());
                                                 let el = if add_top_padding { el.pt_2() } else { el };
-                                                
+
                                                 let animation_id = format!("msg-{}-part-{}", msg_index, rendered_parts.len());
                                                 rendered_parts.push(
                                                     el.with_animation(
@@ -524,7 +522,7 @@ impl AppState {
                                                                     .text_color(MUTED_TEXT())
                                                                     .child(header_text)
                                                             );
-                                                
+
                                                 let header_any = if !complete {
                                                     header.with_animation(
                                                         format!("thinking-{}", key_for_animation),
@@ -647,14 +645,15 @@ impl AppState {
                             .whitespace_normal()
                             .child(text.clone());
                         let el = if add_top_padding { el.pt_2() } else { el };
-                        
+
                         let animation_id = format!("live-{}-part-{}", run_id, rendered_parts.len());
                         rendered_parts.push(
                             el.with_animation(
                                 animation_id,
                                 Animation::new(Duration::from_millis(300)),
-                                |el, delta| el.opacity(0.5 + delta * 0.5)
-                            ).into_any_element()
+                                |el, delta| el.opacity(0.5 + delta * 0.5),
+                            )
+                            .into_any_element(),
                         );
                     }
                     ContentPart::ProcessTable { processes } => {
@@ -668,7 +667,8 @@ impl AppState {
                         think_index += 1;
                         let complete = *complete;
                         let key = format!("general:{}:think:{}", run_id, current_think_index);
-                        let collapsed = self.active_task_ref()
+                        let collapsed = self
+                            .active_task_ref()
                             .and_then(|t| t.think_collapsed.get(&key).copied())
                             .unwrap_or(false);
                         let header_text = if complete {
@@ -700,7 +700,9 @@ impl AppState {
                                             move |this, _: &gpui::MouseDownEvent, _window, cx| {
                                                 let next = !this
                                                     .active_task_ref()
-                                                    .and_then(|t| t.think_collapsed.get(&key).copied())
+                                                    .and_then(|t| {
+                                                        t.think_collapsed.get(&key).copied()
+                                                    })
                                                     .unwrap_or(false);
                                                 if let Some(task) = this.active_task_mut() {
                                                     task.think_collapsed.insert(key.clone(), next);
@@ -771,7 +773,9 @@ impl AppState {
                             .with_animation(
                                 "live-pulse",
                                 Animation::new(Duration::from_secs(2)).repeat(),
-                                |el, delta| el.opacity(0.5 + gpui::pulsating_between(0.0, 0.5)(delta))
+                                |el, delta| {
+                                    el.opacity(0.5 + gpui::pulsating_between(0.0, 0.5)(delta))
+                                },
                             ),
                     )
                     .child(
@@ -889,11 +893,7 @@ impl AppState {
             )
     }
 
-    fn render_composer(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let composer_key = match lang {
             Lang::Zh => "composer_editor_zh",
@@ -919,160 +919,173 @@ impl AppState {
             t(lang, Translations::SEND)
         };
 
-        div()
-            .flex()
-            .justify_center()
-            .pt_4()
-            .pb_10()
-            .child(
-                div()
-                    .flex_col()
-                    .w_full()
-                    .max_w(px(940.0))
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .rounded_2xl()
-                    .bg(FLOATING_PANEL_BG())
-                    .border_1()
-                    .border_color(BORDER_LIGHT())
-                    .shadow_lg()
-                    // ── 选项按钮（当子代理提问有可选选项时） ──────────
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .gap_3()
-                            .px_4()
-                            .py_3()
-                            .rounded_xl()
-                            .bg(INPUT_BG())
-                            .border_1()
-                            .border_color(BORDER_LIGHT())
-                            .child(
-                                div()
-                                    .size(px(32.0))
-                                    .rounded_full()
-                                    .bg(GHOST_SURFACE_BG())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|this| this.bg(ACTIVE_BG()))
-                                    .cursor_pointer()
-                                    .child(render_icon_element("add", MUTED_TEXT(), 16.0))
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .px_2()
-                                    .pb_1()
-                                    .track_focus(&composer_focus)
-                                    .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
-                                        if this.job_manager.request_in_flight {
-                                            return;
-                                        }
-                                        if let Some(editor) = weak_composer_for_action.upgrade() {
-                                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                            if !text.is_empty() {
-                                                let user_message = text.clone();
-                                                let is_first_message = this.active_task_ref()
-                                                            .map(|t| t.messages.is_empty())
-                                                            .unwrap_or(true);
-                                                        if is_first_message {
-                                                            if let Some(task) = this.active_task_mut() {
-                                                                task.pending_summarize = true;
-                                                            }
-                                                        }
-
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-
-                                                this.route_message(user_message, cx);
+        div().flex().justify_center().pt_4().pb_10().child(
+            div()
+                .flex_col()
+                .w_full()
+                .max_w(px(940.0))
+                .gap_3()
+                .px_4()
+                .py_3()
+                .rounded_2xl()
+                .bg(FLOATING_PANEL_BG())
+                .border_1()
+                .border_color(BORDER_LIGHT())
+                .shadow_lg()
+                // ── 选项按钮（当子代理提问有可选选项时） ──────────
+                .child(
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap_3()
+                        .px_4()
+                        .py_3()
+                        .rounded_xl()
+                        .bg(INPUT_BG())
+                        .border_1()
+                        .border_color(BORDER_LIGHT())
+                        .child(
+                            div()
+                                .size(px(32.0))
+                                .rounded_full()
+                                .bg(GHOST_SURFACE_BG())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|this| this.bg(ACTIVE_BG()))
+                                .cursor_pointer()
+                                .child(render_icon_element("add", MUTED_TEXT(), 16.0)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .px_2()
+                                .pb_1()
+                                .track_focus(&composer_focus)
+                                .on_action(cx.listener(move |this, _: &Confirm, _window, cx| {
+                                    if this.job_manager.request_in_flight {
+                                        return;
+                                    }
+                                    if let Some(editor) = weak_composer_for_action.upgrade() {
+                                        let text = editor
+                                            .read_with(cx, |editor, cx| editor.text(cx))
+                                            .trim()
+                                            .to_string();
+                                        if !text.is_empty() {
+                                            let user_message = text.clone();
+                                            let is_first_message = this
+                                                .active_task_ref()
+                                                .map(|t| t.messages.is_empty())
+                                                .unwrap_or(true);
+                                            if is_first_message {
+                                                if let Some(task) = this.active_task_mut() {
+                                                    task.pending_summarize = true;
+                                                }
                                             }
+
+                                            editor.update(cx, |editor, cx| {
+                                                editor.set_text("", _window, cx);
+                                            });
+
+                                            this.route_message(user_message, cx);
                                         }
-                                    }))
-                                    .child(composer_editor)
-                            )
-                            .child(
-                                div()
-                                    .size(px(32.0))
-                                    .rounded_full()
-                                    .bg(GHOST_SURFACE_BG())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|this| this.bg(ACTIVE_BG()))
-                                    .cursor_pointer()
-                                    .child(render_icon_element("mic", MUTED_TEXT(), 16.0))
-                            )
-                            .child(
-                                div()
-                                    .px_5()
-                                    .py_2()
-                                    .rounded_lg()
-                                    .bg(send_bg)
-                                    .cursor_pointer()
-                                    .hover(|this| this.opacity(0.9))
-                                    .text_color(gpui::white())
-                                    .text_sm()
-                                    .font_weight(FontWeight::BOLD)
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                                        // ── 回答 Claude Code 问题（非 orchestrator 路径） ──
-                                        // ── 运行中 → 停止 ──────────────────────────────
-                                        if this.job_manager.request_in_flight {
-                                            this.cancel_current_run(cx);
-                                            return;
-                                        }
-
-                                        // ── 正常发送 ────────────────────────────────────
-                                        if let Some(editor) = weak_composer.upgrade() {
-                                            let text = editor.read_with(cx, |editor, cx| editor.text(cx)).trim().to_string();
-                                            if !text.is_empty() {
-                                                let user_message = text.clone();
-                                                let is_first_message = this.active_task_ref()
-                                                            .map(|t| t.messages.is_empty())
-                                                            .unwrap_or(true);
-                                                        if is_first_message {
-                                                            if let Some(task) = this.active_task_mut() {
-                                                                task.pending_summarize = true;
-                                                            }
-                                                        }
-
-                                                editor.update(cx, |editor, cx| {
-                                                    editor.set_text("", _window, cx);
-                                                });
-
-                                                this.route_message(user_message, cx);
+                                    }
+                                }))
+                                .child(composer_editor),
+                        )
+                        .child(
+                            div()
+                                .size(px(32.0))
+                                .rounded_full()
+                                .bg(GHOST_SURFACE_BG())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|this| this.bg(ACTIVE_BG()))
+                                .cursor_pointer()
+                                .child(render_icon_element("mic", MUTED_TEXT(), 16.0)),
+                        )
+                        .child(
+                            div()
+                                .px_5()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(send_bg)
+                                .cursor_pointer()
+                                .hover(|this| this.opacity(0.9))
+                                .text_color(gpui::white())
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(
+                                        move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                            // ── 回答 Claude Code 问题（非 orchestrator 路径） ──
+                                            // ── 运行中 → 停止 ──────────────────────────────
+                                            if this.job_manager.request_in_flight {
+                                                this.cancel_current_run(cx);
+                                                return;
                                             }
-                                        }
-                                    }))
-                                    .child(send_label)
-                            )
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_3()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(MUTED_TEXT())
-                                    .child(format!("{} · {}", self.model_name, t(lang, Translations::EXPLORER)))
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if request_in_flight { BRAND_BLUE() } else { SECONDARY_TEXT() })
-                                    .child(if request_in_flight {
-                                        self.job_manager.request_status_text.clone().unwrap_or_else(|| t(lang, Translations::AI_IS_THINKING).to_string())
-                                    } else {
-                                        format!("{} · Active", self.model_name)
-                                    })
-                            )
-                    )
-            )
+
+                                            // ── 正常发送 ────────────────────────────────────
+                                            if let Some(editor) = weak_composer.upgrade() {
+                                                let text = editor
+                                                    .read_with(cx, |editor, cx| editor.text(cx))
+                                                    .trim()
+                                                    .to_string();
+                                                if !text.is_empty() {
+                                                    let user_message = text.clone();
+                                                    let is_first_message = this
+                                                        .active_task_ref()
+                                                        .map(|t| t.messages.is_empty())
+                                                        .unwrap_or(true);
+                                                    if is_first_message {
+                                                        if let Some(task) = this.active_task_mut() {
+                                                            task.pending_summarize = true;
+                                                        }
+                                                    }
+
+                                                    editor.update(cx, |editor, cx| {
+                                                        editor.set_text("", _window, cx);
+                                                    });
+
+                                                    this.route_message(user_message, cx);
+                                                }
+                                            }
+                                        },
+                                    ),
+                                )
+                                .child(send_label),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_3()
+                        .child(div().text_xs().text_color(MUTED_TEXT()).child(format!(
+                            "{} · {}",
+                            self.model_name,
+                            t(lang, Translations::EXPLORER)
+                        )))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if request_in_flight {
+                                    BRAND_BLUE()
+                                } else {
+                                    SECONDARY_TEXT()
+                                })
+                                .child(if request_in_flight {
+                                    self.job_manager.request_status_text.clone().unwrap_or_else(
+                                        || t(lang, Translations::AI_IS_THINKING).to_string(),
+                                    )
+                                } else {
+                                    format!("{} · Active", self.model_name)
+                                }),
+                        ),
+                ),
+        )
     }
 }

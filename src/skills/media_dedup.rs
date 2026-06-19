@@ -106,10 +106,7 @@ impl MediaDedupSkill {
         out
     }
 
-    fn pick_keeper<'a>(
-        group: &'a [(PathBuf, u64)],
-        strategy: &str,
-    ) -> &'a (PathBuf, u64) {
+    fn pick_keeper<'a>(group: &'a [(PathBuf, u64)], strategy: &str) -> &'a (PathBuf, u64) {
         match strategy {
             "shortest_path" => group
                 .iter()
@@ -218,8 +215,10 @@ impl Skill for MediaDedupSkill {
             items,
             estimated_bytes: total_redundant,
             warnings: vec![
-                "采用 size + 首 64KB 哈希做近似识别，碰撞概率虽低但不为零；删除前请抽查样例。".to_string(),
-                "默认保留最旧文件，可通过 keep_strategy=oldest|newest|shortest_path 调整。".to_string(),
+                "采用 size + 首 64KB 哈希做近似识别，碰撞概率虽低但不为零；删除前请抽查样例。"
+                    .to_string(),
+                "默认保留最旧文件，可通过 keep_strategy=oldest|newest|shortest_path 调整。"
+                    .to_string(),
             ],
         })
     }
@@ -258,7 +257,10 @@ impl Skill for MediaDedupSkill {
             groups.len(),
             strategy
         );
-        match permission().request_async(ToolKind::File, detail, _source).await {
+        match permission()
+            .request_async(ToolKind::File, detail, _source)
+            .await
+        {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

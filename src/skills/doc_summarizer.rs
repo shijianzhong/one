@@ -25,7 +25,19 @@ impl DocSummarizerSkill {
     fn supported_ext(ext: &str) -> bool {
         matches!(
             ext.to_ascii_lowercase().as_str(),
-            "txt" | "md" | "markdown" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts"
+            "txt"
+                | "md"
+                | "markdown"
+                | "log"
+                | "csv"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "rs"
+                | "py"
+                | "js"
+                | "ts"
         )
     }
 
@@ -166,7 +178,10 @@ impl Skill for DocSummarizerSkill {
         ));
         let detail = format!("doc.summarizer 即将写入摘要到：{}", dest.display());
 
-        match permission().request_async(ToolKind::File, detail, _source).await {
+        match permission()
+            .request_async(ToolKind::File, detail, _source)
+            .await
+        {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
                 return Ok(SkillExecution {

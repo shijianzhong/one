@@ -5,8 +5,8 @@
 pub mod mappings;
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
@@ -36,9 +36,15 @@ struct TermSize {
 }
 
 impl Dimensions for TermSize {
-    fn columns(&self) -> usize { self.cols }
-    fn screen_lines(&self) -> usize { self.rows }
-    fn total_lines(&self) -> usize { self.rows * 2 }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn total_lines(&self) -> usize {
+        self.rows * 2
+    }
 }
 
 impl From<&TermSize> for alacritty_terminal::event::WindowSize {
@@ -95,7 +101,9 @@ impl TerminalEmulator {
         let term = Term::new(
             alacritty_terminal::term::Config::default(),
             &size,
-            TerminalListener { tx: event_tx.clone() },
+            TerminalListener {
+                tx: event_tx.clone(),
+            },
         );
         let term = Arc::new(FairMutex::new(term));
 
@@ -103,13 +111,15 @@ impl TerminalEmulator {
             shell: shell.map(|s| Shell::new(s.to_string(), Vec::new())),
             working_directory: working_dir.map(|p| p.to_path_buf()),
             drain_on_exit: false,
-            env: std::collections::HashMap::from([
-                ("PWD".to_string(), working_dir.map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
-            ]),
+            env: std::collections::HashMap::from([(
+                "PWD".to_string(),
+                working_dir
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            )]),
         };
 
-        let pty = tty::new(&pty_config, (&size).into(), 0)
-            .context("Failed to create PTY")?;
+        let pty = tty::new(&pty_config, (&size).into(), 0).context("Failed to create PTY")?;
 
         let event_loop = alacritty_terminal::event_loop::EventLoop::new(
             term.clone(),
@@ -117,7 +127,8 @@ impl TerminalEmulator {
             pty,
             false,
             false,
-        ).context("Failed to create event loop")?;
+        )
+        .context("Failed to create event loop")?;
 
         let channel = event_loop.channel();
 
@@ -148,9 +159,14 @@ impl TerminalEmulator {
             for col_idx in 0..self.cols {
                 let point = Point::new(Line(line_idx), Column(col_idx));
                 let cell = &grid[point];
-                let is_cursor = cursor_point.line == point.line && cursor_point.column == point.column;
+                let is_cursor =
+                    cursor_point.line == point.line && cursor_point.column == point.column;
                 let has_bg = cell.bg != Color::Named(NamedColor::Background);
-                chars.push(RenderChar { c: cell.c, is_cursor, has_bg });
+                chars.push(RenderChar {
+                    c: cell.c,
+                    is_cursor,
+                    has_bg,
+                });
             }
             lines.push(RenderLine { chars });
         }
@@ -196,6 +212,10 @@ impl TerminalEmulator {
         }
     }
 
-    pub fn columns(&self) -> usize { self.cols }
-    pub fn rows(&self) -> usize { self.rows }
+    pub fn columns(&self) -> usize {
+        self.cols
+    }
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
 }

@@ -937,7 +937,11 @@ impl AppState {
     /// 初始化 MCP 客户端连接
     pub(crate) fn init_mcp(&mut self, cx: &mut Context<Self>) {
         // 初始化 ToolRegistry（含所有已注册 Skill 工具）
-        crate::agents::core::tool_registry::init_tool_registry();
+        let workspace_name = self
+            .get_active_workspace()
+            .map(|w| w.name.as_str())
+            .unwrap_or("Default");
+        crate::agents::core::tool_registry::init_tool_registry(workspace_name);
 
         let config = match crate::mcp::config::McpConfig::load_default() {
             Ok(c) => c,

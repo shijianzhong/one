@@ -46,7 +46,12 @@ impl ToolRegistry {
     // ── 注册 ────────────────────────────────────────────────────────────────────
 
     pub fn register_builtin(&mut self, tool: Arc<dyn Tool>) {
-        self.builtin_tools.push(tool);
+        let name = tool.name().to_string();
+        if let Some(pos) = self.builtin_tools.iter().position(|t| t.name() == name) {
+            self.builtin_tools[pos] = tool;
+        } else {
+            self.builtin_tools.push(tool);
+        }
     }
 
     pub fn register_skill(&mut self, skill: SkillToolRegistration) {
@@ -131,6 +136,44 @@ impl ToolRegistry {
         defs
     }
 
+    pub fn tool_sources(&self, agent_filter: Option<&[String]>) -> Vec<ToolSource> {
+        let mut sources = Vec::new();
+
+        for tool in &self.builtin_tools {
+            if let Some(filter) = agent_filter {
+                if !filter.contains(&tool.name().to_string()) {
+                    continue;
+                }
+            }
+            sources.push(ToolSource::Builtin(tool.clone()));
+        }
+
+        for skill in &self.skill_tools {
+            let full_name = format!("skill:{}", skill.skill_id);
+            if let Some(filter) = agent_filter {
+                if !filter.contains(&full_name) && !filter.contains(&skill.skill_id) {
+                    continue;
+                }
+            }
+            sources.push(ToolSource::Skill(skill.skill_id.clone()));
+        }
+
+        for mcp in &self.mcp_tools {
+            let full_name = format!("mcp:{}:{}", mcp.server_name, mcp.tool_name);
+            if let Some(filter) = agent_filter {
+                if !filter.contains(&full_name) {
+                    continue;
+                }
+            }
+            sources.push(ToolSource::Mcp {
+                server: mcp.server_name.clone(),
+                tool_name: mcp.tool_name.clone(),
+            });
+        }
+
+        sources
+    }
+
     pub(crate) fn builtin_tools(&self) -> &[Arc<dyn Tool>] {
         &self.builtin_tools
     }
@@ -145,6 +188,11 @@ impl ToolRegistry {
 
     pub fn clear_mcp_tools(&mut self) {
         self.mcp_tools.clear();
+    }
+
+    pub fn reset_non_mcp(&mut self) {
+        self.builtin_tools.clear();
+        self.skill_tools.clear();
     }
 
     // ── 执行 ────────────────────────────────────────────────────────────────────
@@ -251,9 +299,17 @@ pub fn tool_registry() -> &'static std::sync::Mutex<ToolRegistry> {
     REGISTRY.get_or_init(|| std::sync::Mutex::new(ToolRegistry::new()))
 }
 
-/// 初始化 ToolRegistry 并注册所有 Builtin 工具和 Skill 工具
-pub fn init_tool_registry() {
+/// 初始化 ToolRegistry 并注册所有 Builtin 工具和 Skill 工具。
+///
+/// Builtin tools may capture workspace-specific context, so callers should run
+/// this when creating an orchestrator for a workspace.
+pub fn init_tool_registry(workspace: &str) {
     let mut registry = tool_registry().lock().expect("ToolRegistry lock");
+    registry.reset_non_mcp();
+
+    for tool in crate::agents::core::builtin_tools::tools_for_workspace(workspace) {
+        registry.register_builtin(tool);
+    }
 
     for manifest in crate::skills::registry().manifests() {
         registry.register_skill(SkillToolRegistration {

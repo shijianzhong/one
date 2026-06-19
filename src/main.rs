@@ -8,29 +8,29 @@ use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 
 mod agents;
 mod app_state;
-mod runtime;
 mod assets;
 mod i18n;
 mod mcp;
 mod memory;
 mod routing;
 mod run_log;
+mod runtime;
 mod sandbox;
 mod services;
-mod skills_market;
 mod skills;
+mod skills_market;
 mod task_db;
 mod terminal_emulator;
 mod triggers;
+mod ui;
 pub(crate) mod ui_theme;
 mod util;
 mod workspace;
-mod ui;
 
-pub(crate) use app_state::{AppState, MainView, TerminalLine, ToastInfo, ToastLevel};
 pub(crate) use agents::types::RequestKind;
-pub(crate) use ui::*;
+pub(crate) use app_state::{AppState, MainView, TerminalLine, ToastInfo, ToastLevel};
 use services::load_config;
+pub(crate) use ui::*;
 
 pub(crate) use ui_theme::{
     ACCENT_TEXT, BORDER_LIGHT, BRAND_BLUE, CANVAS_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,

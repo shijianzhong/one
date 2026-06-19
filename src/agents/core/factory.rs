@@ -2,8 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::main_agent::MainAgent;
-use super::orchestrator::Orchestrator;
+use super::{tool_registry, MainAgent, Orchestrator};
 use crate::mcp::McpClientManager;
 use crate::services::config::Config;
 
@@ -16,10 +15,8 @@ impl AgentFactory {
         work_dir: PathBuf,
         mcp_manager: Option<Arc<std::sync::Mutex<McpClientManager>>>,
     ) -> Result<Orchestrator> {
-        // MainAgent is the sole agent. It handles all conversation, memory, and
-        // system/skill dispatch via its built-in tools. Specialized agents
-        // (coding, system) have been removed — their capabilities are provided
-        // through the Skill Market instead.
+        tool_registry::init_tool_registry(workspace_name);
+
         let main_agent = Arc::new(MainAgent::with_workspace(
             config.model_name.clone(),
             config.model_base_url.clone(),

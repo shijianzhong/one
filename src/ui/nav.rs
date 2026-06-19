@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use gpui::{
     div, prelude::*, px, svg, AnyElement, Context, FontWeight, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled, Window,
 };
+use std::collections::HashMap;
 
 use crate::i18n::{t, Lang, Translations};
 use crate::task_db;
@@ -25,18 +25,12 @@ impl AppState {
         let active_workspace_id = self.active_workspace_id;
         let active_task_id = self.active_task_id;
 
-        let mut result = div()
-            .flex()
-            .flex_col()
-            .px_4()
-            .pb_3()
-            .gap_3()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
-                    this.delete_confirm_workspace_id = None;
-                }),
-            );
+        let mut result = div().flex().flex_col().px_4().pb_3().gap_3().on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this, _: &gpui::MouseDownEvent, _window, _cx| {
+                this.delete_confirm_workspace_id = None;
+            }),
+        );
 
         for workspace in workspaces {
             let is_active_ws = active_workspace_id == Some(workspace.id);
@@ -456,10 +450,7 @@ impl AppState {
             .child(div().flex_none().child(self.render_nav_footer_actions(cx)))
     }
 
-    pub(crate) fn render_titlebar_leading(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(crate) fn render_titlebar_leading(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let theme_mode = get_theme_mode();
         let theme_label = match (lang, theme_mode) {
@@ -728,10 +719,8 @@ impl AppState {
             .id(format!("nav-footer-{}", icon_key))
             .hover(|this| this.opacity(1.0).bg(HOVER_BG()))
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::HeaderTooltip {
-                    text: tip.clone(),
-                })
-                .into()
+                cx.new(|_| crate::HeaderTooltip { text: tip.clone() })
+                    .into()
             })
             .child(self.make_icon_slot(icon_key, false))
             .child(
@@ -751,20 +740,16 @@ impl AppState {
             .gap_1()
             .px_4()
             .py_3()
-            .child(
-                self.make_footer_action_item(
-                    t(lang, Translations::SETTINGS).to_string(),
-                    "settings",
-                    cx,
-                ),
-            )
-            .child(
-                self.make_footer_action_item(
-                    t(lang, Translations::SUPPORT).to_string(),
-                    "support",
-                    cx,
-                ),
-            )
+            .child(self.make_footer_action_item(
+                t(lang, Translations::SETTINGS).to_string(),
+                "settings",
+                cx,
+            ))
+            .child(self.make_footer_action_item(
+                t(lang, Translations::SUPPORT).to_string(),
+                "support",
+                cx,
+            ))
             .child(div().h(px(40.0)))
     }
 
@@ -794,12 +779,7 @@ impl AppState {
                     .text_ellipsis()
                     .child("暗号"),
             )
-            .child(
-                div()
-                    .w(px(12.0))
-                    .text_xs()
-                    .text_color(MUTED_TEXT()),
-            )
+            .child(div().w(px(12.0)).text_xs().text_color(MUTED_TEXT()))
     }
 
     fn make_icon_slot(&mut self, icon_key: &'static str, active: bool) -> impl IntoElement {

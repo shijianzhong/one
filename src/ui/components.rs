@@ -1,13 +1,13 @@
-use gpui::{
-    div, prelude::FluentBuilder, px, svg, AnyElement, Context, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window,
-};
 use crate::ui_theme::{
     BORDER_LIGHT, BRAND_BLUE, CODE_BG, ERROR_TEXT, GHOST_SURFACE_BG, HOVER_BG, MUTED_TEXT,
     PRIMARY_TEXT, SECONDARY_TEXT,
 };
 use crate::{CANVAS_BG, SURFACE_ELEVATED, SURFACE_PANEL};
+use gpui::{
+    div, prelude::FluentBuilder, px, svg, AnyElement, Context, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
+    Window,
+};
 
 pub use crate::agents::types::ProcessDisplayInfo;
 

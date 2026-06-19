@@ -59,11 +59,9 @@ pub fn parse_command(text: &str) -> TriggerCommand {
             let limit = rest.parse::<usize>().unwrap_or(10).clamp(1, 50);
             TriggerCommand::Audit { limit }
         }
-        "/workspace" => {
-            TriggerCommand::Workspace {
-                name: rest.to_string(),
-            }
-        }
+        "/workspace" => TriggerCommand::Workspace {
+            name: rest.to_string(),
+        },
         "/workspaces" => TriggerCommand::ListWorkspaces,
         "/status" => TriggerCommand::Status,
         "/tasks" => TriggerCommand::ListRemoteTasks,
@@ -107,15 +105,9 @@ pub async fn dispatch(text: &str) -> TriggerReply {
             let workspaces = list_workspaces_text();
             TriggerReply::new(workspaces)
         }
-        TriggerCommand::Status => {
-            TriggerReply::new(status_text())
-        }
-        TriggerCommand::ListRemoteTasks => {
-            TriggerReply::new(list_remote_tasks_text())
-        }
-        TriggerCommand::ClearTask => {
-            TriggerReply::new("远程任务已清除。".to_string())
-        }
+        TriggerCommand::Status => TriggerReply::new(status_text()),
+        TriggerCommand::ListRemoteTasks => TriggerReply::new(list_remote_tasks_text()),
+        TriggerCommand::ClearTask => TriggerReply::new("远程任务已清除。".to_string()),
         TriggerCommand::Chat(t) => {
             // 由 telegram.rs 拦截非命令消息直接走 Orchestrator 路径，
             // 此分支仅作为后备，通常不会命中。
@@ -180,9 +172,7 @@ fn list_workspaces_text() -> String {
     if !db_path.exists() {
         return "暂无 workspace".to_string();
     }
-    let conn = sqlez::connection::Connection::open_file(
-        db_path.to_str().unwrap_or("one.db"),
-    );
+    let conn = sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     match crate::task_db::load_workspaces(&conn) {
         Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
         Ok(rows) => {
@@ -205,9 +195,7 @@ fn status_text() -> String {
     if !db_path.exists() {
         return "暂无状态信息（数据库不存在）".to_string();
     }
-    let conn = sqlez::connection::Connection::open_file(
-        db_path.to_str().unwrap_or("one.db"),
-    );
+    let conn = sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     match crate::task_db::load_workspaces(&conn) {
         Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
         Ok(rows) => {
@@ -216,10 +204,7 @@ fn status_text() -> String {
                 let task_count = crate::task_db::load_remote_tasks(&conn, w.id)
                     .map(|t| t.len())
                     .unwrap_or(0);
-                out.push_str(&format!(
-                    "• {} — {} 个任务\n",
-                    w.name, task_count
-                ));
+                out.push_str(&format!("• {} — {} 个任务\n", w.name, task_count));
             }
             out
         }
@@ -237,9 +222,7 @@ fn list_remote_tasks_text() -> String {
     if !db_path.exists() {
         return "暂无任务（数据库不存在）".to_string();
     }
-    let conn = sqlez::connection::Connection::open_file(
-        db_path.to_str().unwrap_or("one.db"),
-    );
+    let conn = sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     match crate::task_db::load_workspaces(&conn) {
         Ok(rows) if rows.is_empty() => "暂无 workspace".to_string(),
         Ok(rows) => {
@@ -251,7 +234,11 @@ fn list_remote_tasks_text() -> String {
                 }
                 out.push_str(&format!("\n【{}】\n", w.name));
                 for t in tasks.iter().take(10) {
-                    let title = if t.title.is_empty() { "（无标题）" } else { &t.title };
+                    let title = if t.title.is_empty() {
+                        "（无标题）"
+                    } else {
+                        &t.title
+                    };
                     out.push_str(&format!("  • #{} — {}\n", t.id, title));
                 }
                 if tasks.len() > 10 {
@@ -278,7 +265,10 @@ async fn preview_skill(id: &str, args: Value) -> String {
         Ok(p) => {
             let mut out = format!("[preview] {}\n{}\n", id, p.summary);
             for it in p.items.iter().take(10) {
-                out.push_str(&format!("• {} | {} | {} 字节\n", it.label, it.detail, it.bytes));
+                out.push_str(&format!(
+                    "• {} | {} | {} 字节\n",
+                    it.label, it.detail, it.bytes
+                ));
             }
             if !p.warnings.is_empty() {
                 out.push_str("\n⚠ ");
@@ -352,7 +342,10 @@ fn audit_text(limit: usize) -> String {
             for r in rows {
                 out.push_str(&format!(
                     "[{}] run#{} {} {}\n",
-                    r.created_at, r.run_id, r.kind, short_label(&r.payload)
+                    r.created_at,
+                    r.run_id,
+                    r.kind,
+                    short_label(&r.payload)
                 ));
             }
             out

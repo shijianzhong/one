@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
-
-use crate::skills::SkillExecution;
 
 // ── ToolSource ──────────────────────────────────────────────────────────────────
 
@@ -15,39 +13,15 @@ pub enum ToolSource {
     /// 内置 Rust 工具（remember/recall 等）
     Builtin(Arc<dyn crate::agents::core::Tool>),
     /// 注册的 Skill（来自 SkillRegistry）
-    Skill(String),  // skill_id
+    Skill(String), // skill_id
     /// 通过 MCP 发现的外部工具
     Mcp { server: String, tool_name: String },
 }
 
 impl std::fmt::Debug for dyn crate::agents::core::Tool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolTrait").field("name", &self.name()).finish()
+        f.debug_struct("Tool").field("name", &self.name()).finish()
     }
-}
-
-// ── ToolResult ──────────────────────────────────────────────────────────────────
-
-/// 统一的工具路由结果
-#[derive(Debug, Clone)]
-pub enum ToolResult {
-    /// 内置工具直接返回
-    Builtin(Value),
-    /// Skill 执行结果
-    Skill(SkillExecution),
-    /// MCP 调用结果
-    Mcp(Value),
-}
-
-// ── ToolTrait（与现有 Tool 区分） ───────────────────────────────────────────────
-
-/// 工具 trait（用于 ToolRegistry 注册，与旧 Tool 兼容）
-#[async_trait]
-pub trait ToolTrait: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters_schema(&self) -> Value;
-    async fn call(&self, arguments: Value) -> anyhow::Result<Value>;
 }
 
 // ── ToolDefinition（LLM tool calling 格式） ─────────────────────────────────────
@@ -60,6 +34,32 @@ pub struct ToolDefinition {
     pub input_schema: Value,
 }
 
+impl ToolDefinition {
+    pub fn as_openai_tool(&self) -> Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum AgentResponse {
+    Answer(String),
+    ToolCalls(Vec<ToolCall>, String),
+}
+
 // ── AgentRunContext ─────────────────────────────────────────────────────────────
 
 /// Agent 运行时的完整上下文
@@ -69,6 +69,8 @@ pub struct AgentRunContext {
     pub metadata: std::collections::HashMap<String, String>,
     /// 可用的工具来源列表
     pub tool_sources: Vec<ToolSource>,
+    /// 格式化后的 LLM tool definitions，来自 ToolRegistry + Agent filter。
+    pub tool_definitions: Vec<ToolDefinition>,
     /// 取消标志
     pub cancel_flag: Option<Arc<AtomicBool>>,
     /// 用户输入通道（支持多轮交互）
@@ -82,6 +84,7 @@ impl AgentRunContext {
             history: Vec::new(),
             metadata: std::collections::HashMap::new(),
             tool_sources: Vec::new(),
+            tool_definitions: Vec::new(),
             cancel_flag: None,
             user_input_rx: None,
         }
@@ -92,7 +95,7 @@ impl AgentRunContext {
     }
 }
 
-// ── AgentTrait（新抽象基类，与旧 Agent 区分） ──────────────────────────────────
+// ── AgentTrait ─────────────────────────────────────────────────────────────────
 
 /// Agent 抽象基类。所有 Agent 类型实现此 trait。
 ///
@@ -102,9 +105,6 @@ impl AgentRunContext {
 ///
 /// Agent **不持有工具**，工具通过 ToolRegistry 在运行时注入。
 ///
-/// 注意：这是新设计的抽象基类，与旧 `mod.rs` 中的 `Agent` trait 不同名。
-/// 旧 `Agent` trait 是 `CoreAgent`，用于 `MainAgent` 当前的 step_stream 实现。
-/// 新 `AgentTrait` 是逐步替换的目标。
 #[async_trait]
 pub trait AgentTrait: Send + Sync {
     /// Agent 唯一标识
@@ -113,6 +113,9 @@ pub trait AgentTrait: Send + Sync {
     fn name(&self) -> &str;
     /// Agent 的灵魂/人格设定
     fn soul_prompt(&self) -> &str;
+    fn model(&self) -> &str;
+    fn api_base(&self) -> &str;
+    fn api_key(&self) -> &str;
 
     /// 获取该 Agent 专属的工具过滤条件。
     /// 返回 `Some(list)` 时，只保留列表中命名的工具。
@@ -124,16 +127,68 @@ pub trait AgentTrait: Send + Sync {
     /// 生成最终的 system prompt。
     /// 框架自动拼接 soul + 可用工具描述 + 记忆上下文。
     fn build_system_prompt(&self, tool_descriptions: &str) -> String {
-        format!("{}\n\n## 可用工具\n\n{}", self.soul_prompt(), tool_descriptions)
+        format!(
+            "{}\n\n## 可用工具\n\n{}",
+            self.soul_prompt(),
+            tool_descriptions
+        )
     }
-}
 
-// ── AgentBuilder ────────────────────────────────────────────────────────────────
+    async fn step_stream(
+        &self,
+        context: &mut AgentRunContext,
+        on_delta: Box<dyn FnMut(String) + Send>,
+    ) -> anyhow::Result<AgentResponse> {
+        let tool_descriptions =
+            crate::agents::core::tool_registry::format_tool_descriptions(&context.tool_definitions);
+        let mut messages = vec![crate::memory::types::ChatMessage::new(
+            "system",
+            &self.build_system_prompt(&tool_descriptions),
+        )];
+        messages.extend(context.history.clone());
 
-/// Agent 构建器 trait。每个 Agent 类型注册一个构建器到 AgentRegistry。
-#[async_trait]
-pub trait AgentBuilder: Send + Sync {
-    fn agent_id(&self) -> &str;
-    fn agent_name(&self) -> &str;
-    fn build(&self, config: &crate::services::Config, workspace: &str) -> Box<dyn AgentTrait>;
+        let tools: Vec<Value> = context
+            .tool_definitions
+            .iter()
+            .map(ToolDefinition::as_openai_tool)
+            .collect();
+        let tool_defs_opt = if tools.is_empty() {
+            None
+        } else {
+            Some(&tools[..])
+        };
+
+        let response = crate::services::api::call_chat_api_stream(
+            self.api_base(),
+            self.api_key(),
+            self.model(),
+            &messages,
+            tool_defs_opt,
+            on_delta,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+        if let Some(tool_calls) = response.get("tool_calls").and_then(|v| v.as_array()) {
+            let calls = tool_calls
+                .iter()
+                .map(|tc| ToolCall {
+                    id: tc["id"].as_str().unwrap_or_default().to_string(),
+                    name: tc["function"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: tc["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+                .collect();
+            let thinking = response["content"].as_str().unwrap_or_default().to_string();
+            Ok(AgentResponse::ToolCalls(calls, thinking))
+        } else {
+            let content = response["content"].as_str().unwrap_or_default().to_string();
+            Ok(AgentResponse::Answer(content))
+        }
+    }
 }

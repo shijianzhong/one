@@ -149,7 +149,9 @@ impl Skill for SystemCleanerSkill {
             summary,
             items,
             estimated_bytes: total,
-            warnings: vec!["将仅删除目录内文件，不会删除目录本身。Caches 与废纸篓清理不可恢复。".to_string()],
+            warnings: vec![
+                "将仅删除目录内文件，不会删除目录本身。Caches 与废纸篓清理不可恢复。".to_string(),
+            ],
         })
     }
 

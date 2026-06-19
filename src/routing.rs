@@ -60,9 +60,10 @@ impl AppState {
             }
             RoutingDecision::GeneralAI { .. } => {
                 eprintln!("[ROUTER] Routing to General AI (via Orchestrator)");
-                let last_msg = self.active_task_ref()
-                .and_then(|t| t.messages.last().map(|m| m.content.clone()))
-                .unwrap_or_default();
+                let last_msg = self
+                    .active_task_ref()
+                    .and_then(|t| t.messages.last().map(|m| m.content.clone()))
+                    .unwrap_or_default();
                 self.spawn_orchestrator_run(last_msg, cx);
             }
         }

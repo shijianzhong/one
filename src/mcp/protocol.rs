@@ -121,9 +121,7 @@ pub enum McpContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "resource")]
-    Resource {
-        resource: McpResourceContents,
-    },
+    Resource { resource: McpResourceContents },
 }
 
 /// MCP 资源内容
@@ -219,7 +217,8 @@ impl RequestIdGenerator {
 
     /// 生成下一个唯一 ID
     pub fn next(&self) -> u64 {
-        self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 

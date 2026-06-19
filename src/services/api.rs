@@ -124,9 +124,20 @@ where
         let content_str = msg["content"].as_str().unwrap_or("");
         let content_preview = content_str;
         let has_tools = msg.get("tool_calls").is_some();
-        eprintln!("  [{}] role={} content={}{}", i, role, content_preview, if has_tools { " [has tool_calls]" } else { "" });
+        eprintln!(
+            "  [{}] role={} content={}{}",
+            i,
+            role,
+            content_preview,
+            if has_tools { " [has tool_calls]" } else { "" }
+        );
     }
-    eprintln!("Tools: {}", tools.map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_else(|| "none".to_string()));
+    eprintln!(
+        "Tools: {}",
+        tools
+            .map(|t| serde_json::to_string(t).unwrap_or_default())
+            .unwrap_or_else(|| "none".to_string())
+    );
     eprintln!("================================\n");
     let response = client
         .post(&url)
@@ -144,7 +155,8 @@ where
     }
 
     let mut full_text = String::new();
-    let mut tool_calls_map: std::collections::HashMap<i32, serde_json::Value> = std::collections::HashMap::new();
+    let mut tool_calls_map: std::collections::HashMap<i32, serde_json::Value> =
+        std::collections::HashMap::new();
 
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
@@ -185,14 +197,18 @@ where
                             on_delta(content.to_string());
                         }
 
-                        if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        if let Some(tool_calls) =
+                            delta.get("tool_calls").and_then(|tc| tc.as_array())
+                        {
                             for tc in tool_calls {
-                                let index = tc.get("index").and_then(|i| i.as_i64()).unwrap_or(0) as i32;
-                                let entry = tool_calls_map.entry(index).or_insert(serde_json::json!({
-                                    "id": "",
-                                    "type": "function",
-                                    "function": { "name": "", "arguments": "" }
-                                }));
+                                let index =
+                                    tc.get("index").and_then(|i| i.as_i64()).unwrap_or(0) as i32;
+                                let entry =
+                                    tool_calls_map.entry(index).or_insert(serde_json::json!({
+                                        "id": "",
+                                        "type": "function",
+                                        "function": { "name": "", "arguments": "" }
+                                    }));
 
                                 if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
                                     entry["id"] = serde_json::json!(id);
@@ -201,9 +217,13 @@ where
                                     if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
                                         entry["function"]["name"] = serde_json::json!(name);
                                     }
-                                    if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
-                                        let current_args = entry["function"]["arguments"].as_str().unwrap_or("");
-                                        entry["function"]["arguments"] = serde_json::json!(format!("{}{}", current_args, args));
+                                    if let Some(args) =
+                                        func.get("arguments").and_then(|v| v.as_str())
+                                    {
+                                        let current_args =
+                                            entry["function"]["arguments"].as_str().unwrap_or("");
+                                        entry["function"]["arguments"] =
+                                            serde_json::json!(format!("{}{}", current_args, args));
                                     }
                                 }
                             }
@@ -215,12 +235,19 @@ where
     }
 
     if !tool_calls_map.is_empty() {
-        let tool_calls: Vec<serde_json::Value> = tool_calls_map.into_iter().map(|(_, v)| v).collect();
+        let tool_calls: Vec<serde_json::Value> =
+            tool_calls_map.into_iter().map(|(_, v)| v).collect();
         eprintln!("\n========== LLM RESPONSE (with tool calls) ==========");
         let preview_len = std::cmp::min(500, full_text.len());
-        let preview_end = (0..=preview_len).rev().find(|&i| full_text.is_char_boundary(i)).unwrap_or(0);
+        let preview_end = (0..=preview_len)
+            .rev()
+            .find(|&i| full_text.is_char_boundary(i))
+            .unwrap_or(0);
         eprintln!("Content (first 500): {}", &full_text[..preview_end]);
-        eprintln!("Tool calls: {}", serde_json::to_string_pretty(&tool_calls).unwrap_or_default());
+        eprintln!(
+            "Tool calls: {}",
+            serde_json::to_string_pretty(&tool_calls).unwrap_or_default()
+        );
         eprintln!("===================================================\n");
         return Ok(serde_json::json!({
             "role": "assistant",
@@ -231,7 +258,10 @@ where
 
     eprintln!("\n========== LLM RESPONSE ==========");
     let preview_len = std::cmp::min(1000, full_text.len());
-    let preview_end = (0..=preview_len).rev().find(|&i| full_text.is_char_boundary(i)).unwrap_or(0);
+    let preview_end = (0..=preview_len)
+        .rev()
+        .find(|&i| full_text.is_char_boundary(i))
+        .unwrap_or(0);
     eprintln!("{}", &full_text[..preview_end]);
     eprintln!("==================================\n");
 

@@ -77,8 +77,12 @@ pub fn submit_proposal(rationale: String, new_content: String) -> Option<u64> {
     let mut q = queue().lock().ok()?;
     q.next_id = q.next_id.wrapping_add(1);
     let id = q.next_id;
-    q.pending
-        .push(SoulProposal::new(id, rationale, new_content, previous_content));
+    q.pending.push(SoulProposal::new(
+        id,
+        rationale,
+        new_content,
+        previous_content,
+    ));
     soul_notify().notify_one();
     Some(id)
 }

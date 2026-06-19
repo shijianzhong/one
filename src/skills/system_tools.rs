@@ -39,17 +39,21 @@ impl SystemToolsSkill {
         match args.tool.as_deref() {
             Some("list_processes") | None => Ok(system_tools::Tool::ListProcesses),
 
-            Some("top_memory_procs") => Ok(system_tools::Tool::TopMemoryProcs(
-                args.count.unwrap_or(10),
-            )),
+            Some("top_memory_procs") => {
+                Ok(system_tools::Tool::TopMemoryProcs(args.count.unwrap_or(10)))
+            }
 
             Some("kill_process") => {
-                let pid = args.pid.ok_or_else(|| "kill_process 需要 pid 参数".to_string())?;
+                let pid = args
+                    .pid
+                    .ok_or_else(|| "kill_process 需要 pid 参数".to_string())?;
                 Ok(system_tools::Tool::KillProcess(pid))
             }
 
             Some("get_process_detail") => {
-                let pid = args.pid.ok_or_else(|| "get_process_detail 需要 pid 参数".to_string())?;
+                let pid = args
+                    .pid
+                    .ok_or_else(|| "get_process_detail 需要 pid 参数".to_string())?;
                 Ok(system_tools::Tool::GetProcessDetail(pid))
             }
 
@@ -113,11 +117,7 @@ impl SystemToolsSkill {
                 "获取指定 PID 的进程详细信息".into(),
                 false,
             ),
-            "disk_usage" => (
-                "disk_usage".into(),
-                "查看指定路径的磁盘占用".into(),
-                false,
-            ),
+            "disk_usage" => ("disk_usage".into(), "查看指定路径的磁盘占用".into(), false),
             "disk_free" => (
                 "disk_free".into(),
                 "查看所有挂载卷的剩余磁盘空间".into(),
@@ -128,11 +128,7 @@ impl SystemToolsSkill {
                 "删除文件或目录（不可恢复）".into(),
                 true,
             ),
-            "list_dir" => (
-                "list_dir".into(),
-                "列出目录内容".into(),
-                false,
-            ),
+            "list_dir" => ("list_dir".into(), "列出目录内容".into(), false),
             "file_info" => (
                 "file_info".into(),
                 "获取文件信息（大小、修改时间、类型）".into(),
@@ -237,7 +233,11 @@ impl Skill for SystemToolsSkill {
             Ok(result) => {
                 // 截断过长输出（比如 ps aux 可能很长）
                 let truncated = if result.len() > 3000 {
-                    format!("{}...\n\n（结果过长，仅显示前 3000 字符，共 {} 字符）", &result[..3000], result.len())
+                    format!(
+                        "{}...\n\n（结果过长，仅显示前 3000 字符，共 {} 字符）",
+                        &result[..3000],
+                        result.len()
+                    )
                 } else {
                     result
                 };
@@ -297,7 +297,10 @@ mod tests {
     #[tokio::test]
     async fn dangerous_tool_requires_confirm() {
         let result = SystemToolsSkill
-            .execute(serde_json::json!({"tool": "kill_process", "pid": 99999}), None)
+            .execute(
+                serde_json::json!({"tool": "kill_process", "pid": 99999}),
+                None,
+            )
             .await
             .expect("execute should not panic");
         assert!(result.denied);

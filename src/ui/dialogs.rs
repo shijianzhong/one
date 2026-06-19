@@ -245,10 +245,7 @@ impl AppState {
             )
     }
 
-    pub(crate) fn render_workspace_popup(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(crate) fn render_workspace_popup(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let ws_id = self.delete_confirm_workspace_id.unwrap_or(0);
         let pos = self.popup_position;
@@ -657,11 +654,7 @@ impl AppState {
                                             },
                                         ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_color(gpui::white())
-                                            .child("允许执行"),
-                                    ),
+                                    .child(div().text_color(gpui::white()).child("允许执行")),
                             ),
                     ),
             )
@@ -711,12 +704,9 @@ impl AppState {
                             .child("人格草案待审核（soul.md）"),
                     )
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(SECONDARY_TEXT())
-                            .child(
-                                "AI 提议改写它自己的人格设定。务必先阅读改动内容，确认无误再批准。",
-                            ),
+                        div().text_xs().text_color(SECONDARY_TEXT()).child(
+                            "AI 提议改写它自己的人格设定。务必先阅读改动内容，确认无误再批准。",
+                        ),
                     )
                     .when(!rationale.is_empty(), |this| {
                         this.child(
@@ -843,11 +833,7 @@ impl AppState {
                                             },
                                         ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_color(gpui::white())
-                                            .child("应用草案"),
-                                    ),
+                                    .child(div().text_color(gpui::white()).child("应用草案")),
                             ),
                     ),
             )
@@ -1025,7 +1011,10 @@ impl AppState {
                     }),
             )
             .when(
-                matches!(card.stage, crate::app_state::SkillCardStage::PreviewReady(_)),
+                matches!(
+                    card.stage,
+                    crate::app_state::SkillCardStage::PreviewReady(_)
+                ),
                 |this| {
                     this.child(
                         div()

@@ -85,7 +85,8 @@ pub fn build_memory_context(workspace_name: &str, task_id: usize, query: &str) -
                 for idx in hits {
                     let hit = &others[idx];
                     if added_tasks.insert(hit.task_id) {
-                        if let Some(related_snap) = load_task_snapshot(workspace_name, hit.task_id) {
+                        if let Some(related_snap) = load_task_snapshot(workspace_name, hit.task_id)
+                        {
                             if !related_snap.key_facts.is_empty() {
                                 section.push(format!(
                                     "[Snapshot Facts from Task {}: {}]",
@@ -200,13 +201,18 @@ pub fn generate_snapshot_sync(
                 for fact in &snap.key_facts {
                     if !fact.trim().is_empty() {
                         let _ = crate::memory::profile::save_global_fact(fact, Some(task_id));
-                        let _ = crate::memory::profile::save_fact(workspace_name, fact, Some(task_id));
+                        let _ =
+                            crate::memory::profile::save_fact(workspace_name, fact, Some(task_id));
                     }
                 }
                 for pref in &snap.preferences {
                     if !pref.trim().is_empty() {
                         // preferences 只写入 workspace，不写入 global
-                        let _ = crate::memory::profile::save_fact(workspace_name, pref, Some(task_id));
+                        let _ = crate::memory::profile::save_preference(
+                            workspace_name,
+                            pref,
+                            Some(task_id),
+                        );
                     }
                 }
             }

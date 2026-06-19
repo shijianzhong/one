@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -36,7 +36,8 @@ const CIPHER_TIMEOUT_SECS: u64 = 120; // 2 分钟
 static TRIGGER_STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
 
 /// 当前运行的 trigger 数量，用于等待旧实例退出。
-static TRIGGER_RUNNING_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static TRIGGER_RUNNING_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 // ============================================================================
 // PendingConfirmation — 等待暗号回复的状态记录
@@ -99,8 +100,7 @@ fn ensure_remote_task(
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".one")
         .join("one.db");
-    let conn =
-        sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
+    let conn = sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     if let Ok(task_id) = crate::task_db::insert_remote_task(&conn, ws_id) {
         let id_str = task_id.to_string();
         *current_task_id.lock().unwrap() = Some(id_str.clone());
@@ -126,8 +126,7 @@ fn append_step_to_task(
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".one")
         .join("one.db");
-    let conn =
-        sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
+    let conn = sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"));
     let count = crate::task_db::count_messages(&conn, task_id_usize).unwrap_or(0);
     let _ = crate::task_db::insert_message_step(
         &conn,
@@ -209,13 +208,11 @@ impl TelegramTrigger {
             .filter_map(|s| s.trim().parse::<i64>().ok())
             .collect();
         if allowed_chats.is_empty() {
-            log::warn!(
-                "[telegram] ONE_TELEGRAM_ALLOWED_CHATS is empty/invalid; trigger disabled."
-            );
+            log::warn!("[telegram] ONE_TELEGRAM_ALLOWED_CHATS is empty/invalid; trigger disabled.");
             return None;
         }
-        let api_base = std::env::var("ONE_TELEGRAM_API_BASE")
-            .unwrap_or_else(|_| DEFAULT_API_BASE.to_string());
+        let api_base =
+            std::env::var("ONE_TELEGRAM_API_BASE").unwrap_or_else(|_| DEFAULT_API_BASE.to_string());
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(LONG_POLL_TIMEOUT + 10))
             .build()
@@ -323,20 +320,16 @@ impl TelegramTrigger {
                             Ok(Ok(true)) => {}
                             Ok(Ok(false)) => {
                                 return Ok(Some(
-                                    "⚠️ 双确认失败：本机拒绝了操作，操作已取消。"
-                                        .to_string(),
+                                    "⚠️ 双确认失败：本机拒绝了操作，操作已取消。".to_string(),
                                 ));
                             }
                             Ok(Err(_)) => {
                                 return Ok(Some(
-                                    "⚠️ 双确认失败：审批通道异常，操作已取消。"
-                                        .to_string(),
+                                    "⚠️ 双确认失败：审批通道异常，操作已取消。".to_string(),
                                 ));
                             }
                             Err(_) => {
-                                return Ok(Some(
-                                    "⚠️ 双确认超时，操作已取消。".to_string(),
-                                ));
+                                return Ok(Some("⚠️ 双确认超时，操作已取消。".to_string()));
                             }
                         }
                     }
@@ -346,8 +339,7 @@ impl TelegramTrigger {
                 let skill_id = pc.skill_id.clone();
                 let result_text = match skill {
                     Some(skill) => {
-                        let _guard =
-                            crate::agents::permission::RemoteScopeGuard::enter();
+                        let _guard = crate::agents::permission::RemoteScopeGuard::enter();
                         let args = std::mem::take(&mut pc.args);
                         match skill.execute(args, None).await {
                             Ok(exec) => {
@@ -356,10 +348,7 @@ impl TelegramTrigger {
                                     skill_id, exec.summary
                                 );
                                 if exec.freed_bytes > 0 {
-                                    out.push_str(&format!(
-                                        "释放 {} 字节\n",
-                                        exec.freed_bytes
-                                    ));
+                                    out.push_str(&format!("释放 {} 字节\n", exec.freed_bytes));
                                 }
                                 if !exec.success_items.is_empty() {
                                     out.push_str(&format!(
@@ -368,10 +357,7 @@ impl TelegramTrigger {
                                     ));
                                 }
                                 if !exec.failed_items.is_empty() {
-                                    out.push_str(&format!(
-                                        "失败 {} 项\n",
-                                        exec.failed_items.len()
-                                    ));
+                                    out.push_str(&format!("失败 {} 项\n", exec.failed_items.len()));
                                 }
                                 out
                             }
@@ -436,33 +422,32 @@ impl Trigger for TelegramTrigger {
                             // 预检：暗号应该短（<=32字符）、无空格、无特殊标点
                             let looks_like_cipher = text.len() <= 32
                                 && !text.contains(' ')
-                                && text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                                && text
+                                    .chars()
+                                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                                 && !text.starts_with('/');
                             if !looks_like_cipher {
                                 let _ = self
-                                    .send_message(chat_id, "⏳ 正在等待暗号确认，请发送暗号或 /cancel 取消。")
+                                    .send_message(
+                                        chat_id,
+                                        "⏳ 正在等待暗号确认，请发送暗号或 /cancel 取消。",
+                                    )
                                     .await;
                                 continue;
                             }
                             // 支持 /cancel 取消暗号状态机
                             if text == "/cancel" {
                                 self.pending.lock().unwrap().remove(&chat_id);
-                                let _ = self
-                                    .send_message(chat_id, "暗号确认已取消。")
-                                    .await;
+                                let _ = self.send_message(chat_id, "暗号确认已取消。").await;
                                 continue;
                             }
                             match self.handle_cipher_reply(chat_id, &text).await {
                                 Ok(Some(reply_text)) => {
-                                    let _ =
-                                        self.send_message(chat_id, &reply_text).await;
+                                    let _ = self.send_message(chat_id, &reply_text).await;
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    log::error!(
-                                        "[telegram] handle_cipher_reply error: {:?}",
-                                        e
-                                    );
+                                    log::error!("[telegram] handle_cipher_reply error: {:?}", e);
                                 }
                             }
                             continue;
@@ -476,7 +461,10 @@ impl Trigger for TelegramTrigger {
                             let ws_id_str = self.current_workspace_id.lock().unwrap().clone();
                             if ws_id_str.is_empty() {
                                 let _ = self
-                                    .send_message(chat_id, "请先发送 /workspace <name> 切换到 workspace 后再发消息。")
+                                    .send_message(
+                                        chat_id,
+                                        "请先发送 /workspace <name> 切换到 workspace 后再发消息。",
+                                    )
                                     .await;
                                 continue;
                             }
@@ -488,7 +476,10 @@ impl Trigger for TelegramTrigger {
                             );
                             if task_id_str.is_empty() {
                                 let _ = self
-                                    .send_message(chat_id, "创建远程任务失败，请先在本机创建 workspace。")
+                                    .send_message(
+                                        chat_id,
+                                        "创建远程任务失败，请先在本机创建 workspace。",
+                                    )
                                     .await;
                                 continue;
                             }
@@ -501,9 +492,7 @@ impl Trigger for TelegramTrigger {
                             };
 
                             // 2. 写用户消息到 DB
-                            append_step_to_task(
-                                &task_id_str, "user", &text, "user_message", None,
-                            );
+                            append_step_to_task(&task_id_str, "user", &text, "user_message", None);
 
                             // 3. 从 DB 加载历史消息
                             let db_path = dirs::config_dir()
@@ -513,26 +502,21 @@ impl Trigger for TelegramTrigger {
                             let conn = sqlez::connection::Connection::open_file(
                                 db_path.to_str().unwrap_or("one.db"),
                             );
-                            let db_messages =
-                                crate::task_db::load_messages(&conn, task_id_usize)
-                                    .unwrap_or_default();
-                            let history: Vec<crate::memory::types::ChatMessage> =
-                                db_messages
-                                    .into_iter()
-                                    .map(|m| {
-                                        crate::memory::types::ChatMessage::new(
-                                            &m.role, &m.content,
-                                        )
-                                    })
-                                    .collect();
+                            let db_messages = crate::task_db::load_messages(&conn, task_id_usize)
+                                .unwrap_or_default();
+                            let history: Vec<crate::memory::types::ChatMessage> = db_messages
+                                .into_iter()
+                                .map(|m| {
+                                    crate::memory::types::ChatMessage::new(&m.role, &m.content)
+                                })
+                                .collect();
 
                             // 4. 获取 workspace 信息
                             let ws_result = crate::task_db::load_workspaces(&conn);
                             let (ws_name, ws_path) = match ws_result {
                                 Ok(workspaces) => {
                                     let ws_id: usize = ws_id_str.parse().unwrap_or(0);
-                                    if let Some(ws) = workspaces.iter().find(|w| w.id == ws_id)
-                                    {
+                                    if let Some(ws) = workspaces.iter().find(|w| w.id == ws_id) {
                                         (ws.name.clone(), std::path::PathBuf::from(&ws.path))
                                     } else {
                                         ("Default".to_string(), std::path::PathBuf::from("."))
@@ -542,9 +526,7 @@ impl Trigger for TelegramTrigger {
                             };
 
                             // 5. 发送"正在处理"提示
-                            let _ = self
-                                .send_message(chat_id, "⏳ 正在处理，请稍候...")
-                                .await;
+                            let _ = self.send_message(chat_id, "⏳ 正在处理，请稍候...").await;
 
                             // 6. 在 Telegram 线程跑 Orchestrator
                             let config = crate::services::load_config();
@@ -552,6 +534,7 @@ impl Trigger for TelegramTrigger {
                                 &config,
                                 &ws_name,
                                 ws_path,
+                                crate::mcp::global_manager(),
                             ) {
                                 Ok(orchestrator) => {
                                     let session_id = format!("telegram-task-{}", task_id_str);
@@ -572,9 +555,8 @@ impl Trigger for TelegramTrigger {
 
                                     match result {
                                         Ok(reply_text) => {
-                                            let cleaned = crate::util::strip_think_tags(
-                                                &reply_text,
-                                            );
+                                            let cleaned =
+                                                crate::util::strip_think_tags(&reply_text);
                                             // 7. 写 AI 回复到 DB
                                             append_step_to_task(
                                                 &task_id_str,
@@ -584,27 +566,17 @@ impl Trigger for TelegramTrigger {
                                                 None,
                                             );
                                             // 8. 回送
-                                            let _ = self
-                                                .send_message(chat_id, &cleaned)
-                                                .await;
+                                            let _ = self.send_message(chat_id, &cleaned).await;
                                         }
                                         Err(e) => {
-                                            let err_msg =
-                                                format!("处理失败：{}", e);
-                                            let _ = self
-                                                .send_message(chat_id, &err_msg)
-                                                .await;
+                                            let err_msg = format!("处理失败：{}", e);
+                                            let _ = self.send_message(chat_id, &err_msg).await;
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    let err_msg = format!(
-                                        "无法创建 Orchestrator：{}",
-                                        e
-                                    );
-                                    let _ = self
-                                        .send_message(chat_id, &err_msg)
-                                        .await;
+                                    let err_msg = format!("无法创建 Orchestrator：{}", e);
+                                    let _ = self.send_message(chat_id, &err_msg).await;
                                 }
                             }
                             continue;
@@ -614,8 +586,7 @@ impl Trigger for TelegramTrigger {
 
                         // 处理 workspace 切换
                         if text.starts_with("/workspace ") {
-                            let name =
-                                text.trim_start_matches("/workspace ").trim();
+                            let name = text.trim_start_matches("/workspace ").trim();
                             if !name.is_empty() {
                                 let db_path = dirs::config_dir()
                                     .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -624,28 +595,19 @@ impl Trigger for TelegramTrigger {
                                 let conn = sqlez::connection::Connection::open_file(
                                     db_path.to_str().unwrap_or("one.db"),
                                 );
-                                let ws_result =
-                                    crate::task_db::load_workspaces(&conn);
+                                let ws_result = crate::task_db::load_workspaces(&conn);
                                 let workspaces = ws_result.unwrap_or_default();
                                 let matched = workspaces
                                     .iter()
                                     .find(|w| w.name == name)
-                                    .or_else(|| {
-                                        workspaces
-                                            .iter()
-                                            .find(|w| w.name.contains(name))
-                                    });
+                                    .or_else(|| workspaces.iter().find(|w| w.name.contains(name)));
                                 if let Some(ws) = matched {
-                                    *self.current_workspace_id.lock().unwrap() =
-                                        ws.id.to_string();
+                                    *self.current_workspace_id.lock().unwrap() = ws.id.to_string();
                                     *self.current_task_id.lock().unwrap() = None; // ✅ 清空旧 task
                                     let _ = self
                                         .send_message(
                                             chat_id,
-                                            &format!(
-                                                "已切换到 workspace「{}」",
-                                                ws.name
-                                            ),
+                                            &format!("已切换到 workspace「{}」", ws.name),
                                         )
                                         .await;
                                 } else {
@@ -666,10 +628,7 @@ impl Trigger for TelegramTrigger {
                         if text == "/clear" {
                             *self.current_task_id.lock().unwrap() = None;
                             let _ = self
-                                .send_message(
-                                    chat_id,
-                                    "远程任务已结束。下次消息将创建新任务。",
-                                )
+                                .send_message(chat_id, "远程任务已结束。下次消息将创建新任务。")
                                 .await;
                             continue;
                         }
@@ -681,15 +640,10 @@ impl Trigger for TelegramTrigger {
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            let local_approval_rx = if reply.danger_level
-                                == DangerLevel::Extreme
-                            {
+                            let local_approval_rx = if reply.danger_level == DangerLevel::Extreme {
                                 crate::agents::permission::enqueue_detached(
                                     crate::agents::permission::ToolKind::Shell,
-                                    format!(
-                                        "远程 Extreme 操作「{}」请求双重确认",
-                                        skill_id
-                                    ),
+                                    format!("远程 Extreme 操作「{}」请求双重确认", skill_id),
                                 )
                             } else {
                                 None
@@ -698,11 +652,7 @@ impl Trigger for TelegramTrigger {
                             let pc = PendingConfirmation {
                                 skill_id,
                                 args: serde_json::Value::Object(Default::default()),
-                                workspace_id: self
-                                    .current_workspace_id
-                                    .lock()
-                                    .unwrap()
-                                    .clone(),
+                                workspace_id: self.current_workspace_id.lock().unwrap().clone(),
                                 task_id: self
                                     .current_task_id
                                     .lock()
@@ -710,8 +660,7 @@ impl Trigger for TelegramTrigger {
                                     .clone()
                                     .unwrap_or_default(),
                                 danger_level: reply.danger_level,
-                                needs_local_approval: reply.danger_level
-                                    == DangerLevel::Extreme,
+                                needs_local_approval: reply.danger_level == DangerLevel::Extreme,
                                 local_approval_rx,
                                 expires_at: Instant::now()
                                     + Duration::from_secs(CIPHER_TIMEOUT_SECS),
@@ -722,22 +671,12 @@ impl Trigger for TelegramTrigger {
                                 pending.insert(chat_id, pc);
                             }
 
-                            if let Err(err) =
-                                self.send_message(chat_id, &reply.text).await
-                            {
-                                log::error!(
-                                    "[telegram] sendMessage failed: {:?}",
-                                    err
-                                );
+                            if let Err(err) = self.send_message(chat_id, &reply.text).await {
+                                log::error!("[telegram] sendMessage failed: {:?}", err);
                             }
                         } else {
-                            if let Err(err) =
-                                self.send_message(chat_id, &reply.text).await
-                            {
-                                log::error!(
-                                    "[telegram] sendMessage failed: {:?}",
-                                    err
-                                );
+                            if let Err(err) = self.send_message(chat_id, &reply.text).await {
+                                log::error!("[telegram] sendMessage failed: {:?}", err);
                             }
                         }
                     }

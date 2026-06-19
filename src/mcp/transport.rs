@@ -9,7 +9,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use anyhow::{Context, Result};
 
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, LineProtocolParser, RequestIdGenerator};
+use crate::mcp::protocol::{
+    JsonRpcRequest, JsonRpcResponse, LineProtocolParser, RequestIdGenerator,
+};
 
 // ── Transport trait ─────────────────────────────────────────────────────────────
 
@@ -35,11 +37,7 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// 启动一个子进程作为 MCP Server
-    pub fn spawn(
-        command: &str,
-        args: &[String],
-        env: &[(String, String)],
-    ) -> Result<Self> {
+    pub fn spawn(command: &str, args: &[String], env: &[(String, String)]) -> Result<Self> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .stdin(Stdio::piped())
@@ -50,13 +48,21 @@ impl StdioTransport {
             cmd.env(key, value);
         }
 
-        let mut child = cmd.spawn().context(format!("Failed to spawn MCP server: {}", command))?;
+        let mut child = cmd
+            .spawn()
+            .context(format!("Failed to spawn MCP server: {}", command))?;
 
         let stdin = BufWriter::new(
-            child.stdin.take().context("Failed to open stdin for MCP server")?,
+            child
+                .stdin
+                .take()
+                .context("Failed to open stdin for MCP server")?,
         );
         let stdout = BufReader::new(
-            child.stdout.take().context("Failed to open stdout for MCP server")?,
+            child
+                .stdout
+                .take()
+                .context("Failed to open stdout for MCP server")?,
         );
 
         Ok(Self {
@@ -128,9 +134,13 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    pub fn new(url: String, headers: std::collections::HashMap<String, String>) -> Result<Self> {
+    pub fn new(
+        url: String,
+        headers: std::collections::HashMap<String, String>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(timeout_secs.max(1)))
             .build()?;
 
         Ok(Self {

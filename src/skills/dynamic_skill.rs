@@ -29,12 +29,18 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::agents::permission::DangerLevel;
-use crate::skills::{Skill, SkillCategory, SkillExecution, SkillManifest, SkillPreview, SkillPreviewItem};
+use crate::agents::permission::{
+    classify_mcp_tool_kind, DangerLevel, PermissionDecision, ToolKind,
+};
+use crate::skills::{
+    Skill, SkillCategory, SkillExecution, SkillManifest, SkillPreview, SkillPreviewItem,
+};
 
 // ── SKILL.md 解析 ───────────────────────────────────────────────────────────────
 
@@ -107,10 +113,7 @@ impl ParsedSkillDoc {
         let frontmatter: SkillFrontmatter = serde_yaml::from_str(frontmatter_str)
             .context("Failed to parse SKILL.md frontmatter")?;
 
-        Ok(Self {
-            frontmatter,
-            body,
-        })
+        Ok(Self { frontmatter, body })
     }
 }
 
@@ -135,10 +138,7 @@ pub enum SkillExecutor {
         args_template: Option<String>,
     },
     /// 直接执行终端命令
-    Command {
-        command: String,
-        args: Vec<String>,
-    },
+    Command { command: String, args: Vec<String> },
 }
 
 impl DynamicSkill {
@@ -163,26 +163,28 @@ impl DynamicSkill {
             if !fm.platforms.iter().any(|p| p == os_alias) {
                 anyhow::bail!(
                     "Skill '{}' does not support current platform '{}' (supports: {:?})",
-                    fm.name, current_os, fm.platforms
+                    fm.name,
+                    current_os,
+                    fm.platforms
                 );
             }
         }
 
         // 解析执行器
         let executor = match &fm.executor {
-            Some(ExecutorConfig::McpTool { server, tool, args_template }) => {
-                SkillExecutor::McpTool {
-                    server: server.clone(),
-                    tool: tool.clone(),
-                    args_template: args_template.clone(),
-                }
-            }
-            Some(ExecutorConfig::Command { command, args }) => {
-                SkillExecutor::Command {
-                    command: command.clone(),
-                    args: args.clone(),
-                }
-            }
+            Some(ExecutorConfig::McpTool {
+                server,
+                tool,
+                args_template,
+            }) => SkillExecutor::McpTool {
+                server: server.clone(),
+                tool: tool.clone(),
+                args_template: args_template.clone(),
+            },
+            Some(ExecutorConfig::Command { command, args }) => SkillExecutor::Command {
+                command: command.clone(),
+                args: args.clone(),
+            },
             None => {
                 anyhow::bail!("SKILL.md must define an executor");
             }
@@ -248,6 +250,16 @@ impl DynamicSkill {
             denied: false,
         }
     }
+
+    fn denied_execution(reason: String) -> SkillExecution {
+        SkillExecution {
+            summary: format!("已拒绝执行：{}", reason),
+            freed_bytes: 0,
+            success_items: vec![],
+            failed_items: vec![("permission".to_string(), reason)],
+            denied: true,
+        }
+    }
 }
 
 // ── 目录扫描 ────────────────────────────────────────────────────────────────────
@@ -266,11 +278,19 @@ pub fn scan_skills_dir() -> Vec<DynamicSkill> {
             if path.is_dir() && path.join("SKILL.md").exists() {
                 match DynamicSkill::load_from_dir(&path) {
                     Ok(skill) => {
-                        log::info!("[Skills] Loaded dynamic skill: {} ({})", skill.manifest.name, path.display());
+                        log::info!(
+                            "[Skills] Loaded dynamic skill: {} ({})",
+                            skill.manifest.name,
+                            path.display()
+                        );
                         skills.push(skill);
                     }
                     Err(e) => {
-                        log::warn!("[Skills] Failed to load skill from {}: {}", path.display(), e);
+                        log::warn!(
+                            "[Skills] Failed to load skill from {}: {}",
+                            path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -304,18 +324,137 @@ impl Skill for DynamicSkill {
 
     async fn execute(
         &self,
-        _args: serde_json::Value,
-        _source: Option<&str>,
+        args: serde_json::Value,
+        source: Option<&str>,
     ) -> Result<SkillExecution> {
-        // SKILL.md 的 body 是给 AI 阅读的操作指南。
-        // 直接返回 body 内容，Agent 阅读后自行决定如何执行
-        // （例如调用终端命令 claude -p 等）
-        Ok(self.build_execution(format!(
-            "## Skill: {}\n\n以下是从 SKILL.md 加载的使用指南：\n\n{}\n\n请按照上述指南执行任务。",
-            self.manifest.name,
-            self.body
-        )))
+        match &self.executor {
+            SkillExecutor::Command {
+                command,
+                args: cmd_args,
+            } => {
+                let rendered_command = render_template(command, &args)?;
+                let rendered_args = cmd_args
+                    .iter()
+                    .map(|arg| render_template(arg, &args))
+                    .collect::<Result<Vec<_>>>()?;
+                let detail = if rendered_args.is_empty() {
+                    rendered_command.clone()
+                } else {
+                    format!("{} {}", rendered_command, rendered_args.join(" "))
+                };
+
+                match crate::agents::permission::global()
+                    .request_async(ToolKind::Shell, detail.clone(), source)
+                    .await
+                {
+                    PermissionDecision::Allow => {}
+                    PermissionDecision::Deny(reason) => {
+                        return Ok(Self::denied_execution(reason));
+                    }
+                    PermissionDecision::Ask => {
+                        return Ok(Self::denied_execution("approval unresolved".to_string()));
+                    }
+                }
+
+                let output =
+                    run_dynamic_command(&rendered_command, &rendered_args, &self.source_dir)
+                        .await?;
+                Ok(self.build_execution(output))
+            }
+            SkillExecutor::McpTool {
+                server,
+                tool,
+                args_template,
+            } => {
+                let rendered_args = render_mcp_args(args_template.as_deref(), &args)?;
+                let detail = format!("MCP {}/{} {}", server, tool, rendered_args);
+                let kind = classify_mcp_tool_kind(tool);
+                match crate::agents::permission::global()
+                    .request_async(kind, detail, source)
+                    .await
+                {
+                    PermissionDecision::Allow => {}
+                    PermissionDecision::Deny(reason) => {
+                        return Ok(Self::denied_execution(reason));
+                    }
+                    PermissionDecision::Ask => {
+                        return Ok(Self::denied_execution("approval unresolved".to_string()));
+                    }
+                }
+
+                let manager =
+                    crate::mcp::global_manager().context("MCP manager is not connected")?;
+                let result = crate::mcp::call_tool_async(
+                    manager,
+                    server.clone(),
+                    tool.clone(),
+                    rendered_args,
+                )
+                .await?;
+                Ok(self.build_execution(result))
+            }
+        }
     }
+}
+
+fn render_template(template: &str, args: &Value) -> Result<String> {
+    let mut rendered = template.to_string();
+    if let Some(object) = args.as_object() {
+        for (key, value) in object {
+            let replacement = value
+                .as_str()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| value.to_string());
+            rendered = rendered.replace(&format!("{{{{{}}}}}", key), &replacement);
+            rendered = rendered.replace(&format!("{{{}}}", key), &replacement);
+        }
+    }
+    if rendered.contains("{{") || rendered.contains("}}") {
+        anyhow::bail!("unresolved template placeholder in '{}'", template);
+    }
+    Ok(rendered)
+}
+
+fn render_mcp_args(template: Option<&str>, args: &Value) -> Result<Value> {
+    let Some(template) = template else {
+        return Ok(args.clone());
+    };
+    let rendered = render_template(template, args)?;
+    serde_json::from_str(&rendered).context("failed to parse rendered MCP args_template as JSON")
+}
+
+async fn run_dynamic_command(command: &str, args: &[String], cwd: &Path) -> Result<String> {
+    let output = tokio::process::Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context(format!("failed to run command '{}'", command))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut result = String::new();
+    if !stdout.trim().is_empty() {
+        result.push_str("stdout:\n");
+        result.push_str(&stdout);
+    }
+    if !stderr.trim().is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("stderr:\n");
+        result.push_str(&stderr);
+    }
+    if result.trim().is_empty() {
+        result = format!("command exited with status {}", output.status);
+    }
+    if !output.status.success() {
+        anyhow::bail!("command failed with status {}:\n{}", output.status, result);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

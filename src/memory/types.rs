@@ -28,6 +28,26 @@ pub struct FactEntry {
     pub content: String,
     pub timestamp: i64,
     pub source_task_id: Option<usize>,
+    #[serde(default = "default_memory_scope")]
+    pub scope: String,
+    #[serde(default = "default_memory_kind")]
+    pub kind: String,
+    #[serde(default = "default_memory_confidence")]
+    pub confidence: f32,
+    #[serde(default)]
+    pub last_used_at: Option<i64>,
+}
+
+fn default_memory_scope() -> String {
+    "workspace".to_string()
+}
+
+fn default_memory_kind() -> String {
+    "fact".to_string()
+}
+
+fn default_memory_confidence() -> f32 {
+    0.8
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

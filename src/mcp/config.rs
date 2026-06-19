@@ -66,7 +66,7 @@ fn default_timeout() -> u64 {
 /// MCP 全局配置
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpConfig {
-    #[serde(default)]
+    #[serde(default, alias = "mcpServers")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 

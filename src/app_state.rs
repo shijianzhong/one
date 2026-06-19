@@ -5,18 +5,18 @@ use std::process::{Child, Command, Stdio};
 use gpui::{AppContext, Context, FocusHandle, Pixels, Point, ScrollHandle, Window};
 
 use crate::agents;
-use crate::agents::types::PreviewLaunchResult;
+use crate::agents::types::{PreviewLaunchResult, PreviewState, PreviewStatus};
 
 use crate::i18n::{t, Lang, Translations};
 use crate::memory::types::ChatMessage;
 use crate::sandbox::backend::Backend;
 use crate::services::{save_config, Config};
+use crate::skills::Skill;
 use crate::skills_market::SkillsMarketState;
 use crate::task_db;
 use crate::ui_theme::{set_theme_mode, ThemeMode};
 use crate::util;
 use crate::workspace::{TaskItem, Workspace};
-use crate::skills::Skill;
 use crate::{
     CancelModelConfig, ExportChat, OpenCipherDialog, OpenModelConfigDialog, SaveModelConfig,
     ToggleLang, ToggleTheme,
@@ -77,6 +77,7 @@ pub(crate) struct AppState {
     pub(crate) popup_position: Point<Pixels>,
     pub(crate) terminal_output: Vec<TerminalLine>,
     pub(crate) preview_process: Option<PreviewProcessHandle>,
+    pub(crate) preview_state: Option<PreviewState>,
     pub(crate) titlebar_should_move: bool,
     pub(crate) intent_router: agents::intent_router::IntentRouter,
     pub(crate) job_manager: crate::runtime::JobManager,
@@ -95,9 +96,10 @@ pub(crate) struct AppState {
     pub(crate) telegram_bind_status: String,
     pub(crate) telegram_bind_error: bool,
     /// MCP 客户端管理器
-    pub(crate) mcp_manager: Option<crate::mcp::McpClientManager>,
+    pub(crate) mcp_manager: Option<std::sync::Arc<std::sync::Mutex<crate::mcp::McpClientManager>>>,
     /// 真实的终端模拟器
-    pub(crate) terminal_emulator: Option<std::sync::Arc<std::sync::Mutex<crate::terminal_emulator::TerminalEmulator>>>,
+    pub(crate) terminal_emulator:
+        Option<std::sync::Arc<std::sync::Mutex<crate::terminal_emulator::TerminalEmulator>>>,
     /// 当前终端对应的工作目录；切换 task 后用于判断是否需要重建终端。
     pub(crate) terminal_work_dir: Option<PathBuf>,
     /// 终端刷新循环代号；重建终端时递增，让旧刷新循环退出。
@@ -143,6 +145,109 @@ impl AppState {
     pub(crate) fn get_active_references(&self) -> Vec<String> {
         // 占位：未来扩展为真实属性
         Vec::new()
+    }
+}
+
+fn select_preview_entry(
+    root: &PathBuf,
+    html_files: &[PathBuf],
+    hints: &[String],
+    artifacts: &[task_db::TaskArtifactRow],
+) -> PathBuf {
+    if let Some(found) = artifacts.iter().find_map(|artifact| {
+        if !matches!(artifact.kind.as_str(), "html_entry" | "html_file") {
+            return None;
+        }
+        let path = PathBuf::from(&artifact.path);
+        if !path.exists() {
+            return None;
+        }
+        html_files.iter().find(|file| **file == path).cloned()
+    }) {
+        return found;
+    }
+
+    if let Some(found) = hints.iter().find_map(|hint| {
+        let hint_lower = hint.to_ascii_lowercase();
+        html_files.iter().find(|file| {
+            file.file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| name.to_ascii_lowercase() == hint_lower)
+                .unwrap_or(false)
+                || file
+                    .strip_prefix(root)
+                    .unwrap_or(file)
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(&hint_lower)
+                || file
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(&hint_lower)
+        })
+    }) {
+        return found.clone();
+    }
+
+    if let Some(index_file) = html_files.iter().find(|file| {
+        file.file_name()
+            .and_then(|n| n.to_str())
+            .map(|name| name.eq_ignore_ascii_case("index.html"))
+            .unwrap_or(false)
+    }) {
+        return index_file.clone();
+    }
+
+    html_files[0].clone()
+}
+
+#[cfg(test)]
+mod preview_selection_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "one-preview-select-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn artifact_html_entry_wins_over_hint_and_index() {
+        let root = temp_dir();
+        let index = root.join("index.html");
+        let hinted = root.join("hinted.html");
+        let artifact_entry = root.join("app.html");
+        std::fs::write(&index, "").unwrap();
+        std::fs::write(&hinted, "").unwrap();
+        std::fs::write(&artifact_entry, "").unwrap();
+
+        let selected = select_preview_entry(
+            &root,
+            &[index, hinted, artifact_entry.clone()],
+            &["hinted.html".to_string()],
+            &[task_db::TaskArtifactRow {
+                id: 1,
+                task_id: 1,
+                workflow_id: Some(1),
+                kind: "html_entry".to_string(),
+                path: artifact_entry.to_string_lossy().to_string(),
+                title: "HTML 入口".to_string(),
+                status: "ready".to_string(),
+                metadata_json: String::new(),
+                updated_at: String::new(),
+            }],
+        );
+
+        assert_eq!(selected, artifact_entry);
     }
 }
 
@@ -213,6 +318,7 @@ impl AppState {
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
             preview_process: None,
+            preview_state: None,
             hovered_workspace_id: None,
             delete_confirm_workspace_id: None,
             popup_position: Point::default(),
@@ -303,7 +409,12 @@ impl AppState {
         }
     }
 
-    pub(crate) fn push_toast(&mut self, level: ToastLevel, message: String, cx: &mut Context<Self>) {
+    pub(crate) fn push_toast(
+        &mut self,
+        level: ToastLevel,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.toast_next_id;
         self.toast_next_id += 1;
         self.toasts.push(ToastInfo { id, level, message });
@@ -495,13 +606,13 @@ impl AppState {
                 .into_iter()
                 .map(|t| TaskItem {
                     id: t.id,
-                        title: t.title,
-                        is_draft: t.is_draft,
-                        messages: vec![],
-                        pending_summarize: false,
-                        needs_auto_scroll: false,
-                        think_collapsed: HashMap::new(),
-                    })
+                    title: t.title,
+                    is_draft: t.is_draft,
+                    messages: vec![],
+                    pending_summarize: false,
+                    needs_auto_scroll: false,
+                    think_collapsed: HashMap::new(),
+                })
                 .collect();
         }
 
@@ -575,30 +686,11 @@ impl AppState {
         }
 
         let hints = util::extract_html_hints(hint_text);
-        let entry = if let Some(found) = hints.iter().find_map(|hint| {
-            let hint_lower = hint.to_ascii_lowercase();
-            html_files.iter().find(|file| {
-                file.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|name| name.to_ascii_lowercase() == hint_lower)
-                    .unwrap_or(false)
-                    || file
-                        .to_string_lossy()
-                        .to_ascii_lowercase()
-                        .ends_with(&hint_lower)
-            })
-        }) {
-            found.clone()
-        } else if let Some(index_file) = html_files.iter().find(|file| {
-            file.file_name()
-                .and_then(|n| n.to_str())
-                .map(|name| name.eq_ignore_ascii_case("index.html"))
-                .unwrap_or(false)
-        }) {
-            index_file.clone()
-        } else {
-            html_files[0].clone()
-        };
+        let artifacts = self
+            .active_task_id
+            .and_then(|task_id| task_db::load_task_artifacts(&self.db.conn, task_id).ok())
+            .unwrap_or_default();
+        let entry = select_preview_entry(&root, &html_files, &hints, &artifacts);
 
         let relative_entry = entry
             .strip_prefix(&root)
@@ -644,6 +736,44 @@ impl AppState {
                 ),
             },
         }
+    }
+
+    pub(crate) fn prepare_active_task_preview(&mut self) {
+        let Some(task_dir) = self.get_active_task_dir_path() else {
+            self.preview_state = None;
+            return;
+        };
+        let hint_text = self
+            .job_manager
+            .coding_workflow
+            .as_ref()
+            .and_then(|workflow| workflow.plan_text.clone())
+            .unwrap_or_default();
+        let result = self.try_prepare_preview(&task_dir.to_string_lossy(), &hint_text);
+        self.preview_state = Some(match result {
+            PreviewLaunchResult::Ready {
+                url,
+                entry_file,
+                note,
+            } => PreviewState {
+                status: PreviewStatus::Ready,
+                entry_file: Some(entry_file),
+                url: Some(url),
+                note,
+            },
+            PreviewLaunchResult::NotFound { note } => PreviewState {
+                status: PreviewStatus::Idle,
+                entry_file: None,
+                url: None,
+                note,
+            },
+            PreviewLaunchResult::Failed { note } => PreviewState {
+                status: PreviewStatus::Failed,
+                entry_file: None,
+                url: None,
+                note,
+            },
+        });
     }
 
     pub(crate) fn open_model_config_dialog(
@@ -821,7 +951,10 @@ impl AppState {
             return;
         }
 
-        eprintln!("[MCP] Loading {} MCP server(s)...", config.mcp_servers.len());
+        eprintln!(
+            "[MCP] Loading {} MCP server(s)...",
+            config.mcp_servers.len()
+        );
 
         cx.spawn(async move |this, cx| {
             let manager = crate::mcp::McpClientManager::connect(&config).await;
@@ -831,23 +964,35 @@ impl AppState {
             // 注册 MCP 工具到 ToolRegistry
             let all_tools = manager.all_tools();
             if !all_tools.is_empty() {
-                let mcp_tools: Vec<_> = all_tools.into_iter().map(|t| {
-                    crate::agents::core::tool_registry::McpToolRegistration {
-                        server_name: t.server_name,
-                        tool_name: t.tool_name,
-                        description: t.description,
-                        input_schema: t.input_schema,
-                    }
-                }).collect();
+                let mcp_tools: Vec<_> = all_tools
+                    .into_iter()
+                    .map(
+                        |t| crate::agents::core::tool_registry::McpToolRegistration {
+                            server_name: t.server_name,
+                            tool_name: t.tool_name,
+                            description: t.description,
+                            input_schema: t.input_schema,
+                        },
+                    )
+                    .collect();
                 if let Ok(mut treg) = crate::agents::core::tool_registry::tool_registry().lock() {
                     treg.register_mcp_batch(mcp_tools);
-                    eprintln!("[MCP] Registered {} MCP tool(s) to ToolRegistry", treg.mcp_tools().len());
+                    eprintln!(
+                        "[MCP] Registered {} MCP tool(s) to ToolRegistry",
+                        treg.mcp_tools().len()
+                    );
                 }
             }
 
+            let manager = std::sync::Arc::new(std::sync::Mutex::new(manager));
+            crate::mcp::set_global_manager(manager.clone());
+
             let _ = this.update(cx, |state, cx| {
                 state.mcp_manager = Some(manager);
-                eprintln!("[MCP] Connected: {} server(s), {} tool(s)", server_count, tool_count);
+                eprintln!(
+                    "[MCP] Connected: {} server(s), {} tool(s)",
+                    server_count, tool_count
+                );
                 cx.notify();
             });
         })
@@ -891,7 +1036,9 @@ impl AppState {
 
     /// 查询某个 task 是否正在运行中
     pub(crate) fn is_task_active(&self, task_id: Option<usize>) -> bool {
-        task_id.map(|id| self.task_active_states.get(&id).copied().unwrap_or(false)).unwrap_or(false)
+        task_id
+            .map(|id| self.task_active_states.get(&id).copied().unwrap_or(false))
+            .unwrap_or(false)
     }
 
     pub(crate) fn start_telegram_bind(&mut self, cx: &mut Context<Self>) {
@@ -906,7 +1053,14 @@ impl AppState {
         // 先停止旧 trigger 实例，避免绑定轮询与旧实例竞争
         crate::triggers::telegram::TelegramTrigger::stop_all();
 
-        println!("[telegram_bind] Starting bind process for token: {}...", if token.len() > 10 { &token[..10] } else { &token });
+        println!(
+            "[telegram_bind] Starting bind process for token: {}...",
+            if token.len() > 10 {
+                &token[..10]
+            } else {
+                &token
+            }
+        );
         self.telegram_bind_status = "正在验证 Bot Token...".to_string();
         self.telegram_bind_error = false;
         cx.notify();
@@ -1021,7 +1175,7 @@ impl AppState {
                                     if let Some(chat_id) = update["message"]["chat"]["id"].as_i64() {
                                         let chat_id_str = chat_id.to_string();
                                         println!("[telegram_bind] Found chat_id: {}", chat_id_str);
-                                        
+
                                         // Send confirmation message to Telegram
                                         let token_for_send = token_clone.clone();
                                         let send_handle = tokio_handle.clone();
@@ -1043,7 +1197,7 @@ impl AppState {
                                         let _ = this.update(cx, |state, cx| {
                                             state.telegram_bind_status = format!("✅ 绑定成功！Chat ID: {}", chat_id_str);
                                             state.telegram_bind_error = false;
-                                            
+
                                             let mut config = crate::services::load_config();
                                             config.telegram_bot_token = Some(token_clone.clone());
                                             config.telegram_chat_id = Some(chat_id_str);
@@ -1054,7 +1208,7 @@ impl AppState {
                                             // Hot-activate the Telegram trigger
                                             crate::triggers::telegram::TelegramTrigger::spawn_in_background(&config);
                                             println!("[telegram_bind] Telegram trigger hot-activated.");
-                                            
+
                                             cx.notify();
                                         });
                                         return;

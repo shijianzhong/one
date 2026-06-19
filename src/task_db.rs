@@ -42,9 +42,6 @@ impl Database {
 
         ensure_task_draft_column(conn_ref)?;
 
-        // 远程 Task 相关的 messages 表扩展
-        ensure_messages_step_columns(conn_ref)?;
-
         let _ = (conn_ref
             .exec(
                 "CREATE TABLE IF NOT EXISTS messages (
@@ -57,6 +54,9 @@ impl Database {
         )",
             )
             .unwrap())();
+
+        // 远程 Task 相关的 messages 表扩展
+        ensure_messages_step_columns(conn_ref)?;
 
         // Agent tables
         let _ = (conn_ref
@@ -148,6 +148,56 @@ impl Database {
             .exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id)")
             .unwrap())();
 
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS coding_workflows (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            user_request TEXT NOT NULL,
+            main_agent_summary TEXT,
+            known_constraints_json TEXT,
+            suggested_direction TEXT,
+            clarification_focus_json TEXT,
+            plan_path TEXT,
+            log_path TEXT,
+            approval_notes_json TEXT,
+            last_error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+        )",
+            )
+            .unwrap())();
+
+        let _ = (conn_ref
+            .exec(
+                "CREATE TABLE IF NOT EXISTS task_artifacts (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            workflow_id INTEGER,
+            kind TEXT NOT NULL,
+            path TEXT NOT NULL,
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'ready',
+            metadata_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (workflow_id) REFERENCES coding_workflows(id)
+        )",
+            )
+            .unwrap())();
+
+        let _ = (conn_ref
+            .exec(
+                "CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id ON task_artifacts(task_id)",
+            )
+            .unwrap())();
+
+        ensure_coding_workflow_columns(conn_ref)?;
+        ensure_task_artifact_columns(conn_ref)?;
+
         Ok(Self { conn })
     }
 }
@@ -168,6 +218,39 @@ fn ensure_workspace_default_task_column(conn: &Connection) -> Result<()> {
             .unwrap())();
     }
 
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    if !table_has_column(conn, table, column)? {
+        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition);
+        let _ = (conn.exec(&sql).unwrap())();
+    }
+    Ok(())
+}
+
+fn ensure_coding_workflow_columns(conn: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("main_agent_summary", "TEXT"),
+        ("known_constraints_json", "TEXT"),
+        ("suggested_direction", "TEXT"),
+        ("clarification_focus_json", "TEXT"),
+        ("approval_notes_json", "TEXT"),
+        ("last_error", "TEXT"),
+    ] {
+        ensure_column(conn, "coding_workflows", column, definition)?;
+    }
+    Ok(())
+}
+
+fn ensure_task_artifact_columns(conn: &Connection) -> Result<()> {
+    ensure_column(
+        conn,
+        "task_artifacts",
+        "status",
+        "TEXT NOT NULL DEFAULT 'ready'",
+    )?;
+    ensure_column(conn, "task_artifacts", "metadata_json", "TEXT")?;
     Ok(())
 }
 
@@ -260,8 +343,7 @@ pub fn load_remote_tasks(conn: &Connection, workspace_id: usize) -> Result<Vec<T
 
 /// 统计某个 task 的 messages 数量（用于 step_index）
 pub fn count_messages(conn: &Connection, task_id: usize) -> Result<usize> {
-    let mut stmt =
-        Statement::prepare(conn, "SELECT COUNT(*) FROM messages WHERE task_id = ?")?;
+    let mut stmt = Statement::prepare(conn, "SELECT COUNT(*) FROM messages WHERE task_id = ?")?;
     stmt.with_bindings(&task_id)?;
     let count: Vec<usize> = stmt
         .map(|s| s.column_int64(0).map(|v| v as usize))?
@@ -297,19 +379,22 @@ pub fn insert_message_step(
 }
 
 /// 查询某个 task 最近 N 条消息
-pub fn load_recent_messages(conn: &Connection, task_id: usize, limit: usize) -> Result<Vec<MessageRow>> {
+pub fn load_recent_messages(
+    conn: &Connection,
+    task_id: usize,
+    limit: usize,
+) -> Result<Vec<MessageRow>> {
     let mut stmt = Statement::prepare(
         conn,
         "SELECT role, content FROM messages WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
     )?;
     let limit_i64 = limit as i64;
     stmt.with_bindings(&(task_id, limit_i64))?;
-    let mut rows: Vec<MessageRow> = stmt
-        .map(|s| {
-            let role = s.column_text(0)?.to_string();
-            let content = s.column_text(1)?.to_string();
-            Ok(MessageRow { role, content })
-        })?;
+    let mut rows: Vec<MessageRow> = stmt.map(|s| {
+        let role = s.column_text(0)?.to_string();
+        let content = s.column_text(1)?.to_string();
+        Ok(MessageRow { role, content })
+    })?;
     rows.reverse();
     Ok(rows)
 }
@@ -432,9 +517,7 @@ pub fn delete_task(conn: &Connection, task_id: usize) -> Result<()> {
     let run_ids: Vec<i64> = {
         let mut stmt = Statement::prepare(conn, "SELECT id FROM task_runs WHERE task_id = ?")?;
         stmt.with_bindings(&task_id)?;
-        stmt.map(|s| s.column_int64(0))?
-            .into_iter()
-            .collect()
+        stmt.map(|s| s.column_int64(0))?.into_iter().collect()
     };
     for run_id in &run_ids {
         let mut stmt = Statement::prepare(conn, "DELETE FROM run_events WHERE run_id = ?")?;
@@ -449,16 +532,30 @@ pub fn delete_task(conn: &Connection, task_id: usize) -> Result<()> {
         stmt.exec()?;
     }
 
+    // 2.5 删除编码工作流和产物记录
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM task_artifacts WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+    {
+        let mut stmt = Statement::prepare(conn, "DELETE FROM coding_workflows WHERE task_id = ?")?;
+        stmt.with_bindings(&task_id)?;
+        stmt.exec()?;
+    }
+
     // 3. 删除 agent_instances 及关联的 agent_conversations
     let instance_ids: Vec<i64> = {
-        let mut stmt = Statement::prepare(conn, "SELECT id FROM agent_instances WHERE task_id = ?")?;
+        let mut stmt =
+            Statement::prepare(conn, "SELECT id FROM agent_instances WHERE task_id = ?")?;
         stmt.with_bindings(&task_id)?;
-        stmt.map(|s| s.column_int64(0))?
-            .into_iter()
-            .collect()
+        stmt.map(|s| s.column_int64(0))?.into_iter().collect()
     };
     for inst_id in &instance_ids {
-        let mut stmt = Statement::prepare(conn, "DELETE FROM agent_conversations WHERE agent_instance_id = ?")?;
+        let mut stmt = Statement::prepare(
+            conn,
+            "DELETE FROM agent_conversations WHERE agent_instance_id = ?",
+        )?;
         stmt.with_bindings(inst_id)?;
         stmt.exec()?;
     }
@@ -568,6 +665,535 @@ pub fn insert_message(
     }
 
     Ok(id as usize)
+}
+
+// ---------- coding_workflows / task_artifacts ----------
+
+pub fn insert_coding_workflow(
+    conn: &Connection,
+    task_id: usize,
+    stage: &str,
+    user_request: &str,
+    plan_path: &str,
+    log_path: &str,
+) -> Result<usize> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO coding_workflows (task_id, stage, user_request, plan_path, log_path) VALUES (?, ?, ?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(task_id, stage, user_request, plan_path, log_path))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+pub fn update_coding_workflow_stage(
+    conn: &Connection,
+    workflow_id: usize,
+    stage: &str,
+) -> Result<()> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE coding_workflows SET stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(stage, workflow_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn update_coding_workflow_context(
+    conn: &Connection,
+    workflow_id: usize,
+    main_agent_summary: &str,
+    known_constraints_json: &str,
+    suggested_direction: Option<&str>,
+    clarification_focus_json: &str,
+    approval_notes_json: &str,
+    last_error: Option<&str>,
+) -> Result<()> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE coding_workflows
+         SET main_agent_summary = ?,
+             known_constraints_json = ?,
+             suggested_direction = ?,
+             clarification_focus_json = ?,
+             approval_notes_json = ?,
+             last_error = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(
+        main_agent_summary,
+        known_constraints_json,
+        suggested_direction,
+        clarification_focus_json,
+        approval_notes_json,
+        last_error,
+        workflow_id,
+    ))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn upsert_task_artifact(
+    conn: &Connection,
+    task_id: usize,
+    workflow_id: Option<usize>,
+    kind: &str,
+    path: &str,
+    title: &str,
+) -> Result<usize> {
+    upsert_task_artifact_with_metadata(conn, task_id, workflow_id, kind, path, title, "ready", None)
+}
+
+pub fn upsert_task_artifact_with_metadata(
+    conn: &Connection,
+    task_id: usize,
+    workflow_id: Option<usize>,
+    kind: &str,
+    path: &str,
+    title: &str,
+    status: &str,
+    metadata_json: Option<&str>,
+) -> Result<usize> {
+    let workflow_id_val = workflow_id.map(|id| id as i64);
+    let existing = {
+        let mut stmt = Statement::prepare(
+            conn,
+            "SELECT id FROM task_artifacts WHERE task_id = ? AND path = ? ORDER BY id LIMIT 1",
+        )?;
+        stmt.with_bindings(&(task_id, path))?;
+        let rows: Vec<usize> = stmt
+            .map(|s| s.column_int64(0).map(|v| v as usize))?
+            .into_iter()
+            .collect();
+        rows.into_iter().next()
+    };
+
+    if let Some(id) = existing {
+        let mut stmt = Statement::prepare(
+            conn,
+            "UPDATE task_artifacts
+             SET workflow_id = ?, kind = ?, title = ?, status = ?, metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?",
+        )?;
+        stmt.with_bindings(&(workflow_id_val, kind, title, status, metadata_json, id))?;
+        stmt.exec()?;
+        return Ok(id);
+    }
+
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO task_artifacts (task_id, workflow_id, kind, path, title, status, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(
+        task_id,
+        workflow_id_val,
+        kind,
+        path,
+        title,
+        status,
+        metadata_json,
+    ))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskArtifactRow {
+    pub id: usize,
+    pub task_id: usize,
+    pub workflow_id: Option<usize>,
+    pub kind: String,
+    pub path: String,
+    pub title: String,
+    pub status: String,
+    pub metadata_json: String,
+    pub updated_at: String,
+}
+
+pub fn load_task_artifacts(conn: &Connection, task_id: usize) -> Result<Vec<TaskArtifactRow>> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, task_id, workflow_id, kind, path, COALESCE(title, ''), status, COALESCE(metadata_json, ''), updated_at
+         FROM task_artifacts
+         WHERE task_id = ?
+         ORDER BY updated_at DESC, id DESC",
+    )?;
+    stmt.with_bindings(&task_id)?;
+    stmt.map(|s| {
+        let workflow_id = s.column_int64(2).ok().map(|v| v as usize);
+        Ok(TaskArtifactRow {
+            id: s.column_int64(0)? as usize,
+            task_id: s.column_int64(1)? as usize,
+            workflow_id,
+            kind: s.column_text(3)?.to_string(),
+            path: s.column_text(4)?.to_string(),
+            title: s.column_text(5)?.to_string(),
+            status: s.column_text(6)?.to_string(),
+            metadata_json: s.column_text(7)?.to_string(),
+            updated_at: s.column_text(8)?.to_string(),
+        })
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct CodingWorkflowRow {
+    pub id: usize,
+    pub task_id: usize,
+    pub stage: String,
+    pub user_request: String,
+    pub main_agent_summary: String,
+    pub known_constraints_json: String,
+    pub suggested_direction: String,
+    pub clarification_focus_json: String,
+    pub plan_path: String,
+    pub log_path: String,
+    pub approval_notes_json: String,
+    pub last_error: String,
+}
+
+pub fn load_latest_coding_workflow(
+    conn: &Connection,
+    task_id: usize,
+) -> Result<Option<CodingWorkflowRow>> {
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id,
+                task_id,
+                stage,
+                user_request,
+                COALESCE(main_agent_summary, ''),
+                COALESCE(known_constraints_json, '[]'),
+                COALESCE(suggested_direction, ''),
+                COALESCE(clarification_focus_json, '[]'),
+                COALESCE(plan_path, ''),
+                COALESCE(log_path, ''),
+                COALESCE(approval_notes_json, '[]'),
+                COALESCE(last_error, '')
+         FROM coding_workflows
+         WHERE task_id = ?
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1",
+    )?;
+    stmt.with_bindings(&task_id)?;
+    let rows: Vec<CodingWorkflowRow> = stmt.map(|s| {
+        Ok(CodingWorkflowRow {
+            id: s.column_int64(0)? as usize,
+            task_id: s.column_int64(1)? as usize,
+            stage: s.column_text(2)?.to_string(),
+            user_request: s.column_text(3)?.to_string(),
+            main_agent_summary: s.column_text(4)?.to_string(),
+            known_constraints_json: s.column_text(5)?.to_string(),
+            suggested_direction: s.column_text(6)?.to_string(),
+            clarification_focus_json: s.column_text(7)?.to_string(),
+            plan_path: s.column_text(8)?.to_string(),
+            log_path: s.column_text(9)?.to_string(),
+            approval_notes_json: s.column_text(10)?.to_string(),
+            last_error: s.column_text(11)?.to_string(),
+        })
+    })?;
+    Ok(rows.into_iter().next())
+}
+
+#[cfg(test)]
+mod coding_workflow_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_conn() -> Connection {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "one-task-db-test-{}-{}.db",
+            std::process::id(),
+            nanos
+        ));
+        let conn = Connection::open_file(path.to_str().unwrap());
+        let _ = (conn
+            .exec(
+                "CREATE TABLE workspaces (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    expanded INTEGER DEFAULT 0,
+                    default_task_id INTEGER
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY,
+                    workspace_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    is_draft INTEGER DEFAULT 0
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE task_runs (
+                    id INTEGER PRIMARY KEY,
+                    task_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY,
+                    task_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE agent_instances (
+                    id INTEGER PRIMARY KEY,
+                    agent_id INTEGER NOT NULL,
+                    task_id INTEGER,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    session_state_json TEXT,
+                    last_active_at TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE agent_conversations (
+                    id INTEGER PRIMARY KEY,
+                    agent_instance_id INTEGER NOT NULL,
+                    user_query TEXT NOT NULL,
+                    agent_response TEXT,
+                    context_snapshot TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE run_events (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE coding_workflows (
+                    id INTEGER PRIMARY KEY,
+                    task_id INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    user_request TEXT NOT NULL,
+                    main_agent_summary TEXT,
+                    known_constraints_json TEXT,
+                    suggested_direction TEXT,
+                    clarification_focus_json TEXT,
+                    plan_path TEXT,
+                    log_path TEXT,
+                    approval_notes_json TEXT,
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        let _ = (conn
+            .exec(
+                "CREATE TABLE task_artifacts (
+                    id INTEGER PRIMARY KEY,
+                    task_id INTEGER NOT NULL,
+                    workflow_id INTEGER,
+                    kind TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )",
+            )
+            .unwrap())();
+        conn
+    }
+
+    #[test]
+    fn coding_workflow_round_trips_latest_stage() {
+        let conn = test_conn();
+        let workspace_id = insert_workspace(&conn, "Workspace", "/tmp/workspace").unwrap();
+        let task_id = insert_task(&conn, workspace_id, "Build app").unwrap();
+
+        let older_id = insert_coding_workflow(
+            &conn,
+            task_id,
+            "planning_running",
+            "make hello world",
+            "/tmp/workspace/plan.md",
+            "/tmp/workspace/claude.log",
+        )
+        .unwrap();
+        let newer_id = insert_coding_workflow(
+            &conn,
+            task_id,
+            "awaiting_approval",
+            "make login page",
+            "/tmp/workspace/plan-2.md",
+            "/tmp/workspace/claude-2.log",
+        )
+        .unwrap();
+        update_coding_workflow_stage(&conn, older_id, "failed").unwrap();
+
+        let latest = load_latest_coding_workflow(&conn, task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.id, newer_id);
+        assert_eq!(latest.task_id, task_id);
+        assert_eq!(latest.stage, "awaiting_approval");
+        assert_eq!(latest.user_request, "make login page");
+        assert_eq!(latest.main_agent_summary, "");
+        assert_eq!(latest.known_constraints_json, "[]");
+        assert_eq!(latest.suggested_direction, "");
+        assert_eq!(latest.clarification_focus_json, "[]");
+        assert_eq!(latest.plan_path, "/tmp/workspace/plan-2.md");
+        assert_eq!(latest.log_path, "/tmp/workspace/claude-2.log");
+        assert_eq!(latest.approval_notes_json, "[]");
+        assert_eq!(latest.last_error, "");
+    }
+
+    #[test]
+    fn coding_workflow_context_round_trips() {
+        let conn = test_conn();
+        let workspace_id = insert_workspace(&conn, "Workspace", "/tmp/workspace").unwrap();
+        let task_id = insert_task(&conn, workspace_id, "Build app").unwrap();
+        let workflow_id = insert_coding_workflow(
+            &conn,
+            task_id,
+            "awaiting_approval",
+            "make dashboard",
+            "/tmp/workspace/plan.md",
+            "/tmp/workspace/claude.log",
+        )
+        .unwrap();
+
+        update_coding_workflow_context(
+            &conn,
+            workflow_id,
+            "main summary",
+            r#"["must use GPUI"]"#,
+            Some("reuse existing layout"),
+            r#"["confirm copy"]"#,
+            r#"["make it tighter"]"#,
+            Some("last failure"),
+        )
+        .unwrap();
+
+        let latest = load_latest_coding_workflow(&conn, task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.main_agent_summary, "main summary");
+        assert_eq!(latest.known_constraints_json, r#"["must use GPUI"]"#);
+        assert_eq!(latest.suggested_direction, "reuse existing layout");
+        assert_eq!(latest.clarification_focus_json, r#"["confirm copy"]"#);
+        assert_eq!(latest.approval_notes_json, r#"["make it tighter"]"#);
+        assert_eq!(latest.last_error, "last failure");
+    }
+
+    #[test]
+    fn task_artifact_upsert_updates_existing_path() {
+        let conn = test_conn();
+        let workspace_id = insert_workspace(&conn, "Workspace", "/tmp/workspace").unwrap();
+        let task_id = insert_task(&conn, workspace_id, "Build app").unwrap();
+        let workflow_id = insert_coding_workflow(
+            &conn,
+            task_id,
+            "awaiting_approval",
+            "make hello world",
+            "/tmp/workspace/plan.md",
+            "/tmp/workspace/claude.log",
+        )
+        .unwrap();
+
+        let first_id = upsert_task_artifact(
+            &conn,
+            task_id,
+            Some(workflow_id),
+            "claude_plan",
+            "/tmp/workspace/plan.md",
+            "Old plan",
+        )
+        .unwrap();
+        let second_id = upsert_task_artifact(
+            &conn,
+            task_id,
+            Some(workflow_id),
+            "claude_plan",
+            "/tmp/workspace/plan.md",
+            "Updated plan",
+        )
+        .unwrap();
+
+        assert_eq!(first_id, second_id);
+        let artifacts = load_task_artifacts(&conn, task_id).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, first_id);
+        assert_eq!(artifacts[0].workflow_id, Some(workflow_id));
+        assert_eq!(artifacts[0].kind, "claude_plan");
+        assert_eq!(artifacts[0].path, "/tmp/workspace/plan.md");
+        assert_eq!(artifacts[0].title, "Updated plan");
+        assert_eq!(artifacts[0].status, "ready");
+        assert_eq!(artifacts[0].metadata_json, "");
+    }
+
+    #[test]
+    fn delete_task_removes_workflows_and_artifacts() {
+        let conn = test_conn();
+        let workspace_id = insert_workspace(&conn, "Workspace", "/tmp/workspace").unwrap();
+        let task_id = insert_task(&conn, workspace_id, "Build app").unwrap();
+        let workflow_id = insert_coding_workflow(
+            &conn,
+            task_id,
+            "awaiting_approval",
+            "make hello world",
+            "/tmp/workspace/plan.md",
+            "/tmp/workspace/claude.log",
+        )
+        .unwrap();
+        upsert_task_artifact(
+            &conn,
+            task_id,
+            Some(workflow_id),
+            "claude_log",
+            "/tmp/workspace/claude.log",
+            "Claude log",
+        )
+        .unwrap();
+
+        delete_task(&conn, task_id).unwrap();
+
+        assert!(load_latest_coding_workflow(&conn, task_id)
+            .unwrap()
+            .is_none());
+        assert!(load_task_artifacts(&conn, task_id).unwrap().is_empty());
+    }
 }
 
 // Export messages to JSON format
@@ -941,11 +1567,7 @@ pub fn load_agent_conversations(
 // caller from re-introducing the duplicated audit-write pattern this crate
 // just consolidated.
 
-pub(crate) fn insert_task_run(
-    conn: &Connection,
-    task_id: usize,
-    kind: &str,
-) -> Result<usize> {
+pub(crate) fn insert_task_run(conn: &Connection, task_id: usize, kind: &str) -> Result<usize> {
     let mut stmt = Statement::prepare(
         conn,
         "INSERT INTO task_runs (task_id, kind, status) VALUES (?, ?, 'running')",

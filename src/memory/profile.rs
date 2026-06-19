@@ -42,11 +42,43 @@ pub fn load_profile(workspace_name: &str) -> UserProfile {
     UserProfile::default()
 }
 
-/// Save a user fact to the profile. 
-/// Implements semantic de-duplication: 
+/// Save a user fact to the profile.
+/// Implements semantic de-duplication:
 /// - If new fact is a sub-string of an existing fact, skip.
 /// - If new fact contains an existing fact, replace the old one.
 pub fn save_fact(workspace_name: &str, fact: &str, task_id: Option<usize>) -> anyhow::Result<()> {
+    let scope = if workspace_name == "global" {
+        "global"
+    } else {
+        "workspace"
+    };
+    let confidence = if task_id.is_some() { 0.85 } else { 1.0 };
+    save_profile_entry(workspace_name, fact, task_id, scope, "fact", confidence)
+}
+
+pub fn save_preference(
+    workspace_name: &str,
+    preference: &str,
+    task_id: Option<usize>,
+) -> anyhow::Result<()> {
+    save_profile_entry(
+        workspace_name,
+        preference,
+        task_id,
+        "workspace",
+        "preference",
+        0.7,
+    )
+}
+
+fn save_profile_entry(
+    workspace_name: &str,
+    content: &str,
+    task_id: Option<usize>,
+    scope: &str,
+    kind: &str,
+    confidence: f32,
+) -> anyhow::Result<()> {
     let dir = if workspace_name == "global" {
         get_global_memory_dir()
     } else {
@@ -58,34 +90,44 @@ pub fn save_fact(workspace_name: &str, fact: &str, task_id: Option<usize>) -> an
 
     // Semantic de-duplication
     // 1. If an existing fact contains the new fact, do nothing.
-    if profile.key_facts.iter().any(|f| f.content.contains(fact)) {
+    if profile
+        .key_facts
+        .iter()
+        .any(|f| f.kind == kind && f.content.contains(content))
+    {
         return Ok(());
     }
-    
+
     // 2. Remove existing facts that are contained within the new fact.
-    profile.key_facts.retain(|f| !fact.contains(&f.content));
+    profile
+        .key_facts
+        .retain(|f| f.kind != kind || !content.contains(&f.content));
 
     // 3. Add the new fact
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-        
+
     profile.key_facts.push(FactEntry {
-        content: fact.to_string(),
+        content: content.to_string(),
         timestamp: now,
         source_task_id: task_id,
+        scope: scope.to_string(),
+        kind: kind.to_string(),
+        confidence,
+        last_used_at: None,
     });
     profile.last_updated = now;
 
     let path = get_profile_path(workspace_name);
     let content = serde_json::to_string_pretty(&profile)?;
-    
+
     // Atomic write
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, content)?;
     fs::rename(&tmp_path, &path)?;
-    
+
     Ok(())
 }
 
@@ -157,6 +199,61 @@ mod tests {
         let facts = get_global_facts();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0], "Global setting 1");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_profile_entries_include_scope_kind_and_confidence() {
+        let workspace = "_test_profile_metadata";
+        let path = get_profile_path(workspace);
+        let _ = fs::remove_file(&path);
+
+        save_preference(workspace, "Use concise replies", Some(42)).unwrap();
+
+        let profile = load_profile(workspace);
+        assert_eq!(profile.key_facts.len(), 1);
+        let entry = &profile.key_facts[0];
+        assert_eq!(entry.content, "Use concise replies");
+        assert_eq!(entry.scope, "workspace");
+        assert_eq!(entry.kind, "preference");
+        assert_eq!(entry.confidence, 0.7);
+        assert_eq!(entry.source_task_id, Some(42));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_profile_loads_legacy_fact_entries() {
+        let workspace = "_test_profile_legacy";
+        let path = get_profile_path(workspace);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            r#"{
+              "key_facts": [
+                {
+                  "content": "Legacy fact",
+                  "timestamp": 123,
+                  "source_task_id": null
+                }
+              ],
+              "last_updated": 123
+            }"#,
+        )
+        .unwrap();
+
+        let profile = load_profile(workspace);
+        assert_eq!(profile.key_facts.len(), 1);
+        let entry = &profile.key_facts[0];
+        assert_eq!(entry.content, "Legacy fact");
+        assert_eq!(entry.scope, "workspace");
+        assert_eq!(entry.kind, "fact");
+        assert_eq!(entry.confidence, 0.8);
+        assert_eq!(entry.last_used_at, None);
 
         let _ = fs::remove_file(&path);
     }

@@ -1,20 +1,24 @@
-use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
 pub mod agent;
 pub mod agent_factory;
-pub mod tool_registry;
-pub mod orchestrator;
 pub mod factory;
 pub mod main_agent;
+pub mod orchestrator;
+pub mod tool_registry;
 
 // 新架构的导出
-pub use agent::{AgentTrait, AgentBuilder, AgentRunContext, ToolDefinition, ToolResult, ToolSource};
-pub use tool_registry::{ToolRegistry, format_tool_descriptions, tool_registry, init_tool_registry};
-pub use orchestrator::{Orchestrator, OrchestratorEvent};
+pub use agent::{
+    AgentBuilder, AgentRunContext, AgentTrait, ToolDefinition, ToolResult, ToolSource,
+};
 pub use main_agent::{MainAgent, MainAgentBuilder};
+pub use orchestrator::{Orchestrator, OrchestratorEvent};
+pub use tool_registry::{
+    format_tool_descriptions, init_tool_registry, tool_registry, ToolRegistry,
+};
 
 // ── 以下为旧架构类型（保留向后兼容，逐步迁移到新架构） ───────────────────────
 
@@ -88,6 +92,44 @@ pub struct BaseAgent {
 }
 
 impl BaseAgent {
+    fn build_tool_defs(&self) -> Vec<serde_json::Value> {
+        let mut defs: Vec<serde_json::Value> = self
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name(),
+                        "description": t.description(),
+                        "parameters": t.parameters_schema()
+                    }
+                })
+            })
+            .collect();
+
+        let mut seen: std::collections::HashSet<String> =
+            self.tools.iter().map(|t| t.name().to_string()).collect();
+
+        if let Ok(registry) = crate::agents::core::tool_registry::tool_registry().lock() {
+            for tool in registry.tool_definitions(None) {
+                if !seen.insert(tool.name.clone()) {
+                    continue;
+                }
+                defs.push(serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema
+                    }
+                }));
+            }
+        }
+
+        defs
+    }
+
     pub async fn call_llm(&self, context: &AgentContext) -> Result<AgentResponse> {
         self.call_llm_stream(context, Box::new(|_| {})).await
     }
@@ -97,21 +139,19 @@ impl BaseAgent {
         context: &AgentContext,
         on_delta: Box<dyn FnMut(String) + Send>,
     ) -> Result<AgentResponse> {
-        let mut messages = vec![crate::memory::types::ChatMessage::new("system", &self.system_prompt)];
+        let mut messages = vec![crate::memory::types::ChatMessage::new(
+            "system",
+            &self.system_prompt,
+        )];
         messages.extend(context.history.clone());
 
-        let tool_defs: Vec<serde_json::Value> = self.tools.iter().map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name(),
-                    "description": t.description(),
-                    "parameters": t.parameters_schema()
-                }
-            })
-        }).collect();
+        let tool_defs = self.build_tool_defs();
 
-        let tool_defs_opt = if tool_defs.is_empty() { None } else { Some(&tool_defs[..]) };
+        let tool_defs_opt = if tool_defs.is_empty() {
+            None
+        } else {
+            Some(&tool_defs[..])
+        };
 
         let response = crate::services::api::call_chat_api_stream(
             &self.api_base,
@@ -120,14 +160,25 @@ impl BaseAgent {
             &messages,
             tool_defs_opt,
             on_delta,
-        ).await.map_err(|e| anyhow::anyhow!(e))?;
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
         if let Some(tool_calls) = response.get("tool_calls").and_then(|v| v.as_array()) {
-            let calls = tool_calls.iter().map(|tc| ToolCall {
-                id: tc["id"].as_str().unwrap_or_default().to_string(),
-                name: tc["function"]["name"].as_str().unwrap_or_default().to_string(),
-                arguments: tc["function"]["arguments"].as_str().unwrap_or_default().to_string(),
-            }).collect();
+            let calls = tool_calls
+                .iter()
+                .map(|tc| ToolCall {
+                    id: tc["id"].as_str().unwrap_or_default().to_string(),
+                    name: tc["function"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: tc["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+                .collect();
             let thinking = response["content"].as_str().unwrap_or_default().to_string();
             Ok(AgentResponse::ToolCalls(calls, thinking))
         } else {
@@ -142,20 +193,18 @@ impl BaseAgent {
         loop {
             max_inner_steps -= 1;
 
-            let tool_defs: Vec<serde_json::Value> = self.tools.iter().map(|t| {
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name(),
-                        "description": t.description(),
-                        "parameters": t.parameters_schema()
-                    }
-                })
-            }).collect();
+            let tool_defs = self.build_tool_defs();
 
-            let tool_defs_opt = if tool_defs.is_empty() { None } else { Some(&tool_defs[..]) };
+            let tool_defs_opt = if tool_defs.is_empty() {
+                None
+            } else {
+                Some(&tool_defs[..])
+            };
 
-            let mut messages = vec![crate::memory::types::ChatMessage::new("system", &self.system_prompt)];
+            let mut messages = vec![crate::memory::types::ChatMessage::new(
+                "system",
+                &self.system_prompt,
+            )];
             messages.extend(context.history.clone());
 
             let response = crate::services::api::call_chat_api_stream(
@@ -165,7 +214,9 @@ impl BaseAgent {
                 &messages,
                 tool_defs_opt,
                 |_| {},
-            ).await.map_err(|e| anyhow::anyhow!(e))?;
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
             if let Some(tool_calls) = response.get("tool_calls").and_then(|v| v.as_array()) {
                 if tool_calls.is_empty() {
@@ -173,19 +224,34 @@ impl BaseAgent {
                     return Ok(AgentResponse::Answer(content));
                 }
 
-                let calls: Vec<ToolCall> = tool_calls.iter().map(|tc| ToolCall {
-                    id: tc["id"].as_str().unwrap_or_default().to_string(),
-                    name: tc["function"]["name"].as_str().unwrap_or_default().to_string(),
-                    arguments: tc["function"]["arguments"].as_str().unwrap_or_default().to_string(),
-                }).collect();
+                let calls: Vec<ToolCall> = tool_calls
+                    .iter()
+                    .map(|tc| ToolCall {
+                        id: tc["id"].as_str().unwrap_or_default().to_string(),
+                        name: tc["function"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        arguments: tc["function"]["arguments"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    })
+                    .collect();
 
-                let tool_calls_json: Vec<Value> = calls.iter().map(|c| serde_json::json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": { "name": c.name, "arguments": c.arguments }
-                })).collect();
+                let tool_calls_json: Vec<Value> = calls
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "type": "function",
+                            "function": { "name": c.name, "arguments": c.arguments }
+                        })
+                    })
+                    .collect();
 
-                let assistant_content = response["content"].as_str().unwrap_or_default().to_string();
+                let assistant_content =
+                    response["content"].as_str().unwrap_or_default().to_string();
                 context.add_message(crate::memory::types::ChatMessage {
                     role: "assistant".to_string(),
                     content: assistant_content,
@@ -194,15 +260,17 @@ impl BaseAgent {
                 });
 
                 for call in &calls {
-                    let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
-                        let args: Value = serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
-                        match tool.call(args).await {
-                            Ok(res) => res.to_string(),
-                            Err(e) => format!("Error: {}", e),
-                        }
-                    } else {
-                        format!("Error: Tool '{}' not found", call.name)
-                    };
+                    let result =
+                        if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
+                            let args: Value = serde_json::from_str(&call.arguments)
+                                .unwrap_or(serde_json::json!({}));
+                            match tool.call(args).await {
+                                Ok(res) => res.to_string(),
+                                Err(e) => format!("Error: {}", e),
+                            }
+                        } else {
+                            format!("Error: Tool '{}' not found", call.name)
+                        };
 
                     context.add_message(crate::memory::types::ChatMessage {
                         role: "tool".to_string(),
@@ -213,7 +281,9 @@ impl BaseAgent {
                 }
 
                 if max_inner_steps == 0 {
-                    return Ok(AgentResponse::Answer("Reached maximum inner tool call steps.".to_string()));
+                    return Ok(AgentResponse::Answer(
+                        "Reached maximum inner tool call steps.".to_string(),
+                    ));
                 }
                 continue;
             }

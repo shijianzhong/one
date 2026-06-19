@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
 use crate::memory::types::ChatMessage;
 use crate::task_db;
 use crate::AppState;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -115,25 +115,29 @@ impl AppState {
         } else if let Some(task) = self.active_task_mut() {
             task.messages.clear();
         }
+        self.restore_coding_workflow_context();
     }
 
     pub(crate) fn active_task_ref(&self) -> Option<&TaskItem> {
         let tid = self.active_task_id?;
-        self.workspaces.iter()
+        self.workspaces
+            .iter()
             .flat_map(|w| &w.tasks)
             .find(|t| t.id == tid)
     }
 
     pub(crate) fn active_task_mut(&mut self) -> Option<&mut TaskItem> {
         let tid = self.active_task_id?;
-        self.workspaces.iter_mut()
+        self.workspaces
+            .iter_mut()
             .flat_map(|w| &mut w.tasks)
             .find(|t| t.id == tid)
     }
 
     pub(crate) fn task_mut(&mut self, task_id: Option<usize>) -> Option<&mut TaskItem> {
         let tid = task_id?;
-        self.workspaces.iter_mut()
+        self.workspaces
+            .iter_mut()
             .flat_map(|w| &mut w.tasks)
             .find(|t| t.id == tid)
     }

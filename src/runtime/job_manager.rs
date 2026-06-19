@@ -1,22 +1,22 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gpui::Context;
 
+use super::events::{GeneralAiStreamEvent, OrchestratorWrapperEvent, SummarizeEvent};
 use crate::agents::core::factory::AgentFactory;
 use crate::agents::core::OrchestratorEvent;
 use crate::agents::types::RequestKind;
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
-use crate::services::summarize_conversation_async;
 use crate::sandbox::backend::{Backend, SandboxBackend};
+use crate::services::summarize_conversation_async;
 use crate::{
     log_think_boundary_newlines, normalize_single_line_label, parse_tools_from_json,
     strip_think_tags, task_db, AppState, TerminalLine,
 };
-use super::events::{GeneralAiStreamEvent, SummarizeEvent, OrchestratorWrapperEvent};
 
 pub struct JobManager {
     pub next_claude_run_id: u64,
@@ -133,13 +133,14 @@ impl AppState {
 
                 if content.starts_with("CONFIRM_REQUIRED:") {
                     let tools_json = content.strip_prefix("CONFIRM_REQUIRED:").unwrap_or("");
-                    let dangerous_msg =
-                        "⚠️ 检测到危险操作：\n\n由于包含危险操作，当前已跳过执行。";
+                    let dangerous_msg = "⚠️ 检测到危险操作：\n\n由于包含危险操作，当前已跳过执行。";
 
-                    self.job_manager.pending_confirmation_tools = Some((Vec::new(), tools_json.to_string()));
+                    self.job_manager.pending_confirmation_tools =
+                        Some((Vec::new(), tools_json.to_string()));
 
                     if let Some(task) = self.task_mut(Some(run_task_id)) {
-                        task.messages.push(ChatMessage::new("assistant", &dangerous_msg));
+                        task.messages
+                            .push(ChatMessage::new("assistant", &dangerous_msg));
                         if run_task_id == current_active_id.unwrap_or(0) {
                             task.needs_auto_scroll = true;
                         }
@@ -184,7 +185,8 @@ impl AppState {
                 self.job_manager.reset_general_ai_run();
 
                 if let Some(task) = self.task_mut(Some(run_task_id)) {
-                    task.messages.push(ChatMessage::new("assistant", &error_message));
+                    task.messages
+                        .push(ChatMessage::new("assistant", &error_message));
                     if run_task_id == current_active_id.unwrap_or(0) {
                         task.needs_auto_scroll = true;
                     }
@@ -196,7 +198,8 @@ impl AppState {
     }
 
     fn spawn_summarize_job(&mut self, task_id: usize, cx: &mut Context<Self>) {
-        let all_messages = self.task_mut(Some(task_id))
+        let all_messages = self
+            .task_mut(Some(task_id))
             .map(|t| t.messages.clone())
             .unwrap_or_default();
         let msg_count = all_messages.len();
@@ -332,14 +335,21 @@ impl AppState {
 
         let task_for_async = task.clone();
         gpui_tokio::Tokio::spawn(cx, async move {
-            let tools_result =
-                system_tools::Tool::from_task_llm_async(&task_for_async, &base_url, &api_key, &model)
-                    .await;
+            let tools_result = system_tools::Tool::from_task_llm_async(
+                &task_for_async,
+                &base_url,
+                &api_key,
+                &model,
+            )
+            .await;
 
             let tools_with_danger = match tools_result {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("[SystemTools] LLM parsing failed: {}, falling back to keyword", e);
+                    eprintln!(
+                        "[SystemTools] LLM parsing failed: {}, falling back to keyword",
+                        e
+                    );
                     system_tools::Tool::from_task(&task_for_async)
                         .into_iter()
                         .map(|t| (t, None))
@@ -404,7 +414,8 @@ impl AppState {
     ) {
         if !confirmed {
             if let Some(task) = self.active_task_mut() {
-                task.messages.push(ChatMessage::new("assistant", "操作已取消。"));
+                task.messages
+                    .push(ChatMessage::new("assistant", "操作已取消。"));
             }
             self.job_manager.pending_confirmation_tools = None;
             cx.notify();
@@ -416,7 +427,8 @@ impl AppState {
             let tools = parse_tools_from_json(&task_json);
             if tools.is_empty() {
                 if let Some(task) = self.active_task_mut() {
-                    task.messages.push(ChatMessage::new("assistant", "无法解析操作指令。"));
+                    task.messages
+                        .push(ChatMessage::new("assistant", "无法解析操作指令。"));
                 }
                 cx.notify();
                 return;
@@ -474,7 +486,9 @@ impl AppState {
     /// 停止当前所有正在运行的任务（Orchestrator）
     pub(crate) fn cancel_current_run(&mut self, cx: &mut Context<Self>) {
         // 1. 设置取消标志
-        self.job_manager.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.job_manager
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         // 2. 清理所有请求状态
         self.job_manager.clear_request_full();
@@ -508,17 +522,9 @@ impl AppState {
             &config,
             &workspace_name,
             workspace_root,
+            self.mcp_manager.clone(),
         ) {
-            Ok(mut o) => {
-                // 注入 MCP Manager
-                if let Some(mcp) = &self.mcp_manager.as_ref() {
-                    // 需要把 mcp_manager 包装为 Arc<Mutex>
-                    // 注意：这里需要确保 orchestrator 能访问 mcp_manager
-                    // 由于生命周期问题，暂时先不加 MCP，等后续重构时统一处理
-                    eprintln!("[Orchestrator] MCP manager available but not injected yet");
-                }
-                o
-            }
+            Ok(o) => o,
             Err(e) => {
                 if let Some(task) = self.active_task_mut() {
                     task.messages.push(ChatMessage::new(
@@ -555,18 +561,23 @@ impl AppState {
             )
         });
 
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<OrchestratorWrapperEvent>();
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::unbounded_channel::<OrchestratorWrapperEvent>();
         let event_sender = sender.clone();
         let final_sender = sender;
 
         use std::time::{SystemTime, UNIX_EPOCH};
         let session_id = format!(
             "session-{}-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
             run_id,
         );
         let instruction_for_task = instruction.clone();
-        let history = self.active_task_ref()
+        let history = self
+            .active_task_ref()
             .map(|t| t.messages.clone())
             .unwrap_or_default();
 
@@ -578,8 +589,7 @@ impl AppState {
         self.job_manager.cancel_flag = cancel_flag.clone();
 
         // ── 创建用户输入通道（支持多轮交互） ──────────────────────
-        let (user_input_tx, mut user_input_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (user_input_tx, mut user_input_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         self.job_manager.orchestrator_user_input_tx = Some(user_input_tx);
 
         gpui_tokio::Tokio::spawn(cx, async move {

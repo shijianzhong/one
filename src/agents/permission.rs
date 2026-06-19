@@ -43,6 +43,7 @@ impl PermissionMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
+    ReadOnly,
     Shell,
     File,
     Process,
@@ -52,6 +53,7 @@ pub enum ToolKind {
 impl ToolKind {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::ReadOnly => "只读工具",
             Self::Shell => "Shell 命令",
             Self::File => "文件操作",
             Self::Process => "系统进程",
@@ -63,6 +65,28 @@ impl ToolKind {
     /// `Default` mode should ask the user before allowing it.
     pub fn requires_prompt_in_default(&self) -> bool {
         matches!(self, Self::Shell | Self::File | Self::Process)
+    }
+}
+
+pub fn classify_mcp_tool_kind(tool_name: &str) -> ToolKind {
+    let normalized = tool_name.trim().to_ascii_lowercase().replace('-', "_");
+    let mut parts = normalized.split('_').filter(|part| !part.is_empty());
+    let first = parts.next().unwrap_or(normalized.as_str());
+    let read_prefixes = [
+        "read", "get", "list", "search", "query", "fetch", "find", "lookup", "describe", "inspect",
+        "stat", "show",
+    ];
+    let write_prefixes = [
+        "create", "update", "delete", "remove", "write", "edit", "patch", "run", "exec", "execute",
+        "call", "post", "send", "upload", "download", "move", "copy", "rename", "set",
+    ];
+
+    if write_prefixes.contains(&first) {
+        ToolKind::Process
+    } else if read_prefixes.contains(&first) {
+        ToolKind::ReadOnly
+    } else {
+        ToolKind::Process
     }
 }
 
@@ -354,6 +378,28 @@ mod tests {
             PermissionDecision::Allow => {}
             other => panic!("expected Allow for ClaudeCode in Default, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn default_allows_read_only_tools() {
+        let policy = PermissionPolicy::new(PermissionMode::Default);
+        match policy.evaluate(ToolKind::ReadOnly, "MCP filesystem/list", None) {
+            PermissionDecision::Allow => {}
+            other => panic!(
+                "expected Allow for read-only tool in Default, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn classifies_mcp_tool_names_conservatively() {
+        assert_eq!(classify_mcp_tool_kind("list_files"), ToolKind::ReadOnly);
+        assert_eq!(classify_mcp_tool_kind("search-code"), ToolKind::ReadOnly);
+        assert_eq!(classify_mcp_tool_kind("get"), ToolKind::ReadOnly);
+        assert_eq!(classify_mcp_tool_kind("write_file"), ToolKind::Process);
+        assert_eq!(classify_mcp_tool_kind("execute_command"), ToolKind::Process);
+        assert_eq!(classify_mcp_tool_kind("unknown_tool"), ToolKind::Process);
     }
 
     #[test]

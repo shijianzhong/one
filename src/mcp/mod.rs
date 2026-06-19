@@ -18,6 +18,8 @@ pub mod protocol;
 pub mod transport;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use log::{error, info, warn};
@@ -28,6 +30,16 @@ use self::protocol::{
     CallToolResult, JsonRpcRequest, ListToolsResult, McpToolDefinition, RequestIdGenerator,
 };
 use self::transport::{HttpTransport, McpTransport, StdioTransport};
+
+static GLOBAL_MCP_MANAGER: OnceLock<Arc<Mutex<McpClientManager>>> = OnceLock::new();
+
+pub fn set_global_manager(manager: Arc<Mutex<McpClientManager>>) {
+    let _ = GLOBAL_MCP_MANAGER.set(manager);
+}
+
+pub fn global_manager() -> Option<Arc<Mutex<McpClientManager>>> {
+    GLOBAL_MCP_MANAGER.get().cloned()
+}
 
 /// MCP 客户端管理器
 ///
@@ -67,7 +79,10 @@ impl McpClientManager {
                 Ok(handle) => {
                     let tool_count = handle.tools.len();
                     manager.clients.insert(name.clone(), handle);
-                    info!("[MCP] Connected to server '{}' ({} tools)", name, tool_count);
+                    info!(
+                        "[MCP] Connected to server '{}' ({} tools)",
+                        name, tool_count
+                    );
                 }
                 Err(e) => {
                     warn!("[MCP] Failed to connect to server '{}': {}", name, e);
@@ -87,14 +102,20 @@ impl McpClientManager {
         let transport: Box<dyn McpTransport> = match &server_config.transport {
             TransportConfig::Stdio { command, args, env } => {
                 let resolved_env = McpConfig::resolve_env(env);
-                let mut transport = StdioTransport::spawn(command, args, &resolved_env.into_iter().collect::<Vec<_>>())?;
+                let mut transport = StdioTransport::spawn(
+                    command,
+                    args,
+                    &resolved_env.into_iter().collect::<Vec<_>>(),
+                )?;
                 // 发送初始化通知
                 transport.send_initialized()?;
                 Box::new(transport)
             }
-            TransportConfig::Http { url, headers } => {
-                Box::new(HttpTransport::new(url.clone(), headers.clone())?)
-            }
+            TransportConfig::Http { url, headers } => Box::new(HttpTransport::new(
+                url.clone(),
+                headers.clone(),
+                server_config.timeout_secs,
+            )?),
         };
 
         let mut handle = McpClientHandle {
@@ -151,6 +172,13 @@ impl McpClientManager {
         Ok(call_result.text_content())
     }
 
+    pub fn server_timeout_secs(&self, server: &str) -> u64 {
+        self.clients
+            .get(server)
+            .map(|handle| handle.config.timeout_secs.max(1))
+            .unwrap_or(30)
+    }
+
     /// 断开所有连接
     pub fn shutdown_all(&mut self) {
         for (name, mut handle) in self.clients.drain() {
@@ -194,9 +222,42 @@ impl McpClientManager {
     }
 }
 
+pub async fn call_tool_async(
+    manager: Arc<Mutex<McpClientManager>>,
+    server: String,
+    tool: String,
+    args: Value,
+) -> Result<String> {
+    let timeout_secs = manager
+        .try_lock()
+        .map(|manager| manager.server_timeout_secs(&server))
+        .unwrap_or(30);
+    let server_for_error = server.clone();
+    let tool_for_error = tool.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        let mut manager = manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP manager lock poisoned"))?;
+        manager.call_tool(&server, &tool, args)
+    });
+
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), task).await {
+        Ok(joined) => joined.context("MCP tool call worker failed")?,
+        Err(_) => anyhow::bail!(
+            "MCP tool call {}/{} timed out after {}s",
+            server_for_error,
+            tool_for_error,
+            timeout_secs
+        ),
+    }
+}
+
 impl McpClientHandle {
     /// 发现该 Server 支持的所有工具
-    fn discover_tools(&mut self, id_gen: &mut RequestIdGenerator) -> Result<Vec<McpToolDefinition>> {
+    fn discover_tools(
+        &mut self,
+        id_gen: &mut RequestIdGenerator,
+    ) -> Result<Vec<McpToolDefinition>> {
         let request = JsonRpcRequest::list_tools(id_gen.next());
         let response = self.transport.request(&request)?;
         let result = response.into_result()?;

@@ -1,13 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use super::{Agent, AgentContext, AgentResponse, ToolCall};
-use crate::agents::core::agent::ToolSource;
-use crate::skills::Skill;
-use crate::memory::types::ChatMessage;
+use crate::agents::permission::{classify_mcp_tool_kind, PermissionDecision};
 use crate::mcp::McpClientManager;
+use crate::memory::types::ChatMessage;
+use crate::skills::Skill;
 
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
@@ -16,7 +16,10 @@ pub enum OrchestratorEvent {
     /// Real-time stream delta from the main assistant
     AssistantDelta(String),
     /// A sub-step has started (kept for UI compatibility, but no longer used for sub-agents)
-    StepStarted { agent_id: String, agent_name: String },
+    StepStarted {
+        agent_id: String,
+        agent_name: String,
+    },
     /// A step has finished
     StepFinished { result: String },
     /// A tool has been called
@@ -71,7 +74,11 @@ impl Orchestrator {
         let mut context = AgentContext::new(session_id);
 
         // ── 取消检查 ─────────────────────────────────────────────────
-        if cancel_flag.as_ref().map(|f| f.load(Ordering::SeqCst)).unwrap_or(false) {
+        if cancel_flag
+            .as_ref()
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
             return Ok("任务已被用户取消。".to_string());
         }
 
@@ -85,17 +92,18 @@ impl Orchestrator {
         if !unique_facts.is_empty() {
             let memory_hint = format!(
                 "### User Profile & Project Context\n{}",
-                unique_facts.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+                unique_facts
+                    .iter()
+                    .map(|f| format!("- {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
             context.add_message(ChatMessage::new("system", &memory_hint));
         }
 
         // ── L3 相关历史上下文 ─────────────────────────────────────────
-        let l3_context = crate::memory::snapshot::build_memory_context(
-            workspace,
-            task_id.unwrap_or(0),
-            task,
-        );
+        let l3_context =
+            crate::memory::snapshot::build_memory_context(workspace, task_id.unwrap_or(0), task);
         if !l3_context.is_empty() {
             context.add_message(ChatMessage::new("system", &l3_context));
         }
@@ -131,7 +139,11 @@ impl Orchestrator {
         while max_steps > 0 {
             max_steps -= 1;
 
-            if cancel_flag.as_ref().map(|f| f.load(Ordering::SeqCst)).unwrap_or(false) {
+            if cancel_flag
+                .as_ref()
+                .map(|f| f.load(Ordering::SeqCst))
+                .unwrap_or(false)
+            {
                 return Ok("任务已被用户取消。".to_string());
             }
 
@@ -146,7 +158,9 @@ impl Orchestrator {
             let response = {
                 let mut step_fut = Box::pin(main_agent.step_stream(
                     &mut context_inner,
-                    Box::new(move |delta| { let _ = delta_tx.send(delta); }),
+                    Box::new(move |delta| {
+                        let _ = delta_tx.send(delta);
+                    }),
                 ));
                 loop {
                     tokio::select! {
@@ -168,7 +182,9 @@ impl Orchestrator {
                     });
 
                     if let Some(ref mut input_rx) = user_input_rx {
-                        on_event(OrchestratorEvent::AwaitingUserInput { reply: answer.clone() });
+                        on_event(OrchestratorEvent::AwaitingUserInput {
+                            reply: answer.clone(),
+                        });
                         match input_rx.recv().await {
                             Some(user_msg) => {
                                 context.add_message(ChatMessage::new("user", &user_msg));
@@ -182,7 +198,9 @@ impl Orchestrator {
                             }
                         }
                     } else {
-                        on_event(OrchestratorEvent::StepFinished { result: answer.clone() });
+                        on_event(OrchestratorEvent::StepFinished {
+                            result: answer.clone(),
+                        });
                         return Ok(answer);
                     }
                 }
@@ -191,8 +209,13 @@ impl Orchestrator {
                     if !thinking.is_empty() {
                         on_event(OrchestratorEvent::Plan { plan: thinking });
                     }
-                    self.execute_tool_calls(&mut context, &calls, cancel_flag.clone(), &mut on_event)
-                        .await?;
+                    self.execute_tool_calls(
+                        &mut context,
+                        &calls,
+                        cancel_flag.clone(),
+                        &mut on_event,
+                    )
+                    .await?;
                 }
             }
         }
@@ -211,11 +234,16 @@ impl Orchestrator {
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
-        let tool_calls_json: Vec<Value> = calls.iter().map(|c| serde_json::json!({
-            "id": c.id,
-            "type": "function",
-            "function": { "name": c.name, "arguments": c.arguments }
-        })).collect();
+        let tool_calls_json: Vec<Value> = calls
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": { "name": c.name, "arguments": c.arguments }
+                })
+            })
+            .collect();
 
         context.add_message(ChatMessage {
             role: "assistant".to_string(),
@@ -230,7 +258,9 @@ impl Orchestrator {
                 args: call.arguments.clone(),
             });
 
-            let result = self.dispatch_tool(call, cancel_flag.clone(), on_event).await;
+            let result = self
+                .dispatch_tool(call, cancel_flag.clone(), on_event)
+                .await;
 
             on_event(OrchestratorEvent::ToolResult {
                 name: call.name.clone(),
@@ -275,12 +305,31 @@ impl Orchestrator {
                     return self.execute_skill(&skill_id, args).await;
                 }
                 crate::agents::core::agent::ToolSource::Mcp { server, tool_name } => {
+                    let detail = format!("MCP {}/{} {}", server, tool_name, args);
+                    let kind = classify_mcp_tool_kind(&tool_name);
+                    match crate::agents::permission::global()
+                        .request_async(kind, detail, None)
+                        .await
+                    {
+                        PermissionDecision::Allow => {}
+                        PermissionDecision::Deny(reason) => {
+                            return format!("MCP 调用已拒绝：{}", reason);
+                        }
+                        PermissionDecision::Ask => {
+                            return "MCP 调用未获得授权。".to_string();
+                        }
+                    }
                     if let Some(mcp) = &self.mcp_manager {
-                        if let Ok(mut mcp) = mcp.lock() {
-                            match mcp.call_tool(&server, &tool_name, args) {
-                                Ok(result) => return result,
-                                Err(e) => return format!("MCP Error: {}", e),
-                            }
+                        match crate::mcp::call_tool_async(
+                            mcp.clone(),
+                            server.clone(),
+                            tool_name.clone(),
+                            args,
+                        )
+                        .await
+                        {
+                            Ok(result) => return result,
+                            Err(e) => return format!("MCP Error: {}", e),
                         }
                     }
                     return format!("MCP server '{}' not connected", server);
@@ -297,10 +346,19 @@ impl Orchestrator {
 
         // ── 2. start_coding_workflow → 发送编码工作流事件 ────────
         if name == "start_coding_workflow" {
-            let user_request = args.get("user_request").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let main_agent_summary = args.get("main_agent_summary").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let user_request = args
+                .get("user_request")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let main_agent_summary = args
+                .get("main_agent_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
             let known_constraints = string_array_arg(&args, "known_constraints");
-            let suggested_direction = args.get("suggested_direction")
+            let suggested_direction = args
+                .get("suggested_direction")
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
@@ -317,14 +375,23 @@ impl Orchestrator {
                 suggested_direction,
                 clarification_focus,
             });
-            return "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。".to_string();
+            return "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。"
+                .to_string();
         }
 
         // ── 3. run_in_terminal → 发送 RunInTerminal 事件 ────────
         if name == "run_in_terminal" {
-            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let command = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
             if !command.is_empty() {
-                let work_dir = args.get("work_dir").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+                let work_dir = args
+                    .get("work_dir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".")
+                    .to_string();
                 _on_event(OrchestratorEvent::RunInTerminal { command, work_dir });
                 return "命令已发送到终端执行。用户可以在终端中查看实时输出。".to_string();
             }
@@ -333,7 +400,8 @@ impl Orchestrator {
 
         // ── 4. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
         if name == "run_system_task" {
-            let skill_id = args.get("skill_id")
+            let skill_id = args
+                .get("skill_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty());
@@ -370,7 +438,10 @@ impl Orchestrator {
     async fn execute_skill(&self, skill_id: &str, args: Value) -> String {
         let sid = skill_id.strip_prefix("skill:").unwrap_or(skill_id);
         let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-        let skill_args = args.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+        let skill_args = args
+            .get("args")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         if let Some(skill) = crate::skills::registry().find(sid) {
             if apply {
@@ -389,7 +460,8 @@ impl Orchestrator {
                                 "failed": exec.failed_items.iter()
                                     .map(|(k, v)| serde_json::json!({"item": k, "error": v}))
                                     .collect::<Vec<_>>(),
-                            }).to_string()
+                            })
+                            .to_string()
                         }
                     }
                     Err(e) => format!("Error: skill execute failed: {}", e),
@@ -408,7 +480,8 @@ impl Orchestrator {
                         })).collect::<Vec<_>>(),
                         "warnings": preview.warnings,
                         "hint": "若用户同意继续，再次调用时把 apply 设为 true。",
-                    }).to_string(),
+                    })
+                    .to_string(),
                     Err(e) => format!("Error: skill preview failed: {}", e),
                 }
             }
@@ -418,7 +491,10 @@ impl Orchestrator {
                 .into_iter()
                 .map(|m| m.id)
                 .collect();
-            format!("Error: skill_id '{}' not found. Available: {:?}", sid, known)
+            format!(
+                "Error: skill_id '{}' not found. Available: {:?}",
+                sid, known
+            )
         }
     }
 }

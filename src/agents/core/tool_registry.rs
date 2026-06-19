@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -50,7 +50,11 @@ impl ToolRegistry {
     }
 
     pub fn register_skill(&mut self, skill: SkillToolRegistration) {
-        if let Some(pos) = self.skill_tools.iter().position(|s| s.skill_id == skill.skill_id) {
+        if let Some(pos) = self
+            .skill_tools
+            .iter()
+            .position(|s| s.skill_id == skill.skill_id)
+        {
             self.skill_tools[pos] = skill;
         } else {
             self.skill_tools.push(skill);
@@ -59,9 +63,11 @@ impl ToolRegistry {
 
     pub fn register_mcp(&mut self, mcp: McpToolRegistration) {
         let key = format!("{}:{}", mcp.server_name, mcp.tool_name);
-        if let Some(pos) = self.mcp_tools.iter().position(|m| {
-            format!("{}:{}", m.server_name, m.tool_name) == key
-        }) {
+        if let Some(pos) = self
+            .mcp_tools
+            .iter()
+            .position(|m| format!("{}:{}", m.server_name, m.tool_name) == key)
+        {
             self.mcp_tools[pos] = mcp;
         } else {
             self.mcp_tools.push(mcp);
@@ -94,28 +100,30 @@ impl ToolRegistry {
 
         for skill in &self.skill_tools {
             let full_name = format!("skill:{}", skill.skill_id);
+            let tool_name = safe_tool_name(&full_name);
             if let Some(filter) = agent_filter {
                 if !filter.contains(&full_name) && !filter.contains(&skill.skill_id) {
                     continue;
                 }
             }
             defs.push(ToolDefinition {
-                name: full_name,
-                description: skill.description.clone(),
+                name: tool_name,
+                description: format!("{}（内部 Skill：{}）", skill.description, full_name),
                 input_schema: skill.parameters_schema.clone(),
             });
         }
 
         for mcp in &self.mcp_tools {
             let full_name = format!("mcp:{}:{}", mcp.server_name, mcp.tool_name);
+            let tool_name = safe_tool_name(&full_name);
             if let Some(filter) = agent_filter {
                 if !filter.contains(&full_name) {
                     continue;
                 }
             }
             defs.push(ToolDefinition {
-                name: full_name,
-                description: mcp.description.clone(),
+                name: tool_name,
+                description: format!("{}（内部 MCP：{}）", mcp.description, full_name),
                 input_schema: mcp.input_schema.clone(),
             });
         }
@@ -151,13 +159,35 @@ impl ToolRegistry {
                 return Some(ToolSource::Skill(skill_id.to_string()));
             }
         }
+        if let Some(skill_id) = name.strip_prefix("skill__") {
+            let skill_id = skill_id.replace("__", ".");
+            if self.skill_tools.iter().any(|s| s.skill_id == skill_id) {
+                return Some(ToolSource::Skill(skill_id));
+            }
+        }
 
         if let Some(rest) = name.strip_prefix("mcp:") {
             if let Some((server, tool_name)) = rest.split_once(':') {
-                if self.mcp_tools.iter().any(|m| m.server_name == server && m.tool_name == tool_name) {
+                if self
+                    .mcp_tools
+                    .iter()
+                    .any(|m| m.server_name == server && m.tool_name == tool_name)
+                {
                     return Some(ToolSource::Mcp {
                         server: server.to_string(),
                         tool_name: tool_name.to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(rest) = name.strip_prefix("mcp__") {
+            if rest.contains("__") {
+                if let Some(mcp) = self.mcp_tools.iter().find(|m| {
+                    safe_tool_name(&format!("mcp:{}:{}", m.server_name, m.tool_name)) == name
+                }) {
+                    return Some(ToolSource::Mcp {
+                        server: mcp.server_name.clone(),
+                        tool_name: mcp.tool_name.clone(),
                     });
                 }
             }
@@ -179,11 +209,24 @@ pub fn format_tool_descriptions(defs: &[ToolDefinition]) -> String {
         return "（当前没有可用工具）".to_string();
     }
     defs.iter()
-        .map(|d| {
-            format!("- **{}**: {}", d.name, d.description)
-        })
+        .map(|d| format!("- **{}**: {}", d.name, d.description))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn safe_tool_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push_str("__");
+        }
+    }
+    if out.len() > 64 {
+        out.truncate(64);
+    }
+    out
 }
 
 impl ToolSource {

@@ -38,6 +38,10 @@ pub struct JobManager {
     pub cancel_flag: Arc<AtomicBool>,
     /// Orchestrator 等待用户输入时的通道（发送端，由 route_message 使用）
     pub orchestrator_user_input_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// 当前编码工作流状态。
+    pub coding_workflow: Option<crate::runtime::coding_workflow::CodingWorkflowState>,
+    /// 当前 Claude Code 编码工作流的取消信号。
+    pub coding_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl JobManager {
@@ -57,6 +61,8 @@ impl JobManager {
             pending_confirmation_tools: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             orchestrator_user_input_tx: None,
+            coding_workflow: None,
+            coding_cancel_tx: None,
         }
     }
 
@@ -474,6 +480,9 @@ impl AppState {
         self.job_manager.clear_request_full();
         self.job_manager.reset_general_ai_run();
         self.job_manager.orchestrator_user_input_tx = None;
+        if let Some(cancel_tx) = self.job_manager.coding_cancel_tx.take() {
+            let _ = cancel_tx.send(());
+        }
 
         // 3. 标记当前 task 不活跃
         if let Some(tid) = self.active_task_id {
@@ -722,6 +731,22 @@ impl AppState {
                                         cx.notify();
                                     });
                                 }).detach();
+                            }
+                            OrchestratorEvent::CodingWorkflowRequested {
+                                user_request,
+                                main_agent_summary,
+                                known_constraints,
+                                suggested_direction,
+                                clarification_focus,
+                            } => {
+                                this.start_coding_workflow(
+                                    user_request,
+                                    main_agent_summary,
+                                    known_constraints,
+                                    suggested_direction,
+                                    clarification_focus,
+                                    cx,
+                                );
                             }
                             OrchestratorEvent::AwaitingUserInput { reply } => {
                                 // 将 MainAgent 的回复添加到对应 task 的消息列表

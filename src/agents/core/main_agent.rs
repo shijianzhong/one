@@ -32,6 +32,7 @@ impl MainAgent {
         let system_prompt = format!(
             "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。\n\n你有以下工具：\n\
              - **run_in_terminal** — 在右侧终端执行命令并实时显示输出。适用于运行代码、执行脚本、调用 CLI 等。\n\
+             - **start_coding_workflow** — 当用户提出开发应用、实现功能、修改代码、修复 bug、重构项目等编码任务时调用。你先做简要需求梳理，然后调用此工具；系统会让 Claude Code 先做方案梳理，等用户确认后再执行编码。\n\
              - **run_system_task** — 调用已注册的 Skill（system.tools 等）。\n\
              - **remember** — 记住用户信息。\n\
              - **recall** — 查询已记住的信息。\n\
@@ -43,7 +44,8 @@ impl MainAgent {
              - 查看目录内容/文件信息 → skill_id=\"system.tools\" args={{\"tool\": \"list_dir\", \"path\": \"...\"}}\n\
              - 分析磁盘占用 → skill_id=\"system.tools\" args={{\"tool\": \"disk_usage\", \"path\": \"...\"}}\n
              用户问系统相关问题时，务必通过 run_system_task 获取真实数据，不要猜测。\n\n\
-             需要执行任何命令时，使用 run_in_terminal。命令在右侧终端中执行，用户可以实时看到输出。",
+             编码任务规则：当用户请求开发应用、实现功能、创建页面、修改代码、修复 bug、重构项目时，不要直接给完整代码，也不要直接调用 run_in_terminal。你需要先简要理解和整理用户需求，然后调用 start_coding_workflow。聊天区负责总结 Claude Code 阶段输出；终端区负责展示 Claude Code 执行过程。\n\n\
+             需要执行普通非编码命令时，使用 run_in_terminal。命令在右侧终端中执行，用户可以实时看到输出。",
             soul_content,
             chrono::Local::now().format("%Y-%m-%d"),
             std::env::consts::OS,
@@ -52,6 +54,7 @@ impl MainAgent {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(RunSystemTaskTool),
             Arc::new(RunInTerminalTool),
+            Arc::new(StartCodingWorkflowTool),
             Arc::new(RememberTool { workspace: workspace.clone() }),
             Arc::new(RecallTool { workspace: workspace.clone() }),
             Arc::new(ProposeSoulUpdateTool),
@@ -257,6 +260,49 @@ impl Tool for RunInTerminalTool {
                 }
             },
             "required": ["command"]
+        })
+    }
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+/// 启动两阶段 Claude Code 编码工作流。由 Orchestrator 拦截并交给 Runtime 执行。
+struct StartCodingWorkflowTool;
+#[async_trait]
+impl Tool for StartCodingWorkflowTool {
+    fn name(&self) -> &str { "start_coding_workflow" }
+    fn description(&self) -> &str {
+        "启动两阶段 Claude Code 编码工作流。适用于开发应用、实现功能、创建页面、修改代码、修复 bug、重构项目等编码任务。第一阶段只做方案梳理，用户确认后第二阶段才编码。"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "user_request": {
+                    "type": "string",
+                    "description": "用户的原始编码需求"
+                },
+                "main_agent_summary": {
+                    "type": "string",
+                    "description": "你对需求的简要梳理，包括目标、范围和关键约束"
+                },
+                "known_constraints": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "已经明确的约束条件"
+                },
+                "suggested_direction": {
+                    "type": "string",
+                    "description": "可选的建议技术方向或实现倾向"
+                },
+                "clarification_focus": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "希望 Claude Code 在第一阶段重点澄清的问题"
+                }
+            },
+            "required": ["user_request", "main_agent_summary"]
         })
     }
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {

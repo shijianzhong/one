@@ -12,7 +12,7 @@ use crate::ui_theme::{
     BORDER_LIGHT, CANVAS_BG, INPUT_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT,
     SURFACE_ELEVATED, TERTIARY_TEXT,
 };
-use crate::{AppState, TerminalLine};
+use crate::AppState;
 
 pub(crate) struct DraggedResizer;
 
@@ -100,14 +100,32 @@ impl AppState {
 
     pub(crate) fn render_terminal_resizer(
         &mut self,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
             .id("terminal-resizer")
             .w(px(6.0))
             .h_full()
             .cursor_col_resize()
-            .bg(BORDER_LIGHT())
+            .bg(BORDER_LIGHT().opacity(0.32))
+            .border_l_1()
+            .border_r_1()
+            .border_color(BORDER_LIGHT().opacity(0.55))
+            .hover(|this| {
+                this.bg(BORDER_LIGHT().opacity(0.9))
+                    .border_color(SECONDARY_TEXT().opacity(0.55))
+            })
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                this.right_panel_resize_initial_mouse_x = Some(f32::from(event.position.x));
+                this.right_panel_resize_initial_width = Some(this.right_panel_width);
+                cx.notify();
+            }))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, _window, cx| {
+                this.right_panel_resize_initial_mouse_x = None;
+                this.right_panel_resize_initial_width = None;
+                cx.notify();
+            }))
+            .on_drag(DraggedResizer, |_, _, _, cx| cx.new(|_| DraggedResizer))
     }
 
     pub(crate) fn render_terminal(
@@ -189,7 +207,21 @@ impl AppState {
 
         let focus_handle = self.terminal_focus_handle.clone();
         let term_arc = self.terminal_emulator.as_ref().unwrap().clone();
-        let output_lines = {
+        let output_lines = if !self.terminal_output.is_empty() {
+            let mut lines = Vec::new();
+            for entry in &self.terminal_output {
+                if let Some(command) = &entry.command {
+                    lines.push((format!("$ {}", command), false));
+                }
+                for line in entry.output.lines() {
+                    lines.push((line.to_string(), false));
+                }
+                if entry.output.ends_with('\n') {
+                    lines.push((String::new(), false));
+                }
+            }
+            lines
+        } else {
             if let Ok(term_lock) = term_arc.lock() {
                 let render_lines = term_lock.renderable_lines();
                 let v: Vec<(String, bool)> = render_lines

@@ -27,6 +27,14 @@ pub enum OrchestratorEvent {
     AwaitingUserInput { reply: String },
     /// Agent wants to run a command in the terminal
     RunInTerminal { command: String, work_dir: String },
+    /// Agent identified a coding task and wants runtime to start the two-stage Claude Code workflow.
+    CodingWorkflowRequested {
+        user_request: String,
+        main_agent_summary: String,
+        known_constraints: Vec<String>,
+        suggested_direction: Option<String>,
+        clarification_focus: Vec<String>,
+    },
 }
 
 pub struct Orchestrator {
@@ -287,7 +295,32 @@ impl Orchestrator {
             }
         }
 
-        // ── 2. run_in_terminal → 发送 RunInTerminal 事件 ────────
+        // ── 2. start_coding_workflow → 发送编码工作流事件 ────────
+        if name == "start_coding_workflow" {
+            let user_request = args.get("user_request").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let main_agent_summary = args.get("main_agent_summary").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let known_constraints = string_array_arg(&args, "known_constraints");
+            let suggested_direction = args.get("suggested_direction")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let clarification_focus = string_array_arg(&args, "clarification_focus");
+
+            if user_request.trim().is_empty() {
+                return "请提供 user_request。".to_string();
+            }
+
+            _on_event(OrchestratorEvent::CodingWorkflowRequested {
+                user_request,
+                main_agent_summary,
+                known_constraints,
+                suggested_direction,
+                clarification_focus,
+            });
+            return "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。".to_string();
+        }
+
+        // ── 3. run_in_terminal → 发送 RunInTerminal 事件 ────────
         if name == "run_in_terminal" {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             if !command.is_empty() {
@@ -298,7 +331,7 @@ impl Orchestrator {
             return "请提供要执行的命令。".to_string();
         }
 
-        // ── 3. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
+        // ── 4. 向后兼容：旧式 "run_system_task" 工具名 ──────────────
         if name == "run_system_task" {
             let skill_id = args.get("skill_id")
                 .and_then(|v| v.as_str())
@@ -388,4 +421,18 @@ impl Orchestrator {
             format!("Error: skill_id '{}' not found. Available: {:?}", sid, known)
         }
     }
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }

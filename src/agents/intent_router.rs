@@ -36,6 +36,7 @@ impl IntentRouter {
                 "代码审查".into(), "code review".into(), "PR".into(),
                 "写一个".into(), "创建一个".into(), "新建".into(),
                 "实现一个".into(), "开发".into(), "编程".into(),
+                "做一个".into(), "做个".into(), "做应用".into(), "搭建".into(),
                 "code".into(), "coding".into(), "implement".into(),
                 "add".into(), "create".into(), "修改".into(),
             ],
@@ -98,15 +99,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_empty_keywords_no_fast_route() {
+    fn test_route_current_keyword_behavior() {
         let router = IntentRouter::new();
-        // 关键词池为空，所有请求都应该走 General + None
-        for msg in &["查看进程", "我电脑的内存使用情况", "打开 Safari",
-                      "帮我写个函数", "你好", "what's your name", "今天天气怎么样"] {
-            let (level, decision) = router.route(msg);
-            assert!(matches!(level, IntentLevel::General), "expected General for '{}'", msg);
-            assert!(decision.is_none(), "expected None decision for '{}'", msg);
-            assert!(!router.needs_precise_route(msg), "expected no precise route for '{}'", msg);
-        }
+
+        let (level, decision) = router.route("我电脑的内存使用情况");
+        assert!(matches!(level, IntentLevel::SystemTools));
+        assert!(matches!(decision, Some(RoutingDecision::SystemTools { .. })));
+
+        let (level, decision) = router.route("帮我做一个登录页面");
+        assert!(matches!(level, IntentLevel::Coding));
+        assert!(decision.is_none());
+
+        let (level, decision) = router.route("你好，今天聊点产品想法");
+        assert!(matches!(level, IntentLevel::General));
+        assert!(decision.is_none());
     }
 }

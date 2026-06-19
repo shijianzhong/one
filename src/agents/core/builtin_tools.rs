@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::Tool;
 
 pub fn tools_for_workspace(workspace: &str) -> Vec<Arc<dyn Tool>> {
-    vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(RunSystemTaskTool),
         Arc::new(RunInTerminalTool),
         Arc::new(StartCodingWorkflowTool),
@@ -17,7 +17,11 @@ pub fn tools_for_workspace(workspace: &str) -> Vec<Arc<dyn Tool>> {
             workspace: workspace.to_string(),
         }),
         Arc::new(ProposeSoulUpdateTool),
-    ]
+    ];
+    if crate::workflows::has_published_capabilities() {
+        tools.push(Arc::new(RunCapabilityTool));
+    }
+    tools
 }
 
 struct RunSystemTaskTool;
@@ -250,5 +254,51 @@ impl Tool for StartCodingWorkflowTool {
 
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
         Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct RunCapabilityTool;
+
+#[async_trait]
+impl Tool for RunCapabilityTool {
+    fn name(&self) -> &str {
+        "run_capability"
+    }
+
+    fn description(&self) -> &str {
+        "调用已发布能力。能力是由工作流发布后的可复用执行单元，适合处理明确匹配已发布能力的任务。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        let capability_ids: Vec<String> = crate::workflows::capability_manifests()
+            .into_iter()
+            .map(|capability| capability.id)
+            .collect();
+        json!({
+            "type": "object",
+            "properties": {
+                "capability_id": {
+                    "type": "string",
+                    "enum": capability_ids,
+                    "description": "要调用的已发布能力 id。"
+                },
+                "input": {
+                    "type": "object",
+                    "description": "传给能力工作流的输入对象，结构由该能力的 input_schema 决定。"
+                }
+            },
+            "required": ["capability_id", "input"]
+        })
+    }
+
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
+        let capability_id = args
+            .get("capability_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("capability_id is required"))?;
+        let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+        crate::workflows::run_capability(capability_id, input).await
     }
 }

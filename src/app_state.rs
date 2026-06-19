@@ -25,6 +25,13 @@ use crate::{
 pub(crate) enum MainView {
     Chat,
     SkillsMarket,
+    Capabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CapabilitiesTab {
+    Library,
+    Workflows,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +61,14 @@ pub(crate) struct AppState {
     pub(crate) right_panel_resize_initial_mouse_x: Option<f32>,
     pub(crate) right_panel_resize_initial_width: Option<f32>,
     pub(crate) main_view: MainView,
+    pub(crate) capabilities_tab: CapabilitiesTab,
+    pub(crate) capability_run_inputs: HashMap<String, String>,
+    pub(crate) editing_workflow_id: Option<String>,
+    pub(crate) workflow_edit_json: String,
+    pub(crate) expanded_workflow_run_id: Option<usize>,
+    pub(crate) capability_import_json: String,
+    pub(crate) expanded_capability_versions_id: Option<String>,
+    pub(crate) expanded_capability_dependencies_id: Option<String>,
     pub(crate) skills_market: SkillsMarketState,
     pub(crate) show_model_config_dialog: bool,
     pub(crate) show_export_dialog: bool,
@@ -298,6 +313,14 @@ impl AppState {
             right_panel_resize_initial_mouse_x: None,
             right_panel_resize_initial_width: None,
             main_view: MainView::Chat,
+            capabilities_tab: CapabilitiesTab::Library,
+            capability_run_inputs: HashMap::new(),
+            editing_workflow_id: None,
+            workflow_edit_json: String::new(),
+            expanded_workflow_run_id: None,
+            capability_import_json: String::new(),
+            expanded_capability_versions_id: None,
+            expanded_capability_dependencies_id: None,
             skills_market: SkillsMarketState::new(),
             show_model_config_dialog: false,
             show_export_dialog: false,
@@ -791,6 +814,11 @@ impl AppState {
     pub(crate) fn open_skills_market(&mut self, cx: &mut Context<Self>) {
         self.skills_market.refresh();
         self.main_view = MainView::SkillsMarket;
+        cx.notify();
+    }
+
+    pub(crate) fn open_capabilities(&mut self, cx: &mut Context<Self>) {
+        self.main_view = MainView::Capabilities;
         cx.notify();
     }
 

@@ -189,7 +189,7 @@ pub(crate) fn render_skills_market_titlebar(
                         .text_lg()
                         .text_color(PRIMARY_TEXT())
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child(t(lang, Translations::CAPABILITIES)),
+                        .child(t(lang, Translations::SKILLS)),
                 )
                 .child(
                     div()
@@ -351,7 +351,7 @@ pub(crate) fn render_skills_market(
         ((available_w - GAP * (cols as f32 - 1.0)) / cols as f32).clamp(MIN_CARD_W, MAX_CARD_W);
 
     let category_items: Vec<(&'static str, &'static str)> = vec![
-        (t(lang, Translations::ALL), "capabilities"),
+        (t(lang, Translations::ALL), "skill"),
         (t(lang, Translations::DEV_TOOLS), "terminal"),
         (t(lang, Translations::ANALYSIS), "activity"),
         (t(lang, Translations::DESIGN), "side-panel"),
@@ -556,7 +556,7 @@ pub(crate) fn render_skills_market(
                         div()
                             .text_sm()
                             .text_color(MUTED_TEXT())
-                            .child("No capabilities found."),
+                            .child("No skills found."),
                     ),
             );
         } else {

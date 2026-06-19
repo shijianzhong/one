@@ -197,6 +197,7 @@ impl Database {
 
         ensure_coding_workflow_columns(conn_ref)?;
         ensure_task_artifact_columns(conn_ref)?;
+        ensure_workflow_tables(conn_ref)?;
 
         Ok(Self { conn })
     }
@@ -252,6 +253,354 @@ fn ensure_task_artifact_columns(conn: &Connection) -> Result<()> {
     )?;
     ensure_column(conn, "task_artifacts", "metadata_json", "TEXT")?;
     Ok(())
+}
+
+pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
+    let _ = (conn
+        .exec(
+            "CREATE TABLE IF NOT EXISTS workflows (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            version INTEGER NOT NULL DEFAULT 1,
+            definition_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec(
+            "CREATE TABLE IF NOT EXISTS workflow_versions (
+            id INTEGER PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            definition_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+            UNIQUE(workflow_id, version)
+        )",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec("CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status)")
+        .unwrap())();
+    let _ = (conn
+        .exec(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_versions_workflow_id ON workflow_versions(workflow_id)",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec(
+            "CREATE TABLE IF NOT EXISTS workflow_runs (
+            id INTEGER PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            workflow_version INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            error TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP,
+            FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+        )",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec(
+            "CREATE TABLE IF NOT EXISTS workflow_run_events (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES workflow_runs(id)
+        )",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec("CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id)")
+        .unwrap())();
+    let _ = (conn
+        .exec(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run_id ON workflow_run_events(run_id)",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec(
+            "CREATE TABLE IF NOT EXISTS capabilities (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            workflow_id TEXT NOT NULL,
+            workflow_version INTEGER NOT NULL,
+            input_schema_json TEXT,
+            output_schema_json TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+        )",
+        )
+        .unwrap())();
+
+    let _ = (conn
+        .exec("CREATE INDEX IF NOT EXISTS idx_capabilities_enabled ON capabilities(enabled)")
+        .unwrap())();
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowRunRow {
+    pub id: usize,
+    pub workflow_id: String,
+    pub workflow_version: i64,
+    pub status: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowRunEventRow {
+    pub id: usize,
+    pub run_id: usize,
+    pub kind: String,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapabilityRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub workflow_id: String,
+    pub workflow_version: i64,
+    pub input_schema_json: String,
+    pub output_schema_json: String,
+    pub enabled: bool,
+}
+
+pub fn upsert_capability(conn: &Connection, capability: &CapabilityRow) -> Result<()> {
+    ensure_workflow_tables(conn)?;
+    let enabled = if capability.enabled { 1_i64 } else { 0_i64 };
+    let existing = {
+        let mut stmt =
+            Statement::prepare(conn, "SELECT id FROM capabilities WHERE id = ? LIMIT 1")?;
+        stmt.with_bindings(&capability.id.as_str())?;
+        let rows: Vec<String> = stmt
+            .map(|s| s.column_text(0).map(|value| value.to_string()))?
+            .into_iter()
+            .collect();
+        rows.into_iter().next()
+    };
+
+    if existing.is_some() {
+        let mut stmt = Statement::prepare(
+            conn,
+            "UPDATE capabilities
+             SET name = ?, description = ?, workflow_id = ?, workflow_version = ?,
+                 input_schema_json = ?, output_schema_json = ?, enabled = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?",
+        )?;
+        stmt.with_bindings(&(
+            capability.name.as_str(),
+            capability.description.as_str(),
+            capability.workflow_id.as_str(),
+            capability.workflow_version,
+            capability.input_schema_json.as_str(),
+            capability.output_schema_json.as_str(),
+            enabled,
+            capability.id.as_str(),
+        ))?;
+        stmt.exec()?;
+        return Ok(());
+    }
+
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO capabilities
+         (id, name, description, workflow_id, workflow_version, input_schema_json, output_schema_json, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(
+        capability.id.as_str(),
+        capability.name.as_str(),
+        capability.description.as_str(),
+        capability.workflow_id.as_str(),
+        capability.workflow_version,
+        capability.input_schema_json.as_str(),
+        capability.output_schema_json.as_str(),
+        enabled,
+    ))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn load_enabled_capabilities(conn: &Connection) -> Result<Vec<CapabilityRow>> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, name, COALESCE(description, ''), workflow_id, workflow_version,
+                COALESCE(input_schema_json, '{}'), COALESCE(output_schema_json, '{}'), enabled
+         FROM capabilities
+         WHERE enabled = 1
+         ORDER BY name ASC, id ASC",
+    )?;
+    stmt.map(|s| {
+        Ok(CapabilityRow {
+            id: s.column_text(0)?.to_string(),
+            name: s.column_text(1)?.to_string(),
+            description: s.column_text(2)?.to_string(),
+            workflow_id: s.column_text(3)?.to_string(),
+            workflow_version: s.column_int64(4)?,
+            input_schema_json: s.column_text(5)?.to_string(),
+            output_schema_json: s.column_text(6)?.to_string(),
+            enabled: s.column_int64(7)? != 0,
+        })
+    })
+}
+
+pub fn update_capability_workflow_version(
+    conn: &Connection,
+    capability_id: &str,
+    workflow_version: i64,
+) -> Result<()> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE capabilities
+         SET workflow_version = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(workflow_version, capability_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn insert_workflow_run(
+    conn: &Connection,
+    workflow_id: &str,
+    workflow_version: i64,
+) -> Result<usize> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO workflow_runs (workflow_id, workflow_version, status) VALUES (?, ?, 'running')",
+    )?;
+    stmt.with_bindings(&(workflow_id, workflow_version))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+pub fn insert_workflow_run_event(
+    conn: &Connection,
+    run_id: usize,
+    kind: &str,
+    payload: &str,
+) -> Result<usize> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "INSERT INTO workflow_run_events (run_id, kind, payload) VALUES (?, ?, ?)",
+    )?;
+    stmt.with_bindings(&(run_id, kind, payload))?;
+    stmt.exec()?;
+    let mut stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
+    let id = stmt.map(|s| s.column_int64(0))?.into_iter().next().unwrap();
+    Ok(id as usize)
+}
+
+pub fn finish_workflow_run(
+    conn: &Connection,
+    run_id: usize,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE workflow_runs
+         SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(status, error, run_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn load_workflow_run(conn: &Connection, run_id: usize) -> Result<Option<WorkflowRunRow>> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, workflow_id, workflow_version, status, COALESCE(error, '')
+         FROM workflow_runs
+         WHERE id = ?
+         LIMIT 1",
+    )?;
+    stmt.with_bindings(&run_id)?;
+    let rows: Vec<WorkflowRunRow> = stmt.map(|s| {
+        Ok(WorkflowRunRow {
+            id: s.column_int64(0)? as usize,
+            workflow_id: s.column_text(1)?.to_string(),
+            workflow_version: s.column_int64(2)?,
+            status: s.column_text(3)?.to_string(),
+            error: s.column_text(4)?.to_string(),
+        })
+    })?;
+    Ok(rows.into_iter().next())
+}
+
+pub fn load_recent_workflow_runs(conn: &Connection, limit: usize) -> Result<Vec<WorkflowRunRow>> {
+    ensure_workflow_tables(conn)?;
+    let limit = limit.max(1) as i64;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, workflow_id, workflow_version, status, COALESCE(error, '')
+         FROM workflow_runs
+         ORDER BY id DESC
+         LIMIT ?",
+    )?;
+    stmt.with_bindings(&limit)?;
+    stmt.map(|s| {
+        Ok(WorkflowRunRow {
+            id: s.column_int64(0)? as usize,
+            workflow_id: s.column_text(1)?.to_string(),
+            workflow_version: s.column_int64(2)?,
+            status: s.column_text(3)?.to_string(),
+            error: s.column_text(4)?.to_string(),
+        })
+    })
+}
+
+pub fn load_workflow_run_events(
+    conn: &Connection,
+    run_id: usize,
+) -> Result<Vec<WorkflowRunEventRow>> {
+    ensure_workflow_tables(conn)?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, run_id, kind, payload
+         FROM workflow_run_events
+         WHERE run_id = ?
+         ORDER BY id ASC",
+    )?;
+    stmt.with_bindings(&run_id)?;
+    stmt.map(|s| {
+        Ok(WorkflowRunEventRow {
+            id: s.column_int64(0)? as usize,
+            run_id: s.column_int64(1)? as usize,
+            kind: s.column_text(2)?.to_string(),
+            payload: s.column_text(3)?.to_string(),
+        })
+    })
 }
 
 fn ensure_task_draft_column(conn: &Connection) -> Result<()> {
@@ -1193,6 +1542,49 @@ mod coding_workflow_tests {
             .unwrap()
             .is_none());
         assert!(load_task_artifacts(&conn, task_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn workflow_run_records_events_and_finish_status() {
+        let conn = test_conn();
+        ensure_workflow_tables(&conn).unwrap();
+        let _ = (conn
+            .exec(
+                "INSERT INTO workflows (id, name, description, status, version, definition_json)
+                 VALUES ('workflow.echo', 'Echo', '', 'draft', 1, '{}')",
+            )
+            .unwrap())();
+
+        let run_id = insert_workflow_run(&conn, "workflow.echo", 1).unwrap();
+        insert_workflow_run_event(
+            &conn,
+            run_id,
+            "run_started",
+            r#"{"input":{"message":"hello"}}"#,
+        )
+        .unwrap();
+        insert_workflow_run_event(&conn, run_id, "run_finished", r#"{"ok":true}"#).unwrap();
+        finish_workflow_run(&conn, run_id, "succeeded", None).unwrap();
+
+        let run = load_workflow_run(&conn, run_id).unwrap().unwrap();
+        assert_eq!(run.id, run_id);
+        assert_eq!(run.workflow_id, "workflow.echo");
+        assert_eq!(run.workflow_version, 1);
+        assert_eq!(run.status, "succeeded");
+        assert_eq!(run.error, "");
+
+        let second_run_id = insert_workflow_run(&conn, "workflow.echo", 1).unwrap();
+        let recent = load_recent_workflow_runs(&conn, 1).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].id, second_run_id);
+        assert_eq!(recent[0].status, "running");
+
+        let events = load_workflow_run_events(&conn, run_id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].run_id, run_id);
+        assert_eq!(events[0].kind, "run_started");
+        assert_eq!(events[0].payload, r#"{"input":{"message":"hello"}}"#);
+        assert_eq!(events[1].kind, "run_finished");
     }
 }
 

@@ -50,6 +50,22 @@ impl Translations {
     pub const AUTOMATION: (&'static str, &'static str) = ("自动化", "Automation");
     pub const MODEL_CONFIG: (&'static str, &'static str) = ("模型配置", "Model Config");
     pub const CAPABILITIES: (&'static str, &'static str) = ("能力", "Capabilities");
+    pub const CAPABILITY_LIBRARY: (&'static str, &'static str) = ("能力库", "Capability Library");
+    pub const PUBLISHED_CAPABILITIES: (&'static str, &'static str) =
+        ("已发布能力", "Published Capabilities");
+    pub const WORKFLOW_BUILDER: (&'static str, &'static str) = ("工作流编排", "Workflow Builder");
+    pub const NO_CAPABILITIES: (&'static str, &'static str) =
+        ("还没有发布任何能力。", "No capabilities published yet.");
+    pub const NO_WORKFLOWS: (&'static str, &'static str) =
+        ("还没有创建任何工作流。", "No workflows created yet.");
+    pub const CAPABILITIES_HINT: (&'static str, &'static str) = (
+        "发布后的工作流会成为可在主窗口调用的能力。",
+        "Published workflows become capabilities callable from the main window.",
+    );
+    pub const WORKFLOWS_HINT: (&'static str, &'static str) = (
+        "在这里编排多 Agent 工作流，调试后发布为能力。",
+        "Build multi-agent workflows here, then publish them as capabilities.",
+    );
     pub const MARKET: (&'static str, &'static str) = ("市场", "Market");
     pub const INSTALLED: (&'static str, &'static str) = ("已安装", "Installed");
     pub const ALL: (&'static str, &'static str) = ("全部", "All");

@@ -13,8 +13,8 @@ use crate::ui_theme::{
 };
 use crate::workspace::TaskItem;
 use crate::{
-    skills_market, AppState, MainView, OpenCipherDialog, OpenModelConfigDialog, ToggleLang,
-    ToggleTheme, NAV_WIDTH, TITLEBAR_HEIGHT,
+    capabilities, skills_market, AppState, MainView, OpenCipherDialog, OpenModelConfigDialog,
+    ToggleLang, ToggleTheme, NAV_WIDTH, TITLEBAR_HEIGHT,
 };
 
 impl AppState {
@@ -416,6 +416,7 @@ impl AppState {
         match self.main_view {
             MainView::Chat => self.render_chat(window, _cx).into_any_element(),
             MainView::SkillsMarket => skills_market::render_skills_market(&*self, window, _cx),
+            MainView::Capabilities => capabilities::render_capabilities(&*self, window, _cx),
         }
     }
 
@@ -550,6 +551,9 @@ impl AppState {
             MainView::SkillsMarket => {
                 skills_market::render_skills_market_titlebar(&*self, window, cx)
             }
+            MainView::Capabilities => {
+                capabilities::render_capabilities_titlebar(&*self, window, cx)
+            }
         };
 
         div()
@@ -599,6 +603,7 @@ impl AppState {
     fn render_nav_buttons(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let lang = self.current_lang;
         let skills_active = matches!(self.main_view, MainView::SkillsMarket);
+        let capabilities_active = matches!(self.main_view, MainView::Capabilities);
         let models_active = self.show_model_config_dialog;
         let mut nav = div().flex().flex_col().gap_1().px_4().py_3();
 
@@ -610,10 +615,17 @@ impl AppState {
             cx,
         ));
         nav = nav.child(self.make_nav_item(
-            t(lang, Translations::CAPABILITIES).to_string(),
+            t(lang, Translations::SKILLS).to_string(),
             "⌘K".to_string(),
-            "capabilities",
+            "skill",
             skills_active,
+            cx,
+        ));
+        nav = nav.child(self.make_nav_item(
+            t(lang, Translations::CAPABILITIES).to_string(),
+            "⌘⇧K".to_string(),
+            "capabilities",
+            capabilities_active,
             cx,
         ));
         nav = nav.child(self.make_nav_item(
@@ -637,7 +649,8 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_new_workspace = title == t(self.current_lang, Translations::NEW_WORKSPACE);
-        let is_skills = title == t(self.current_lang, Translations::CAPABILITIES);
+        let is_skills = title == t(self.current_lang, Translations::SKILLS);
+        let is_capabilities = title == t(self.current_lang, Translations::CAPABILITIES);
         let is_model_config = title == t(self.current_lang, Translations::MODELS);
 
         div()
@@ -661,6 +674,14 @@ impl AppState {
                     gpui::MouseButton::Left,
                     cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
                         this.open_skills_market(cx);
+                    }),
+                )
+            })
+            .when(is_capabilities, |this| {
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, _window, cx| {
+                        this.open_capabilities(cx);
                     }),
                 )
             })

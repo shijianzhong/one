@@ -9,6 +9,7 @@ use settings::{KeymapFile, DEFAULT_KEYMAP_PATH};
 mod agents;
 mod app_state;
 mod assets;
+mod capabilities;
 mod i18n;
 mod mcp;
 mod memory;
@@ -25,10 +26,13 @@ mod triggers;
 mod ui;
 pub(crate) mod ui_theme;
 mod util;
+mod workflows;
 mod workspace;
 
 pub(crate) use agents::types::RequestKind;
-pub(crate) use app_state::{AppState, MainView, TerminalLine, ToastInfo, ToastLevel};
+pub(crate) use app_state::{
+    AppState, CapabilitiesTab, MainView, TerminalLine, ToastInfo, ToastLevel,
+};
 use services::load_config;
 pub(crate) use ui::*;
 

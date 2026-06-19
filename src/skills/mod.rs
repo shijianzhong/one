@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -81,58 +81,35 @@ pub trait Skill: Send + Sync {
     ) -> anyhow::Result<SkillExecution>;
 }
 
-/// 统一的 Skill 枚举（解决 dyn Skill 的兼容性问题）
-pub enum AnySkill {
-    Builtin(Box<dyn Skill>),
-    Dynamic(dynamic_skill::DynamicSkill),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillOrigin {
+    Builtin,
+    Dynamic,
 }
 
-#[async_trait]
-impl Skill for AnySkill {
-    fn manifest(&self) -> SkillManifest {
-        match self {
-            AnySkill::Builtin(s) => s.manifest(),
-            AnySkill::Dynamic(s) => s.manifest(),
-        }
-    }
-
-    async fn preview(&self, args: serde_json::Value) -> anyhow::Result<SkillPreview> {
-        match self {
-            AnySkill::Builtin(s) => s.preview(args).await,
-            AnySkill::Dynamic(s) => s.preview(args).await,
-        }
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        source: Option<&str>,
-    ) -> anyhow::Result<SkillExecution> {
-        match self {
-            AnySkill::Builtin(s) => s.execute(args, source).await,
-            AnySkill::Dynamic(s) => s.execute(args, source).await,
-        }
-    }
+struct SkillEntry {
+    origin: SkillOrigin,
+    skill: Arc<dyn Skill>,
 }
 
 pub struct SkillRegistry {
-    skills: Vec<AnySkill>,
+    skills: Vec<SkillEntry>,
 }
 
 impl SkillRegistry {
     fn new() -> Self {
-        let builtin: Vec<AnySkill> = vec![
-            AnySkill::Builtin(Box::new(system_cleaner::SystemCleanerSkill)),
-            AnySkill::Builtin(Box::new(desktop_organizer::DesktopOrganizerSkill)),
-            AnySkill::Builtin(Box::new(app_uninstaller::AppUninstallerSkill)),
-            AnySkill::Builtin(Box::new(doc_summarizer::DocSummarizerSkill)),
-            AnySkill::Builtin(Box::new(media_dedup::MediaDedupSkill)),
-            AnySkill::Builtin(Box::new(system_tools::SystemToolsSkill)),
+        let builtin: Vec<SkillEntry> = vec![
+            SkillEntry::builtin(system_cleaner::SystemCleanerSkill),
+            SkillEntry::builtin(desktop_organizer::DesktopOrganizerSkill),
+            SkillEntry::builtin(app_uninstaller::AppUninstallerSkill),
+            SkillEntry::builtin(doc_summarizer::DocSummarizerSkill),
+            SkillEntry::builtin(media_dedup::MediaDedupSkill),
+            SkillEntry::builtin(system_tools::SystemToolsSkill),
         ];
 
-        let dynamic: Vec<AnySkill> = dynamic_skill::scan_skills_dir()
+        let dynamic: Vec<SkillEntry> = dynamic_skill::scan_skills_dir()
             .into_iter()
-            .map(AnySkill::Dynamic)
+            .map(SkillEntry::dynamic)
             .collect();
 
         let mut skills = builtin;
@@ -141,39 +118,70 @@ impl SkillRegistry {
     }
 
     pub fn refresh_dynamic(&mut self) {
-        // 移除旧的动态 Skill
-        self.skills.retain(|s| matches!(s, AnySkill::Builtin(_)));
-        // 添加新的动态 Skill
-        let dynamic: Vec<AnySkill> = dynamic_skill::scan_skills_dir()
+        self.skills
+            .retain(|entry| entry.origin == SkillOrigin::Builtin);
+        let dynamic: Vec<SkillEntry> = dynamic_skill::scan_skills_dir()
             .into_iter()
-            .map(AnySkill::Dynamic)
+            .map(SkillEntry::dynamic)
             .collect();
         self.skills.extend(dynamic);
     }
 
     pub fn manifests(&self) -> Vec<SkillManifest> {
-        self.skills.iter().map(|s| s.manifest()).collect()
+        self.skills
+            .iter()
+            .map(|entry| entry.skill.manifest())
+            .collect()
     }
 
-    pub fn find(&self, id: &str) -> Option<&AnySkill> {
-        self.skills.iter().find(|s| s.manifest().id == id)
+    pub fn find(&self, id: &str) -> Option<Arc<dyn Skill>> {
+        self.skills
+            .iter()
+            .find(|entry| entry.skill.manifest().id == id)
+            .map(|entry| entry.skill.clone())
     }
 }
 
-static REGISTRY: OnceLock<SkillRegistry> = OnceLock::new();
+impl SkillEntry {
+    fn builtin(skill: impl Skill + 'static) -> Self {
+        Self {
+            origin: SkillOrigin::Builtin,
+            skill: Arc::new(skill),
+        }
+    }
 
-pub fn registry() -> &'static SkillRegistry {
-    REGISTRY.get_or_init(SkillRegistry::new)
+    fn dynamic(skill: dynamic_skill::DynamicSkill) -> Self {
+        Self {
+            origin: SkillOrigin::Dynamic,
+            skill: Arc::new(skill),
+        }
+    }
+}
+
+static REGISTRY: OnceLock<RwLock<SkillRegistry>> = OnceLock::new();
+
+pub fn registry() -> &'static RwLock<SkillRegistry> {
+    REGISTRY.get_or_init(|| RwLock::new(SkillRegistry::new()))
+}
+
+pub fn skill_manifests() -> Vec<SkillManifest> {
+    registry()
+        .read()
+        .map(|registry| registry.manifests())
+        .unwrap_or_default()
+}
+
+pub fn find_skill(id: &str) -> Option<Arc<dyn Skill>> {
+    registry()
+        .read()
+        .ok()
+        .and_then(|registry| registry.find(id))
 }
 
 /// 刷新动态 Skill
 pub fn refresh_dynamic_skills() {
-    // 确保 REGISTRY 已初始化
-    let reg = registry();
-    // 安全：GPUI 是单线程的
-    let ptr = reg as *const SkillRegistry as *mut SkillRegistry;
-    unsafe {
-        (*ptr).refresh_dynamic();
+    if let Ok(mut registry) = registry().write() {
+        registry.refresh_dynamic();
     }
 }
 
@@ -183,13 +191,13 @@ mod tests {
 
     #[test]
     fn registry_lists_system_cleaner() {
-        let manifests = registry().manifests();
+        let manifests = skill_manifests();
         assert!(manifests.iter().any(|m| m.id == "system.cleaner"));
     }
 
     #[test]
     fn find_returns_some_for_known_id() {
-        assert!(registry().find("system.cleaner").is_some());
-        assert!(registry().find("does.not.exist").is_none());
+        assert!(find_skill("system.cleaner").is_some());
+        assert!(find_skill("does.not.exist").is_none());
     }
 }

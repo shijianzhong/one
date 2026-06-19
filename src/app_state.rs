@@ -11,7 +11,6 @@ use crate::i18n::{t, Lang, Translations};
 use crate::memory::types::ChatMessage;
 use crate::sandbox::backend::Backend;
 use crate::services::{save_config, Config};
-use crate::skills::Skill;
 use crate::skills_market::SkillsMarketState;
 use crate::task_db;
 use crate::ui_theme::{set_theme_mode, ThemeMode};
@@ -477,7 +476,7 @@ impl AppState {
         args: serde_json::Value,
         cx: &mut Context<Self>,
     ) {
-        let Some(skill) = crate::skills::registry().find(skill_id) else {
+        let Some(skill) = crate::skills::find_skill(skill_id) else {
             if let Some(task) = self.active_task_mut() {
                 task.messages.push(ChatMessage::new(
                     "assistant",
@@ -499,8 +498,8 @@ impl AppState {
         let skill_id = manifest.id.clone();
         let args_for_preview = args.clone();
         cx.spawn(async move |this, cx| {
-            let result = match crate::skills::registry().find(&skill_id) {
-                Some(s) => s.preview(args_for_preview).await,
+            let result = match crate::skills::find_skill(&skill_id) {
+                Some(skill) => skill.preview(args_for_preview).await,
                 None => Err(anyhow::anyhow!("skill disappeared")),
             };
             let _ = this.update(cx, |state, cx| {
@@ -532,8 +531,8 @@ impl AppState {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let result = match crate::skills::registry().find(&skill_id) {
-                Some(s) => s.execute(args, None).await,
+            let result = match crate::skills::find_skill(&skill_id) {
+                Some(skill) => skill.execute(args, None).await,
                 None => Err(anyhow::anyhow!("skill disappeared")),
             };
             let _ = this.update(cx, |state, cx| {

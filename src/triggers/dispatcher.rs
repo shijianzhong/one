@@ -10,14 +10,13 @@
 //!   * `/audit [n]`         拉取最近 N 条 RunEvent
 //!
 //! Dispatcher 不持有任何 GPUI 句柄；它纯粹在 tokio 上下文里调用
-//! `crate::skills::registry()` + `crate::task_db`。这让 trigger 可以独立
+//! `crate::skills` + `crate::task_db`。这让 trigger 可以独立
 //! 启动而不需要 AppState 引用。
 
 use serde_json::Value;
 
 use super::TriggerReply;
 use crate::agents::permission::DangerLevel;
-use crate::skills::Skill;
 
 #[derive(Debug, Clone)]
 pub enum TriggerCommand {
@@ -147,7 +146,7 @@ fn help_text() -> String {
 }
 
 fn list_skills() -> String {
-    let manifests = crate::skills::registry().manifests();
+    let manifests = crate::skills::skill_manifests();
     if manifests.is_empty() {
         return "（无已注册 Skill）".to_string();
     }
@@ -255,7 +254,7 @@ fn list_remote_tasks_text() -> String {
 }
 
 async fn preview_skill(id: &str, args: Value) -> String {
-    let Some(skill) = crate::skills::registry().find(id) else {
+    let Some(skill) = crate::skills::find_skill(id) else {
         return format!(
             "未找到 skill_id：{}\n输入 /skills 查看可用列表。",
             short_label(id)
@@ -281,7 +280,7 @@ async fn preview_skill(id: &str, args: Value) -> String {
 }
 
 async fn run_skill(id: &str, args: Value) -> TriggerReply {
-    let Some(skill) = crate::skills::registry().find(id) else {
+    let Some(skill) = crate::skills::find_skill(id) else {
         return TriggerReply::new(format!(
             "未找到 skill_id：{}\n输入 /skills 查看可用列表。",
             short_label(id)

@@ -25,7 +25,6 @@ use serde::Deserialize;
 use super::{Trigger, TriggerEvent, TriggerReply};
 use crate::agents::permission::DangerLevel;
 use crate::services::Config;
-use crate::skills::Skill;
 
 const DEFAULT_API_BASE: &str = "https://api.telegram.org";
 const LONG_POLL_TIMEOUT: u64 = 50;
@@ -335,7 +334,7 @@ impl TelegramTrigger {
                     }
                 }
 
-                let skill = crate::skills::registry().find(&pc.skill_id);
+                let skill = crate::skills::find_skill(&pc.skill_id);
                 let skill_id = pc.skill_id.clone();
                 let result_text = match skill {
                     Some(skill) => {

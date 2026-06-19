@@ -311,7 +311,7 @@ pub fn init_tool_registry(workspace: &str) {
         registry.register_builtin(tool);
     }
 
-    for manifest in crate::skills::registry().manifests() {
+    for manifest in crate::skills::skill_manifests() {
         registry.register_skill(SkillToolRegistration {
             skill_id: manifest.id.clone(),
             name: format!("skill:{}", manifest.id),

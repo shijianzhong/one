@@ -7,7 +7,6 @@ use super::{AgentResponse, AgentRunContext, AgentTrait, ToolCall};
 use crate::agents::permission::{classify_mcp_tool_kind, PermissionDecision};
 use crate::mcp::McpClientManager;
 use crate::memory::types::ChatMessage;
-use crate::skills::Skill;
 
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
@@ -112,8 +111,7 @@ impl Orchestrator {
         }
 
         // ── 已安装 Skill 信息注入 ────────────────────────────────────
-        let skill_info: Vec<String> = crate::skills::registry()
-            .manifests()
+        let skill_info: Vec<String> = crate::skills::skill_manifests()
             .into_iter()
             .map(|m| {
                 format!(
@@ -371,8 +369,7 @@ impl Orchestrator {
             if let Some(sid) = skill_id {
                 return self.execute_skill(sid, args.clone()).await;
             } else {
-                let known: Vec<String> = crate::skills::registry()
-                    .manifests()
+                let known: Vec<String> = crate::skills::skill_manifests()
                     .into_iter()
                     .map(|m| m.id)
                     .collect();
@@ -442,7 +439,7 @@ impl Orchestrator {
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
 
-        if let Some(skill) = crate::skills::registry().find(sid) {
+        if let Some(skill) = crate::skills::find_skill(sid) {
             if apply {
                 match skill.execute(skill_args, None).await {
                     Ok(exec) => {
@@ -485,8 +482,7 @@ impl Orchestrator {
                 }
             }
         } else {
-            let known: Vec<String> = crate::skills::registry()
-                .manifests()
+            let known: Vec<String> = crate::skills::skill_manifests()
                 .into_iter()
                 .map(|m| m.id)
                 .collect();

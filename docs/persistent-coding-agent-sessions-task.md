@@ -348,14 +348,19 @@
 - [x] 对“你不能替我选么/你帮我选”这类非明确授权消息，不停止 session；改为提示用户可在聊天区回复明确选项，由 ONE 代发到终端。
 - [x] 权限确认文案改为“可在聊天区回复，我会帮你发送到右侧终端”，不再默认要求用户自己去终端操作。
 - [x] 提升 Claude Code 编号选择识别稳定性：支持 `Do you want ...?` 与 `1. Yes` 出现在同一行的 TUI 输出。
+- [x] 状态识别优先捕捉底部最新编号选择；登录/信任/权限只看最近尾部输出，避免历史登录提示覆盖当前 overwrite/edit 确认。
+- [x] 登录识别改为严格匹配“明确要求登录”的提示；`Authenticated successfully`、`Read/Write/Listed`、`thinking/working` 等正常执行输出不再触发登录提醒。
+- [x] 识别 Claude Code plan mode 菜单选择，例如技术栈/功能范围/Submit 的 `Enter to select` 编号菜单，并在聊天区提示用户可回复“选1/选2/选3”。
+- [x] 启动或转发给 coding terminal runtime 成功后立即释放 MainAgent 聊天输入 busy 状态，用户可继续聊天、问进度或补充需求。
 - [x] 增加保守自动决策：`create/edit/modify` 这类低风险文件操作自动选择 `1` 允许一次，并在聊天区说明；`delete/remove/overwrite/run/install` 等高风险操作仍询问用户。
 - [x] Claude Code 编号选择不再走 bracketed paste；自动决策和用户回复“同意/选1/选2/拒绝”会直接发送短选择按键并回车。
+- [x] 右侧终端中 Claude `<think>` 输出在 UI 上弱化显示，减少对关键确认问题的干扰。
 
 验证：
 
 - [x] `cargo fmt`
 - [x] `cargo check`
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，9 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，12 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，116 passed。
 
 ## 当前暂存任务

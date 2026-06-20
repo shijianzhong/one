@@ -353,7 +353,7 @@ impl Tool for CodingTerminalRuntimeAliasTool {
                         "type": "string",
                         "description": "要启动的 coding CLI provider id，来自配置 coding_agents。默认优先 claude。"
                     },
-                    "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明，应是 MainAgent 理解和拆解后的用户需求" },
+                    "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明。必须是 MainAgent 理解、补全上下文并拆解后的可执行工程任务，不要原样透传用户消息。" },
                     "write_mode": { "type": "boolean", "description": "是否需要写 workspace。编码任务通常为 true，查看状态或只读 review 可为 false。默认 true。" }
                 },
                 "required": ["prompt"]
@@ -362,7 +362,7 @@ impl Tool for CodingTerminalRuntimeAliasTool {
                 "type": "object",
                 "properties": {
                     "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 runtime" },
-                    "text": { "type": "string", "description": "要发送给 coding CLI runtime 的内容" }
+                    "text": { "type": "string", "description": "要发送给 coding CLI runtime 的内容。必须是 MainAgent 理解后的操作指令、补充约束、澄清选择或明确交互输入；不要原样透传用户消息。" }
                 },
                 "required": ["text"]
             }),
@@ -410,7 +410,7 @@ impl Tool for StartCodingSessionTool {
                     "type": "string",
                     "description": "要启动的 coding agent provider id，来自配置 coding_agents。默认优先 claude。"
                 },
-                "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明，应是 MainAgent 理解和拆解后的用户需求" },
+                "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明。必须是 MainAgent 理解、补全上下文并拆解后的可执行工程任务，不要原样透传用户消息。" },
                 "write_mode": { "type": "boolean", "description": "是否需要写 workspace。编码任务通常为 true，查看状态或只读 review 可为 false。默认 true。" }
             },
             "required": ["prompt"]
@@ -431,7 +431,7 @@ impl Tool for SendToCodingSessionTool {
     }
 
     fn description(&self) -> &str {
-        "向当前 task 绑定的右侧终端 coding CLI runtime 写入输入。适合用户说继续、同意、选择某个选项、补充要求时使用。"
+        "向当前 task 绑定的右侧终端 coding CLI runtime 写入输入。适合用户说继续、同意、选择某个选项、补充要求时使用。MainAgent 必须先理解用户意图，再发送整理后的操作指令或明确选择，不要把用户原话直接透传。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -439,7 +439,7 @@ impl Tool for SendToCodingSessionTool {
             "type": "object",
             "properties": {
                 "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 session" },
-                "text": { "type": "string", "description": "要发送给 coding agent 的内容" }
+                "text": { "type": "string", "description": "要发送给 coding agent 的内容。必须是 MainAgent 理解后的操作指令、补充约束、澄清选择或明确交互输入；不要原样透传用户消息。" }
             },
             "required": ["text"]
         })

@@ -1,10 +1,9 @@
 use gpui::Context;
 
-use crate::agents::intent_router::IntentLevel;
 use crate::agents::types::RoutingDecision;
 use crate::i18n::{t, Translations};
 use crate::memory::types::ChatMessage;
-use crate::runtime::{detect_configured_coding_clis, PendingCodingActionReply};
+use crate::runtime::PendingCodingActionReply;
 use crate::{task_db, AppState, RequestKind};
 
 impl AppState {
@@ -86,13 +85,7 @@ impl AppState {
             }
         }
 
-        let (intent_level, decision) = self.intent_router.route(&message);
-        if matches!(intent_level, IntentLevel::Coding) {
-            eprintln!("[ROUTER] Fast route matched: Coding");
-            self.route_coding_request(message, cx);
-            return;
-        }
-
+        let (_, decision) = self.intent_router.route(&message);
         if let Some(decision) = decision {
             eprintln!("[ROUTER] Fast route matched: {:?}", decision);
             self.handle_routing_decision(decision, cx);
@@ -119,57 +112,4 @@ impl AppState {
             }
         }
     }
-
-    fn route_coding_request(&mut self, message: String, cx: &mut Context<Self>) {
-        let Some(task_id) = self.active_task_id else {
-            self.append_task_message(None, "assistant", "请先选择一个 task。", cx);
-            return;
-        };
-
-        let existing_session_id = self
-            .coding_sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| sessions.attached_session_id_for_task(task_id));
-        if existing_session_id.is_some() {
-            let prompt = format_coding_runtime_prompt(&message);
-            self.send_to_persistent_coding_session(existing_session_id, prompt, cx);
-            return;
-        }
-
-        let installed = detect_configured_coding_clis()
-            .into_iter()
-            .filter(|cli| cli.installed)
-            .collect::<Vec<_>>();
-        if installed.is_empty() {
-            self.append_task_message(
-                Some(task_id),
-                "assistant",
-                "我识别到这是编码任务，但本机没有检测到可用的 coding CLI。请先安装 Claude Code、Codex 或 Gemini；你也可以告诉我“安装 Claude Code”，我会按安装流程处理。",
-                cx,
-            );
-            return;
-        }
-
-        let provider = installed
-            .iter()
-            .find(|cli| cli.provider.id == "claude")
-            .or_else(|| {
-                installed
-                    .iter()
-                    .find(|cli| cli.provider.command_line() == "claude")
-            })
-            .unwrap_or(&installed[0])
-            .provider
-            .clone();
-        let prompt = format_coding_runtime_prompt(&message);
-        self.start_persistent_coding_session(provider, prompt, true, cx);
-    }
-}
-
-fn format_coding_runtime_prompt(message: &str) -> String {
-    format!(
-        "用户通过 MainAgent 提出了一个编码需求。请在当前 workspace root 中完成，不要创建额外 task 子目录；如需改文件请直接修改项目代码。\n\n用户需求：\n{}",
-        message.trim()
-    )
 }

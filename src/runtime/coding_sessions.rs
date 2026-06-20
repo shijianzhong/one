@@ -83,7 +83,8 @@ impl AppState {
                 self.terminal_scroll_handle.scroll_to_bottom();
                 self.terminal_refresh_generation = self.terminal_refresh_generation.wrapping_add(1);
                 self.terminal_refresh_running = false;
-                self.mark_task_active(task_id);
+                self.mark_task_inactive(Some(task_id));
+                self.job_manager.clear_request_full();
                 let mut message = format!(
                     "{} 终端 runtime 已启动，session_id=`{}`，cwd=`{}`，command=`{}`。",
                     agent_kind.label(),
@@ -163,7 +164,8 @@ impl AppState {
             Ok(()) => {
                 self.terminal_visible = true;
                 self.terminal_scroll_handle.scroll_to_bottom();
-                self.mark_task_active(task_id);
+                self.mark_task_inactive(Some(task_id));
+                self.job_manager.clear_request_full();
                 self.append_task_message(
                     Some(task_id),
                     "assistant",

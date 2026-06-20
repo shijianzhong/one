@@ -348,13 +348,13 @@ impl AppState {
             let mut lines = Vec::new();
             for entry in &self.terminal_output {
                 if let Some(command) = &entry.command {
-                    lines.push((format!("$ {}", command), false));
+                    lines.push((format!("$ {}", command), false, false));
                 }
                 for line in entry.output.lines() {
-                    lines.push((line.to_string(), false));
+                    lines.push((line.to_string(), false, false));
                 }
                 if entry.output.ends_with('\n') {
-                    lines.push((String::new(), false));
+                    lines.push((String::new(), false, false));
                 }
             }
             lines
@@ -362,12 +362,23 @@ impl AppState {
             if let Some(term_arc) = &term_arc {
                 if let Ok(term_lock) = term_arc.lock() {
                     let render_lines = term_lock.renderable_history_lines();
-                    let v: Vec<(String, bool)> = render_lines
+                    let mut in_think_block = false;
+                    let v: Vec<(String, bool, bool)> = render_lines
                         .iter()
                         .map(|line| {
                             let s: String = line.chars.iter().map(|c| c.c).collect();
                             let has_cursor = line.chars.iter().any(|c| c.is_cursor);
-                            (s, has_cursor)
+                            let trimmed = s.trim_start();
+                            let is_think = in_think_block
+                                || trimmed.starts_with("<think>")
+                                || trimmed.starts_with("</think>");
+                            if trimmed.starts_with("<think>") && !trimmed.contains("</think>") {
+                                in_think_block = true;
+                            }
+                            if trimmed.contains("</think>") {
+                                in_think_block = false;
+                            }
+                            (s, has_cursor, is_think)
                         })
                         .collect();
                     v
@@ -430,7 +441,7 @@ impl AppState {
                     .p_2()
                     .font_family("Menlo")
                     .text_sm()
-                    .children(output_lines.iter().map(|(text, has_cursor)| {
+                    .children(output_lines.iter().map(|(text, has_cursor, is_think)| {
                         let display_text = if *has_cursor && !text.is_empty() {
                             // 在光标位置插入光标符号
                             let cursor_pos = text.trim_end().len();
@@ -445,7 +456,12 @@ impl AppState {
                                 .h(px(18.0))
                                 .flex()
                                 .items_center()
-                                .text_color(PRIMARY_TEXT())
+                                .text_color(if *is_think {
+                                    SECONDARY_TEXT()
+                                } else {
+                                    PRIMARY_TEXT()
+                                })
+                                .opacity(if *is_think { 0.55 } else { 1.0 })
                                 .child(display_text)
                                 .into_any_element()
                         } else {

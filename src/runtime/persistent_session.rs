@@ -977,6 +977,9 @@ fn classify_terminal_lines(
 ) -> (String, String, String, String) {
     let joined = recent_output.join("\n");
     let lower = joined.to_ascii_lowercase();
+    let tail_output = tail_lines(recent_output, 12);
+    let tail_joined = tail_output.join("\n");
+    let tail_lower = tail_joined.to_ascii_lowercase();
     if !session_status.is_active() {
         (
             session_status.label().to_string(),
@@ -1001,17 +1004,14 @@ fn classify_terminal_lines(
                 agent_label
             ),
         )
-    } else if contains_any(
-        &lower,
-        &[
-            "log in",
-            "login",
-            "sign in",
-            "authentication",
-            "authenticate",
-            "browser",
-        ],
-    ) {
+    } else if let Some(choice) = parse_numbered_choice_prompt(recent_output) {
+        (
+            "waiting_user_action".to_string(),
+            "choice_required".to_string(),
+            choice.summary,
+            choice.suggested_message,
+        )
+    } else if looks_like_auth_required(&tail_lower) {
         (
             "waiting_user_action".to_string(),
             "auth_required".to_string(),
@@ -1019,7 +1019,7 @@ fn classify_terminal_lines(
             "Claude Code 正在等待登录/认证。这个通常需要你在右侧终端或浏览器里完成登录；完成后告诉我继续。".to_string(),
         )
     } else if contains_any(
-        &lower,
+        &tail_lower,
         &[
             "trust this",
             "do you trust",
@@ -1036,15 +1036,8 @@ fn classify_terminal_lines(
             ),
             "Claude Code 正在等待目录信任确认。如果终端里有编号选项，你可以直接在这里回复“同意/选1/拒绝”，我会帮你发送；如果它要求交互式登录或特殊按键，你也可以在右侧终端操作。".to_string(),
         )
-    } else if let Some(choice) = parse_numbered_choice_prompt(recent_output) {
-        (
-            "waiting_user_action".to_string(),
-            "choice_required".to_string(),
-            choice.summary,
-            choice.suggested_message,
-        )
     } else if contains_any(
-        &lower,
+        &tail_lower,
         &[
             "allow",
             "deny",
@@ -1105,6 +1098,11 @@ struct ChoicePrompt {
 }
 
 fn parse_numbered_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
+    parse_confirmation_choice_prompt(recent_output)
+        .or_else(|| parse_menu_choice_prompt(recent_output))
+}
+
+fn parse_confirmation_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
     let question = recent_output
         .iter()
         .rev()
@@ -1145,6 +1143,54 @@ fn parse_numbered_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt
             zh_action
         ),
         action,
+    })
+}
+
+fn parse_menu_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
+    let has_numbered_options = recent_output
+        .iter()
+        .any(|line| contains_numbered_option(line, "1"))
+        && recent_output
+            .iter()
+            .any(|line| contains_numbered_option(line, "2"));
+    if !has_numbered_options {
+        return None;
+    }
+    let has_menu_hint = recent_output.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("enter to select")
+            || lower.contains("tab/arrow keys")
+            || lower.contains("请选择")
+            || lower.contains("选择")
+            || lower.contains("submit")
+    });
+    if !has_menu_hint {
+        return None;
+    }
+    let question = recent_output
+        .iter()
+        .rev()
+        .find(|line| {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            !trimmed.is_empty()
+                && !contains_numbered_option(trimmed, "1")
+                && !contains_numbered_option(trimmed, "2")
+                && !contains_numbered_option(trimmed, "3")
+                && !lower.contains("enter to select")
+                && !lower.contains("tab/arrow keys")
+                && !lower.contains("esc to cancel")
+        })
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "Claude Code 正在等待你选择一个选项。".to_string());
+
+    Some(ChoicePrompt {
+        summary: format!("Claude Code 正在等待菜单选择：{}。", question),
+        suggested_message: format!(
+            "{}\n\n你可以回复“选1”“选2”“选3”等，我会把对应数字发送到右侧终端；如果你不确定，也可以直接告诉我你的偏好，我再帮你选择。",
+            question
+        ),
+        action: format!("menu choice: {}", question),
     })
 }
 
@@ -1320,6 +1366,49 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
+fn looks_like_auth_required(lower_tail: &str) -> bool {
+    if contains_any(
+        lower_tail,
+        &[
+            "authenticated",
+            "authentication complete",
+            "authentication successful",
+            "logged in",
+            "signed in",
+        ],
+    ) {
+        return false;
+    }
+    if contains_any(
+        lower_tail,
+        &[
+            "thinking",
+            "working",
+            "write(",
+            "read ",
+            "listed ",
+            "opened changes",
+            "esc to cancel",
+        ],
+    ) {
+        return false;
+    }
+    contains_any(
+        lower_tail,
+        &[
+            "please log in",
+            "please login",
+            "log in with",
+            "login required",
+            "sign in to",
+            "please sign in",
+            "authenticate with",
+            "open your browser",
+            "browser login",
+        ],
+    )
+}
+
 fn recent_non_empty_lines(lines: Vec<String>, limit: usize) -> Vec<String> {
     let mut lines = lines
         .into_iter()
@@ -1329,6 +1418,14 @@ fn recent_non_empty_lines(lines: Vec<String>, limit: usize) -> Vec<String> {
         lines.split_off(lines.len() - limit)
     } else {
         lines
+    }
+}
+
+fn tail_lines(lines: &[String], limit: usize) -> Vec<String> {
+    if lines.len() > limit {
+        lines[lines.len() - limit..].to_vec()
+    } else {
+        lines.to_vec()
     }
 }
 
@@ -1447,6 +1544,60 @@ mod tests {
         );
         assert_eq!(choice.1, "choice_required");
         assert!(choice.2.contains("member-list.html"));
+    }
+
+    #[test]
+    fn classify_terminal_lines_recognizes_claude_plan_mode_menu() {
+        let choice = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &[
+                "Entered plan mode".to_string(),
+                "Planning: /Users/example/.claude/plans/example.md".to_string(),
+                "← □ 技术栈  □ 功能范围  ✔ Submit →".to_string(),
+                "您想要什么类型的会员管理系统？请选择技术栈和形式:".to_string(),
+                "❯ 1. Web 单页应用（HTML+JS）".to_string(),
+                "  2. Vue3 + Vite 项目".to_string(),
+                "  3. React + Node.js 全栈".to_string(),
+                "Enter to select · Tab/Arrow keys to navigate · Esc to cancel".to_string(),
+            ],
+        );
+        assert_eq!(choice.1, "choice_required");
+        assert!(choice.3.contains("选1"));
+    }
+
+    #[test]
+    fn classify_terminal_lines_prefers_latest_choice_over_stale_auth() {
+        let choice = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &[
+                "Please log in with your browser".to_string(),
+                "Authenticated successfully".to_string(),
+                "Opened changes in Trae".to_string(),
+                "Do you want to overwrite login.html?".to_string(),
+                "❯ 1. Yes".to_string(),
+                "  2. Yes, allow all edits in Desktop/ during this session".to_string(),
+                "  3. No".to_string(),
+            ],
+        );
+        assert_eq!(choice.1, "choice_required");
+        assert!(choice.2.contains("login.html"));
+    }
+
+    #[test]
+    fn classify_terminal_lines_does_not_treat_auth_success_as_login_wait() {
+        let state = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &[
+                "Authenticated successfully".to_string(),
+                "<think>Working on the requested page</think>".to_string(),
+                "Read 1 file".to_string(),
+                "Write(~/Desktop/login.html)".to_string(),
+            ],
+        );
+        assert_ne!(state.1, "auth_required");
     }
 
     #[test]

@@ -29,17 +29,24 @@ impl ToolDispatcher {
         match name.as_str() {
             "detect_coding_clis" => return self.dispatch_detect_coding_clis(),
             "install_coding_cli" => return self.dispatch_install_coding_cli(args),
-            "start_coding_session" => return self.dispatch_start_coding_session(args, on_event),
-            "send_to_coding_session" => {
+            "start_coding_session" | "start_coding_terminal_runtime" => {
+                return self.dispatch_start_coding_session(args, on_event)
+            }
+            "send_to_coding_session" | "send_to_coding_terminal_runtime" => {
                 return self.dispatch_send_to_coding_session(args, on_event)
             }
-            "read_coding_session_output" => {
+            "read_coding_session_output" | "read_coding_terminal_output" => {
                 return self.dispatch_read_coding_session_output(args, on_event)
             }
-            "stop_coding_session" => return self.dispatch_stop_coding_session(args, on_event),
-            "list_coding_sessions" => {
+            "inspect_coding_terminal_runtime" => {
+                return self.dispatch_inspect_coding_session(args, on_event)
+            }
+            "stop_coding_session" | "stop_coding_terminal_runtime" => {
+                return self.dispatch_stop_coding_session(args, on_event)
+            }
+            "list_coding_sessions" | "list_coding_terminal_runtimes" => {
                 on_event(OrchestratorEvent::ListCodingSessions);
-                return "正在列出持久 coding session。".to_string();
+                return "正在列出 coding terminal runtime。".to_string();
             }
             "get_workspace_write_status" => {
                 on_event(OrchestratorEvent::GetWorkspaceWriteStatus);
@@ -252,7 +259,7 @@ impl ToolDispatcher {
         }
         let session_id = optional_string_arg(&args, "session_id");
         on_event(OrchestratorEvent::SendToCodingSession { session_id, text });
-        "输入已发送到持久 coding session。".to_string()
+        "输入已发送到 coding terminal runtime。".to_string()
     }
 
     fn dispatch_read_coding_session_output<F>(&self, args: Value, on_event: &mut F) -> String
@@ -266,7 +273,21 @@ impl ToolDispatcher {
             .unwrap_or(40)
             .clamp(1, 200) as usize;
         on_event(OrchestratorEvent::ReadCodingSessionOutput { session_id, limit });
-        "正在读取持久 coding session 最近输出。".to_string()
+        "正在读取 coding terminal runtime 最近输出。".to_string()
+    }
+
+    fn dispatch_inspect_coding_session<F>(&self, args: Value, on_event: &mut F) -> String
+    where
+        F: FnMut(OrchestratorEvent) + Send,
+    {
+        let session_id = optional_string_arg(&args, "session_id");
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(80)
+            .clamp(1, 200) as usize;
+        on_event(OrchestratorEvent::InspectCodingSession { session_id, limit });
+        "正在分析右侧终端 coding runtime 状态。".to_string()
     }
 
     fn dispatch_stop_coding_session<F>(&self, args: Value, on_event: &mut F) -> String
@@ -275,7 +296,7 @@ impl ToolDispatcher {
     {
         let session_id = optional_string_arg(&args, "session_id");
         on_event(OrchestratorEvent::StopCodingSession { session_id });
-        "停止持久 coding session 的请求已提交。".to_string()
+        "停止 coding terminal runtime 的请求已提交。".to_string()
     }
 
     fn dispatch_run_in_terminal<F>(&self, args: Value, on_event: &mut F) -> String
@@ -533,8 +554,17 @@ mod tests {
             .dispatch(&read, &mut |event| events.push(event))
             .await;
 
-        let stop = ToolCall {
+        let inspect = ToolCall {
             id: "call_3".to_string(),
+            name: "inspect_coding_terminal_runtime".to_string(),
+            arguments: serde_json::json!({"limit": 33}).to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&inspect, &mut |event| events.push(event))
+            .await;
+
+        let stop = ToolCall {
+            id: "call_4".to_string(),
             name: "stop_coding_session".to_string(),
             arguments: "{}".to_string(),
         };
@@ -551,6 +581,59 @@ mod tests {
             &events[1],
             OrchestratorEvent::ReadCodingSessionOutput { session_id: None, limit }
                 if *limit == 12
+        ));
+        assert!(matches!(
+            &events[2],
+            OrchestratorEvent::InspectCodingSession { session_id: None, limit }
+                if *limit == 33
+        ));
+        assert!(matches!(
+            &events[3],
+            OrchestratorEvent::StopCodingSession { session_id: None }
+        ));
+    }
+
+    #[tokio::test]
+    async fn coding_terminal_runtime_alias_tools_emit_runtime_events() {
+        let dispatcher = ToolDispatcher::new(None);
+        let mut events = Vec::new();
+
+        let send = ToolCall {
+            id: "call_1".to_string(),
+            name: "send_to_coding_terminal_runtime".to_string(),
+            arguments: serde_json::json!({"text": "continue"}).to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&send, &mut |event| events.push(event))
+            .await;
+
+        let read = ToolCall {
+            id: "call_2".to_string(),
+            name: "read_coding_terminal_output".to_string(),
+            arguments: serde_json::json!({"limit": 9}).to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&read, &mut |event| events.push(event))
+            .await;
+
+        let stop = ToolCall {
+            id: "call_3".to_string(),
+            name: "stop_coding_terminal_runtime".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&stop, &mut |event| events.push(event))
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            OrchestratorEvent::SendToCodingSession { session_id: None, text }
+                if text == "continue"
+        ));
+        assert!(matches!(
+            &events[1],
+            OrchestratorEvent::ReadCodingSessionOutput { session_id: None, limit }
+                if *limit == 9
         ));
         assert!(matches!(
             &events[2],

@@ -911,6 +911,35 @@ impl Trigger for TelegramTrigger {
                                                             Err(error) => push_reply(format!("读取 coding session 输出失败：{}", error)),
                                                         }
                                                     }
+                                                    OrchestratorEvent::InspectCodingSession {
+                                                        session_id,
+                                                        limit,
+                                                    } => {
+                                                        let result = manager
+                                                            .lock()
+                                                            .map_err(|_| "coding session manager lock poisoned".to_string())
+                                                            .and_then(|mut sessions| {
+                                                                let id = match session_id {
+                                                                    Some(id) => id,
+                                                                    None => sessions.attached_session_id_for_task(task_id_for_events)
+                                                                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?,
+                                                                };
+                                                                sessions.inspect_runtime(&conn, &id, limit)
+                                                                    .map_err(|error| error.to_string())
+                                                            });
+                                                        match result {
+                                                            Ok(inspection) => push_reply(format!(
+                                                                "terminal runtime `{}` 状态：status=`{}` kind=`{}`\n{}\n建议：{}\n\n{}",
+                                                                inspection.session_id,
+                                                                inspection.status,
+                                                                inspection.kind,
+                                                                inspection.summary,
+                                                                inspection.suggested_message,
+                                                                inspection.recent_output.join("\n")
+                                                            )),
+                                                            Err(error) => push_reply(format!("分析 terminal runtime 状态失败：{}", error)),
+                                                        }
+                                                    }
                                                     OrchestratorEvent::StopCodingSession {
                                                         session_id,
                                                     } => {

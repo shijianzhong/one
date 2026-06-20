@@ -758,6 +758,9 @@ impl AppState {
                             OrchestratorEvent::ReadCodingSessionOutput { session_id, limit } => {
                                 this.read_persistent_coding_session_output(session_id, limit, cx);
                             }
+                            OrchestratorEvent::InspectCodingSession { session_id, limit } => {
+                                this.inspect_persistent_coding_session(session_id, limit, cx);
+                            }
                             OrchestratorEvent::StopCodingSession { session_id } => {
                                 this.stop_persistent_coding_session(session_id, cx);
                             }

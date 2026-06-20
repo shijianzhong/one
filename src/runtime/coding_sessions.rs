@@ -79,16 +79,39 @@ impl AppState {
         match start_result {
             Ok(session_id) => {
                 self.terminal_visible = true;
+                self.terminal_output.clear();
+                self.terminal_scroll_handle.scroll_to_bottom();
                 self.terminal_refresh_generation = self.terminal_refresh_generation.wrapping_add(1);
                 self.terminal_refresh_running = false;
                 self.mark_task_active(task_id);
-                let message = format!(
+                let mut message = format!(
                     "{} 终端 runtime 已启动，session_id=`{}`，cwd=`{}`，command=`{}`。",
                     agent_kind.label(),
                     session_id,
                     cwd.to_string_lossy(),
                     agent_kind.command_line()
                 );
+                if let Ok(mut sessions) = self.coding_sessions.lock() {
+                    if let Ok(inspection) = sessions.inspect_runtime(&self.db.conn, &session_id, 80)
+                    {
+                        if matches!(
+                            inspection.kind.as_str(),
+                            "auth_required"
+                                | "trust_required"
+                                | "permission_required"
+                                | "choice_required"
+                                | "command_missing"
+                        ) {
+                            message.push_str(&format!(
+                                "\n\n当前状态：status=`{}` kind=`{}`。{}\n建议：{}",
+                                inspection.status,
+                                inspection.kind,
+                                inspection.summary,
+                                inspection.suggested_message
+                            ));
+                        }
+                    }
+                }
                 self.append_task_message(Some(task_id), "assistant", &message, cx);
             }
             Err(error) => {
@@ -139,6 +162,7 @@ impl AppState {
         match send_result {
             Ok(()) => {
                 self.terminal_visible = true;
+                self.terminal_scroll_handle.scroll_to_bottom();
                 self.mark_task_active(task_id);
                 self.append_task_message(
                     Some(task_id),
@@ -193,17 +217,13 @@ impl AppState {
 
         match read_result {
             Ok(lines) => {
-                let body = if lines.is_empty() {
-                    "最近没有可见输出。".to_string()
-                } else {
-                    lines.join("\n")
-                };
                 self.append_task_message(
                     Some(task_id),
                     "assistant",
                     &format!(
-                        "coding session `{}` 最近输出：\n\n```text\n{}\n```",
-                        session_id, body
+                        "已读取 coding runtime `{}` 的最近输出。原始内容保留在右侧终端；我只会在需要你确认、登录或选择时在这里提醒你。本次读取到 {} 行。",
+                        session_id,
+                        lines.len()
                     ),
                     cx,
                 );
@@ -213,6 +233,77 @@ impl AppState {
                     Some(task_id),
                     "assistant",
                     &format!("读取 coding session 输出失败：{}", error),
+                    cx,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn inspect_persistent_coding_session(
+        &mut self,
+        session_id: Option<String>,
+        limit: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task_id) = self.active_task_id else {
+            self.append_task_message(None, "assistant", "请先选择一个 task。", cx);
+            return;
+        };
+        let session_id =
+            match session_id.or_else(|| attached_session_id(&self.coding_sessions, task_id)) {
+                Some(session_id) => session_id,
+                None => {
+                    self.append_task_message(
+                        Some(task_id),
+                        "assistant",
+                        "当前 task 没有绑定的终端 coding runtime。",
+                        cx,
+                    );
+                    return;
+                }
+            };
+        let inspect_result = self
+            .coding_sessions
+            .lock()
+            .map_err(|_| "coding session manager lock poisoned".to_string())
+            .and_then(|mut sessions| {
+                sessions
+                    .inspect_runtime(&self.db.conn, &session_id, limit)
+                    .map_err(|error| error.to_string())
+            });
+
+        match inspect_result {
+            Ok(inspection) => {
+                let message = match inspection.kind.as_str() {
+                    "choice_required" => format!(
+                        "Claude Code 需要你确认下一步。\n\n{}",
+                        inspection.suggested_message
+                    ),
+                    "auth_required" | "trust_required" | "permission_required" => format!(
+                        "Claude Code 暂停下来等待你的操作。\n\n{}",
+                        inspection.suggested_message
+                    ),
+                    "busy" => "Claude Code 正在处理任务。我会在它需要你确认或补充信息时提醒你。"
+                        .to_string(),
+                    "ready_for_input" => {
+                        "Claude Code 当前已就绪，可以继续接收你的下一步需求。".to_string()
+                    }
+                    "command_missing" => inspection.suggested_message,
+                    "not_active" => {
+                        "这个 coding runtime 已经不在运行。如需继续，请重新启动。".to_string()
+                    }
+                    _ => format!(
+                        "已检查 Claude Code 状态：{}。{}",
+                        inspection.summary, inspection.suggested_message
+                    ),
+                };
+                self.append_task_message(Some(task_id), "assistant", &message, cx);
+            }
+            Err(error) => {
+                self.append_task_message(
+                    Some(task_id),
+                    "assistant",
+                    &format!("分析 terminal runtime 状态失败：{}", error),
                     cx,
                 );
             }

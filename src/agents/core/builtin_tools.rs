@@ -11,10 +11,36 @@ pub fn tools_for_workspace(workspace: &str) -> Vec<Arc<dyn Tool>> {
         Arc::new(RunInTerminalTool),
         Arc::new(DetectCodingClisTool),
         Arc::new(InstallCodingCliTool),
+        Arc::new(CodingTerminalRuntimeAliasTool::new(
+            "start_coding_terminal_runtime",
+            "打开右侧终端并启动真实交互式 coding CLI runtime，例如输入 claude 进入 Claude Code。适用于编码任务的首轮启动。",
+            CodingTerminalRuntimeAliasKind::Start,
+        )),
         Arc::new(StartCodingSessionTool),
+        Arc::new(CodingTerminalRuntimeAliasTool::new(
+            "send_to_coding_terminal_runtime",
+            "向当前 task 绑定的右侧终端 coding CLI runtime 写入输入。适合继续、同意、选择选项、补充需求。",
+            CodingTerminalRuntimeAliasKind::Send,
+        )),
         Arc::new(SendToCodingSessionTool),
+        Arc::new(CodingTerminalRuntimeAliasTool::new(
+            "read_coding_terminal_output",
+            "读取当前 task 绑定的右侧终端 coding CLI runtime 最近可见输出。",
+            CodingTerminalRuntimeAliasKind::Read,
+        )),
         Arc::new(ReadCodingSessionOutputTool),
+        Arc::new(InspectCodingSessionTool),
+        Arc::new(CodingTerminalRuntimeAliasTool::new(
+            "stop_coding_terminal_runtime",
+            "停止当前 task 绑定的右侧终端 coding CLI runtime，并释放 workspace 写锁。",
+            CodingTerminalRuntimeAliasKind::Stop,
+        )),
         Arc::new(StopCodingSessionTool),
+        Arc::new(CodingTerminalRuntimeAliasTool::new(
+            "list_coding_terminal_runtimes",
+            "列出当前应用内托管的右侧终端 coding CLI runtime。",
+            CodingTerminalRuntimeAliasKind::List,
+        )),
         Arc::new(ListCodingSessionsTool),
         Arc::new(GetWorkspaceWriteStatusTool),
         Arc::new(RememberTool {
@@ -280,6 +306,90 @@ impl Tool for RunInTerminalTool {
     }
 }
 
+enum CodingTerminalRuntimeAliasKind {
+    Start,
+    Send,
+    Read,
+    Stop,
+    List,
+}
+
+struct CodingTerminalRuntimeAliasTool {
+    name: &'static str,
+    description: &'static str,
+    kind: CodingTerminalRuntimeAliasKind,
+}
+
+impl CodingTerminalRuntimeAliasTool {
+    fn new(
+        name: &'static str,
+        description: &'static str,
+        kind: CodingTerminalRuntimeAliasKind,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            kind,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for CodingTerminalRuntimeAliasTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        self.description
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        match self.kind {
+            CodingTerminalRuntimeAliasKind::Start => json!({
+                "type": "object",
+                "properties": {
+                    "agent_kind": {
+                        "type": "string",
+                        "description": "要启动的 coding CLI provider id，来自配置 coding_agents。默认优先 claude。"
+                    },
+                    "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明，应是 MainAgent 理解和拆解后的用户需求" },
+                    "write_mode": { "type": "boolean", "description": "是否需要写 workspace。编码任务通常为 true，查看状态或只读 review 可为 false。默认 true。" }
+                },
+                "required": ["prompt"]
+            }),
+            CodingTerminalRuntimeAliasKind::Send => json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 runtime" },
+                    "text": { "type": "string", "description": "要发送给 coding CLI runtime 的内容" }
+                },
+                "required": ["text"]
+            }),
+            CodingTerminalRuntimeAliasKind::Read => json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 runtime" },
+                    "limit": { "type": "integer", "description": "最近输出行数，默认 40" }
+                }
+            }),
+            CodingTerminalRuntimeAliasKind::Stop => json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 runtime" }
+                }
+            }),
+            CodingTerminalRuntimeAliasKind::List => {
+                json!({ "type": "object", "properties": {} })
+            }
+        }
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
 struct StartCodingSessionTool;
 
 #[async_trait]
@@ -349,7 +459,7 @@ impl Tool for ReadCodingSessionOutputTool {
     }
 
     fn description(&self) -> &str {
-        "读取当前 task 绑定的右侧终端 coding CLI runtime 最近输出。适合用户问进度、状态、最近输出时使用。"
+        "读取当前 task 绑定的右侧终端 coding CLI runtime 原始最近输出。仅在用户明确要求原始日志、最近输出或完整输出时使用；普通进度/卡住/等待确认请用 inspect_coding_terminal_runtime。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -368,6 +478,33 @@ impl Tool for ReadCodingSessionOutputTool {
 }
 
 struct StopCodingSessionTool;
+
+struct InspectCodingSessionTool;
+
+#[async_trait]
+impl Tool for InspectCodingSessionTool {
+    fn name(&self) -> &str {
+        "inspect_coding_terminal_runtime"
+    }
+
+    fn description(&self) -> &str {
+        "读取并分析当前 task 绑定的右侧终端 coding CLI runtime 状态。会返回 ready、auth_required、trust_required、permission_required、choice_required、busy、command_missing 等结构化状态，适合 MainAgent 判断 Claude Code 当前是否需要用户登录、确认、授权或选择；不要把 raw terminal log 复述给用户。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 runtime" },
+                "limit": { "type": "integer", "description": "用于状态判断的最近输出行数，默认 80" }
+            }
+        })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
 
 #[async_trait]
 impl Tool for StopCodingSessionTool {

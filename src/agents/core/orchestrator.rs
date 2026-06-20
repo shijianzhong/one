@@ -58,6 +58,10 @@ pub enum OrchestratorEvent {
         session_id: Option<String>,
         limit: usize,
     },
+    InspectCodingSession {
+        session_id: Option<String>,
+        limit: usize,
+    },
     StopCodingSession {
         session_id: Option<String>,
     },

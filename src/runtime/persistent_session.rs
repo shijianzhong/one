@@ -221,6 +221,7 @@ pub(crate) struct PersistentCliSession {
     pub(crate) git_baseline: Option<GitBaseline>,
     pub(crate) run_id: Option<usize>,
     pub(crate) last_error: Option<String>,
+    pub(crate) last_user_action_fingerprint: Option<String>,
 }
 
 impl PersistentCliSession {
@@ -240,6 +241,28 @@ pub(crate) struct PersistentCliSessionSummary {
     pub(crate) write_mode: bool,
     pub(crate) output_seq: u64,
     pub(crate) last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodingRuntimeInspection {
+    pub(crate) session_id: String,
+    pub(crate) status: String,
+    pub(crate) kind: String,
+    pub(crate) summary: String,
+    pub(crate) suggested_message: String,
+    pub(crate) recent_output: Vec<String>,
+    pub(crate) fingerprint: Option<String>,
+}
+
+pub(crate) enum PendingCodingActionReply {
+    Sent {
+        session_id: String,
+        choice: String,
+        meaning: String,
+    },
+    NeedsExplicitChoice {
+        message: String,
+    },
 }
 
 impl From<&PersistentCliSession> for PersistentCliSessionSummary {
@@ -399,6 +422,7 @@ impl PersistentCliSessionManager {
             git_baseline: baseline,
             run_id,
             last_error: None,
+            last_user_action_fingerprint: None,
         };
         self.sessions.insert(session_id.clone(), session);
         self.task_attached_session
@@ -407,14 +431,37 @@ impl PersistentCliSessionManager {
             self.workspace_write_owner
                 .insert(workspace_id, session_id.clone());
         }
-        self.send_input(db_conn, &session_id, command_line)?;
+        self.send_command_line(db_conn, &session_id, command_line)?;
         if let Some(input) = initial_input {
             if wait_for_ready {
-                let ready = wait_for_runtime_ready(&terminal, std::time::Duration::from_secs(20))?;
-                if let Some(run_id) = run_id {
-                    RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
-                        text: format!("{} runtime ready: {}", agent_label, ready),
-                    });
+                match wait_for_runtime_ready(
+                    &session_id,
+                    &agent_label,
+                    &terminal,
+                    std::time::Duration::from_secs(20),
+                )? {
+                    RuntimeReadyState::Ready(ready) => {
+                        if let Some(run_id) = run_id {
+                            RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
+                                text: format!("{} runtime ready: {}", agent_label, ready),
+                            });
+                        }
+                    }
+                    RuntimeReadyState::NeedsUserAction(inspection) => {
+                        if let Some(session) = self.sessions.get_mut(&session_id) {
+                            session.status = PersistentSessionStatus::WaitingInput;
+                            session.last_error = Some(inspection.suggested_message.clone());
+                        }
+                        if let Some(run_id) = run_id {
+                            RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
+                                text: format!(
+                                    "{} runtime needs user action before task input: {}",
+                                    agent_label, inspection.suggested_message
+                                ),
+                            });
+                        }
+                        return Ok(session_id);
+                    }
                 }
             }
             self.send_input(db_conn, &session_id, input)?;
@@ -444,7 +491,7 @@ impl PersistentCliSessionManager {
                 .terminal
                 .lock()
                 .map_err(|_| anyhow!("terminal lock poisoned"))?;
-            terminal.write_text(text);
+            terminal.write_interactive_prompt(text);
         }
         session.status = PersistentSessionStatus::Running;
         session.last_active_at = chrono::Local::now();
@@ -452,6 +499,192 @@ impl PersistentCliSessionManager {
         if let Some(run_id) = session.run_id {
             RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
                 text: format!("USER INPUT:\n{}", text),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn poll_user_action_prompts(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        limit: usize,
+    ) -> Vec<(usize, String)> {
+        let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
+        let mut prompts = Vec::new();
+        for session_id in session_ids {
+            self.refresh_session_status(db_conn, &session_id);
+            let Some(session) = self.sessions.get(&session_id) else {
+                continue;
+            };
+            if !session.status.is_active() {
+                continue;
+            }
+            let task_id = session.task_id;
+            let agent_label = session.agent_kind.label().to_string();
+            let last_fingerprint = session.last_user_action_fingerprint.clone();
+            let lines = match session.terminal.lock() {
+                Ok(terminal) => {
+                    let mut lines = terminal.screen_text_lines();
+                    lines.retain(|line| !line.trim().is_empty());
+                    if lines.len() > limit {
+                        lines.split_off(lines.len() - limit)
+                    } else {
+                        lines
+                    }
+                }
+                Err(_) => continue,
+            };
+            let inspection = inspect_terminal_lines(session, lines);
+            if !requires_user_action(&inspection.kind) {
+                continue;
+            }
+            let fingerprint = inspection.fingerprint.clone().unwrap_or_else(|| {
+                format!(
+                    "{}:{}:{}",
+                    inspection.session_id, inspection.kind, inspection.summary
+                )
+            });
+            if last_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                continue;
+            }
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                session.last_user_action_fingerprint = Some(fingerprint);
+            }
+            if let Some(decision) = auto_decision_for_user_action(&inspection) {
+                match self.send_choice(db_conn, &session_id, &decision.choice) {
+                    Ok(()) => prompts.push((
+                        task_id,
+                        format!(
+                            "{} 需要确认：{}\n\n我已自动选择“{}”（发送 `{}`）。Claude Code 会继续执行。",
+                            agent_label, inspection.summary, decision.meaning, decision.choice
+                        ),
+                    )),
+                    Err(error) => prompts.push((
+                        task_id,
+                        format!(
+                            "{} 需要确认，但我自动发送选择失败：{}。你仍可以在聊天区回复“选1/选2/拒绝”，或直接在右侧终端操作。",
+                            agent_label, error
+                        ),
+                    )),
+                }
+                continue;
+            }
+            prompts.push((
+                task_id,
+                format_user_action_message(&inspection, &agent_label),
+            ));
+        }
+        prompts
+    }
+
+    pub(crate) fn reply_to_pending_user_action(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        task_id: usize,
+        user_message: &str,
+    ) -> Result<Option<PendingCodingActionReply>> {
+        let Some(session_id) = self.attached_session_id_for_task(task_id) else {
+            return Ok(None);
+        };
+        self.refresh_session_status(db_conn, &session_id);
+        let inspection = self.inspect_runtime(db_conn, &session_id, 80)?;
+        if !requires_user_action(&inspection.kind) {
+            return Ok(None);
+        }
+        let Some(choice) = map_user_message_to_choice(user_message) else {
+            if inspection.kind == "choice_required" && asks_agent_to_choose(user_message) {
+                return Ok(Some(PendingCodingActionReply::NeedsExplicitChoice {
+                    message: format!(
+                        "{}\n\n你可以直接回复“同意/选1”“选2”或“拒绝/选3”，我会帮你发送到右侧终端。",
+                        inspection.suggested_message
+                    ),
+                }));
+            }
+            return Ok(None);
+        };
+        let meaning = match choice.as_str() {
+            "1" => "允许这一次操作",
+            "2" => "本次会话后续类似编辑都允许",
+            "3" => "拒绝这次操作",
+            _ => "已选择",
+        }
+        .to_string();
+        self.send_choice(db_conn, &session_id, &choice)?;
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.last_user_action_fingerprint = None;
+        }
+        Ok(Some(PendingCodingActionReply::Sent {
+            session_id,
+            choice,
+            meaning,
+        }))
+    }
+
+    fn send_choice(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        session_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
+        if !session.status.is_active() {
+            return Err(anyhow!(
+                "session {} is not active ({})",
+                session_id,
+                session.status_label()
+            ));
+        }
+        {
+            let terminal = session
+                .terminal
+                .lock()
+                .map_err(|_| anyhow!("terminal lock poisoned"))?;
+            terminal.write_interactive_choice(text);
+        }
+        session.status = PersistentSessionStatus::Running;
+        session.last_active_at = chrono::Local::now();
+        session.output_seq = session.output_seq.saturating_add(1);
+        if let Some(run_id) = session.run_id {
+            RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
+                text: format!("USER CHOICE:\n{}", text),
+            });
+        }
+        Ok(())
+    }
+
+    fn send_command_line(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        session_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
+        if !session.status.is_active() {
+            return Err(anyhow!(
+                "session {} is not active ({})",
+                session_id,
+                session.status_label()
+            ));
+        }
+        {
+            let terminal = session
+                .terminal
+                .lock()
+                .map_err(|_| anyhow!("terminal lock poisoned"))?;
+            terminal.write_command_line(text);
+        }
+        session.status = PersistentSessionStatus::Running;
+        session.last_active_at = chrono::Local::now();
+        session.output_seq = session.output_seq.saturating_add(1);
+        if let Some(run_id) = session.run_id {
+            RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
+                text: format!("SHELL COMMAND:\n{}", text),
             });
         }
         Ok(())
@@ -479,6 +712,29 @@ impl PersistentCliSessionManager {
         } else {
             Ok(lines)
         }
+    }
+
+    pub(crate) fn inspect_runtime(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<CodingRuntimeInspection> {
+        self.refresh_session_status(db_conn, session_id);
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
+        let terminal = session
+            .terminal
+            .lock()
+            .map_err(|_| anyhow!("terminal lock poisoned"))?;
+        let mut lines = terminal.screen_text_lines();
+        lines.retain(|line| !line.trim().is_empty());
+        if lines.len() > limit {
+            lines = lines.split_off(lines.len() - limit);
+        }
+        Ok(inspect_terminal_lines(session, lines))
     }
 
     pub(crate) fn stop_session(
@@ -629,10 +885,17 @@ fn should_wait_for_runtime_ready(agent_kind: &CodingAgentProvider) -> bool {
     agent_kind.command.trim() == "claude"
 }
 
+enum RuntimeReadyState {
+    Ready(String),
+    NeedsUserAction(CodingRuntimeInspection),
+}
+
 fn wait_for_runtime_ready(
+    session_id: &str,
+    agent_label: &str,
     terminal: &Arc<Mutex<TerminalEmulator>>,
     timeout: std::time::Duration,
-) -> Result<String> {
+) -> Result<RuntimeReadyState> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         let lines = {
@@ -646,19 +909,32 @@ fn wait_for_runtime_ready(
             terminal.screen_text_lines()
         };
         if let Some(line) = lines.iter().find(|line| is_claude_ready_line(line)) {
-            return Ok(line.trim().to_string());
+            return Ok(RuntimeReadyState::Ready(line.trim().to_string()));
+        }
+        let recent_output = recent_non_empty_lines(lines.clone(), 20);
+        let (status, kind, summary, suggested_message) = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            agent_label,
+            &recent_output,
+        );
+        if matches!(
+            kind.as_str(),
+            "auth_required" | "trust_required" | "permission_required" | "command_missing"
+        ) {
+            return Ok(RuntimeReadyState::NeedsUserAction(
+                CodingRuntimeInspection {
+                    session_id: session_id.to_string(),
+                    status,
+                    kind,
+                    summary,
+                    suggested_message,
+                    recent_output,
+                    fingerprint: None,
+                },
+            ));
         }
         if std::time::Instant::now() >= deadline {
-            let recent = lines
-                .into_iter()
-                .filter(|line| !line.trim().is_empty())
-                .rev()
-                .take(8)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
+            let recent = recent_non_empty_lines(lines, 8).join("\n");
             return Err(anyhow!(
                 "timed out waiting for Claude Code welcome/ready output. Recent terminal output:\n{}",
                 recent
@@ -674,6 +950,386 @@ fn is_claude_ready_line(line: &str) -> bool {
         || lower.contains("claude code")
         || lower.contains("? for shortcuts")
         || lower.contains("type /help")
+}
+
+fn inspect_terminal_lines(
+    session: &PersistentCliSession,
+    recent_output: Vec<String>,
+) -> CodingRuntimeInspection {
+    let (status, kind, summary, suggested_message) =
+        classify_terminal_lines(session.status, session.agent_kind.label(), &recent_output);
+
+    CodingRuntimeInspection {
+        session_id: session.session_id.clone(),
+        status,
+        kind,
+        summary,
+        suggested_message,
+        fingerprint: user_action_fingerprint(&recent_output),
+        recent_output,
+    }
+}
+
+fn classify_terminal_lines(
+    session_status: PersistentSessionStatus,
+    agent_label: &str,
+    recent_output: &[String],
+) -> (String, String, String, String) {
+    let joined = recent_output.join("\n");
+    let lower = joined.to_ascii_lowercase();
+    if !session_status.is_active() {
+        (
+            session_status.label().to_string(),
+            "not_active".to_string(),
+            format!("{} runtime is {}.", agent_label, session_status.label()),
+            "该终端 runtime 已不活跃；如需继续编码，请重新启动。".to_string(),
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "command not found",
+            "not recognized",
+            "no such file or directory",
+        ],
+    ) {
+        (
+            "failed".to_string(),
+            "command_missing".to_string(),
+            format!("{} command appears to be missing.", agent_label),
+            format!(
+                "{} 命令不可用。请检查安装与 PATH，然后重新启动。",
+                agent_label
+            ),
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "log in",
+            "login",
+            "sign in",
+            "authentication",
+            "authenticate",
+            "browser",
+        ],
+    ) {
+        (
+            "waiting_user_action".to_string(),
+            "auth_required".to_string(),
+            format!("{} is waiting for authentication.", agent_label),
+            "Claude Code 正在等待登录/认证。这个通常需要你在右侧终端或浏览器里完成登录；完成后告诉我继续。".to_string(),
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "trust this",
+            "do you trust",
+            "trusted workspace",
+            "trust the files",
+        ],
+    ) {
+        (
+            "waiting_user_action".to_string(),
+            "trust_required".to_string(),
+            format!(
+                "{} is asking for workspace trust confirmation.",
+                agent_label
+            ),
+            "Claude Code 正在等待目录信任确认。如果终端里有编号选项，你可以直接在这里回复“同意/选1/拒绝”，我会帮你发送；如果它要求交互式登录或特殊按键，你也可以在右侧终端操作。".to_string(),
+        )
+    } else if let Some(choice) = parse_numbered_choice_prompt(recent_output) {
+        (
+            "waiting_user_action".to_string(),
+            "choice_required".to_string(),
+            choice.summary,
+            choice.suggested_message,
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "allow",
+            "deny",
+            "yes/no",
+            "y/n",
+            "approve",
+            "permission",
+            "permissions",
+        ],
+    ) {
+        (
+            "waiting_user_action".to_string(),
+            "permission_required".to_string(),
+            format!("{} is waiting for a permission decision.", agent_label),
+            "Claude Code 正在等待权限确认。你可以直接在这里回复“同意/选1”“全部允许/选2”或“拒绝/选3”，我会帮你发送到右侧终端。".to_string(),
+        )
+    } else if recent_output.iter().any(|line| is_claude_ready_line(line)) {
+        (
+            "ready".to_string(),
+            "ready_for_input".to_string(),
+            format!("{} appears ready for input.", agent_label),
+            "Claude Code 已就绪，可以把用户需求整理后发送给它。".to_string(),
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "thinking",
+            "working",
+            "running",
+            "esc to interrupt",
+            "ctrl-c",
+            "processing",
+        ],
+    ) {
+        (
+            "running".to_string(),
+            "busy".to_string(),
+            format!("{} appears to be working.", agent_label),
+            "Claude Code 正在处理任务。可以稍后再次读取输出并总结进度。".to_string(),
+        )
+    } else {
+        (
+            session_status.label().to_string(),
+            "unknown".to_string(),
+            format!(
+                "{} runtime is active, but no specific state was recognized.",
+                agent_label
+            ),
+            "已读取终端输出，但没有识别到明确状态。请基于 recent_output 判断下一步。".to_string(),
+        )
+    }
+}
+
+struct ChoicePrompt {
+    summary: String,
+    suggested_message: String,
+    action: String,
+}
+
+fn parse_numbered_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
+    let question = recent_output
+        .iter()
+        .rev()
+        .find(|line| {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            trimmed.contains('?')
+                && (lower.contains("do you want") || lower.contains("would you like"))
+        })?
+        .trim()
+        .to_string();
+    let has_numbered_options = recent_output
+        .iter()
+        .any(|line| contains_numbered_option(line, "1"))
+        && recent_output
+            .iter()
+            .any(|line| contains_numbered_option(line, "2"));
+    if !has_numbered_options {
+        return None;
+    }
+
+    let question_prefix = question
+        .split_once('?')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(question.as_str());
+    let action = if let Some(target) = extract_after(question_prefix, "Do you want to ") {
+        target.to_string()
+    } else if let Some(target) = extract_after(question_prefix, "Would you like to ") {
+        target.to_string()
+    } else {
+        question_prefix.to_string()
+    };
+    let zh_action = translate_common_claude_action(&action);
+    Some(ChoicePrompt {
+        summary: format!("Claude Code 正在请求确认：{}。", zh_action),
+        suggested_message: format!(
+            "{}\n\n你可以回复“同意”或“选1”允许这一次；回复“选2”表示本次会话后续类似编辑都允许；回复“拒绝”或“选3”则不允许。",
+            zh_action
+        ),
+        action,
+    })
+}
+
+fn contains_numbered_option(line: &str, number: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with(&format!("{}.", number))
+        || trimmed.starts_with(&format!("{})", number))
+        || trimmed.contains(&format!(" {}.", number))
+        || trimmed.contains(&format!(" {})", number))
+}
+
+fn extract_after<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.strip_prefix(prefix)
+}
+
+fn translate_common_claude_action(action: &str) -> String {
+    let lower = action.to_ascii_lowercase();
+    if let Some(file) = lower.strip_prefix("create ") {
+        format!("它想创建 `{}`", file.trim())
+    } else if let Some(file) = lower.strip_prefix("edit ") {
+        format!("它想编辑 `{}`", file.trim())
+    } else if let Some(file) = lower.strip_prefix("overwrite ") {
+        format!("它想覆盖 `{}`", file.trim())
+    } else {
+        format!("它需要你确认：{}", action)
+    }
+}
+
+fn user_action_fingerprint(recent_output: &[String]) -> Option<String> {
+    parse_numbered_choice_prompt(recent_output)
+        .map(|choice| format!("choice:{}", choice.summary))
+        .or_else(|| {
+            let relevant = recent_output
+                .iter()
+                .rev()
+                .find(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    contains_any(
+                        &lower,
+                        &[
+                            "log in",
+                            "login",
+                            "sign in",
+                            "trust this",
+                            "do you trust",
+                            "allow",
+                            "deny",
+                            "permission",
+                        ],
+                    )
+                })
+                .map(|line| line.trim().to_string());
+            relevant.map(|line| format!("action:{}", line))
+        })
+}
+
+fn requires_user_action(kind: &str) -> bool {
+    matches!(
+        kind,
+        "auth_required" | "trust_required" | "permission_required" | "choice_required"
+    )
+}
+
+struct AutoDecision {
+    choice: String,
+    meaning: String,
+}
+
+fn auto_decision_for_user_action(inspection: &CodingRuntimeInspection) -> Option<AutoDecision> {
+    if inspection.kind != "choice_required" {
+        return None;
+    }
+    let choice = parse_numbered_choice_prompt(&inspection.recent_output)?;
+    let action = choice.action.trim().to_ascii_lowercase();
+    let risky = contains_any(
+        &action,
+        &[
+            "delete",
+            "remove",
+            "rm ",
+            "overwrite",
+            "replace",
+            "run ",
+            "execute",
+            "install",
+            "permission",
+        ],
+    );
+    if risky {
+        return None;
+    }
+    if action.starts_with("create ") || action.starts_with("edit ") || action.starts_with("modify ")
+    {
+        return Some(AutoDecision {
+            choice: "1".to_string(),
+            meaning: "允许这一次操作".to_string(),
+        });
+    }
+    None
+}
+
+fn format_user_action_message(inspection: &CodingRuntimeInspection, agent_label: &str) -> String {
+    match inspection.kind.as_str() {
+        "choice_required" => format!(
+            "{} 需要你确认下一步。\n\n{}",
+            agent_label, inspection.suggested_message
+        ),
+        "auth_required" | "trust_required" | "permission_required" => format!(
+            "{} 暂停下来等待你的操作。\n\n{}",
+            agent_label, inspection.suggested_message
+        ),
+        _ => inspection.suggested_message.clone(),
+    }
+}
+
+fn map_user_message_to_choice(message: &str) -> Option<String> {
+    let normalized = message
+        .trim()
+        .to_ascii_lowercase()
+        .replace(' ', "")
+        .replace('，', ",")
+        .replace('。', ".");
+    let original = message.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if matches!(normalized.as_str(), "1" | "选1" | "选择1" | "option1") {
+        return Some("1".to_string());
+    }
+    if matches!(normalized.as_str(), "2" | "选2" | "选择2" | "option2") {
+        return Some("2".to_string());
+    }
+    if matches!(normalized.as_str(), "3" | "选3" | "选择3" | "option3") {
+        return Some("3".to_string());
+    }
+    if contains_any(original, &["全部允许", "都允许", "本次都允许", "一直允许"])
+        || contains_any(&normalized, &["allowall", "all"])
+    {
+        return Some("2".to_string());
+    }
+    if contains_any(
+        original,
+        &["同意", "可以", "允许", "确认", "是的", "行", "好", "继续"],
+    ) || contains_any(&normalized, &["yes", "y", "ok", "approve", "allow"])
+    {
+        return Some("1".to_string());
+    }
+    if contains_any(
+        original,
+        &["拒绝", "不同意", "不允许", "不要", "取消", "否"],
+    ) || contains_any(&normalized, &["no", "n", "deny", "reject"])
+    {
+        return Some("3".to_string());
+    }
+    None
+}
+
+fn asks_agent_to_choose(message: &str) -> bool {
+    contains_any(
+        message,
+        &[
+            "你不能替我选",
+            "你能替我选",
+            "你帮我选",
+            "帮我选",
+            "你来选",
+            "替我选",
+        ],
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn recent_non_empty_lines(lines: Vec<String>, limit: usize) -> Vec<String> {
+    let mut lines = lines
+        .into_iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() > limit {
+        lines.split_off(lines.len() - limit)
+    } else {
+        lines
+    }
 }
 
 #[cfg(test)]
@@ -735,6 +1391,118 @@ mod tests {
             install_command: None,
             install_instructions: None,
         }
+    }
+
+    #[test]
+    fn classify_terminal_lines_recognizes_user_action_states() {
+        let auth = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &["Please log in with your browser".to_string()],
+        );
+        assert_eq!(auth.1, "auth_required");
+
+        let trust = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &["Do you trust the files in this folder?".to_string()],
+        );
+        assert_eq!(trust.1, "trust_required");
+
+        let permission = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &["Allow this command? yes/no".to_string()],
+        );
+        assert_eq!(permission.1, "permission_required");
+    }
+
+    #[test]
+    fn classify_terminal_lines_recognizes_claude_numbered_choice() {
+        let choice = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &[
+                "Do you want to create index.html?".to_string(),
+                "1. Yes".to_string(),
+                "2. Yes, allow all edits during this session (shift+tab)".to_string(),
+                "3. No".to_string(),
+            ],
+        );
+        assert_eq!(choice.1, "choice_required");
+        assert!(choice.2.contains("index.html"));
+        assert!(choice.3.contains("选1"));
+    }
+
+    #[test]
+    fn classify_terminal_lines_recognizes_choice_with_cursor_on_same_line() {
+        let choice = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &[
+                "Do you want to create member-list.html? ❯ 1. Yes".to_string(),
+                "2. Yes, allow all edits during this session (shift+tab)".to_string(),
+                "3. No".to_string(),
+            ],
+        );
+        assert_eq!(choice.1, "choice_required");
+        assert!(choice.2.contains("member-list.html"));
+    }
+
+    #[test]
+    fn auto_decision_allows_simple_create_once_but_not_delete() {
+        let create = CodingRuntimeInspection {
+            session_id: "claude-1".to_string(),
+            status: "waiting_user_action".to_string(),
+            kind: "choice_required".to_string(),
+            summary: "Claude Code 正在请求确认：它想创建 `member-list.html`。".to_string(),
+            suggested_message: String::new(),
+            recent_output: vec![
+                "Do you want to create member-list.html?".to_string(),
+                "1. Yes".to_string(),
+                "2. Yes, allow all edits during this session".to_string(),
+                "3. No".to_string(),
+            ],
+            fingerprint: None,
+        };
+        assert_eq!(
+            auto_decision_for_user_action(&create)
+                .map(|decision| decision.choice)
+                .as_deref(),
+            Some("1")
+        );
+
+        let delete = CodingRuntimeInspection {
+            recent_output: vec![
+                "Do you want to delete member-list.html?".to_string(),
+                "1. Yes".to_string(),
+                "2. Yes, allow all edits during this session".to_string(),
+                "3. No".to_string(),
+            ],
+            ..create
+        };
+        assert!(auto_decision_for_user_action(&delete).is_none());
+    }
+
+    #[test]
+    fn maps_user_replies_to_claude_choices() {
+        assert_eq!(map_user_message_to_choice("同意").as_deref(), Some("1"));
+        assert_eq!(map_user_message_to_choice("选1").as_deref(), Some("1"));
+        assert_eq!(map_user_message_to_choice("全部允许").as_deref(), Some("2"));
+        assert_eq!(map_user_message_to_choice("选2").as_deref(), Some("2"));
+        assert_eq!(map_user_message_to_choice("拒绝").as_deref(), Some("3"));
+        assert_eq!(map_user_message_to_choice("选3").as_deref(), Some("3"));
+        assert_eq!(map_user_message_to_choice("你不能替我选么"), None);
+    }
+
+    #[test]
+    fn classify_terminal_lines_does_not_treat_plain_directory_as_trust() {
+        let state = classify_terminal_lines(
+            PersistentSessionStatus::Running,
+            "Claude",
+            &["Working directory: /tmp/project".to_string()],
+        );
+        assert_ne!(state.1, "trust_required");
     }
 
     #[test]

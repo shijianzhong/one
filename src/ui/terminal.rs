@@ -1,5 +1,5 @@
 use gpui::{
-    div, prelude::*, px, Context, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    div, prelude::*, px, relative, Context, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 use std::sync::Arc;
@@ -103,8 +103,20 @@ impl AppState {
                             t.process_events();
                         }
                     }
-                    if let Ok(mut sessions) = this.coding_sessions.lock() {
+                    let user_action_prompts = if let Ok(mut sessions) = this.coding_sessions.lock()
+                    {
                         sessions.refresh_all(&this.db.conn);
+                        sessions.poll_user_action_prompts(&this.db.conn, 80)
+                    } else {
+                        Vec::new()
+                    };
+                    for (task_id, message) in user_action_prompts {
+                        this.append_task_message(Some(task_id), "assistant", &message, cx);
+                    }
+                    let max_scroll_y: f32 = this.terminal_scroll_handle.max_offset().y.into();
+                    let current_scroll_y: f32 = this.terminal_scroll_handle.offset().y.into();
+                    if max_scroll_y <= 1.0 || -current_scroll_y >= max_scroll_y - 24.0 {
+                        this.terminal_scroll_handle.scroll_to_bottom();
                     }
                     cx.notify();
                     true
@@ -316,6 +328,7 @@ impl AppState {
                     .map(|session| session.terminal.clone())
             })
         });
+        let has_session_term = session_term.is_some();
         let term_arc = session_term.or_else(|| self.terminal_emulator.as_ref().cloned());
         let has_terminal = term_arc.is_some() || !self.terminal_output.is_empty();
         if !has_terminal {
@@ -331,7 +344,7 @@ impl AppState {
         }
 
         let focus_handle = self.terminal_focus_handle.clone();
-        let output_lines = if !self.terminal_output.is_empty() {
+        let output_lines = if !has_session_term && !self.terminal_output.is_empty() {
             let mut lines = Vec::new();
             for entry in &self.terminal_output {
                 if let Some(command) = &entry.command {
@@ -348,7 +361,7 @@ impl AppState {
         } else {
             if let Some(term_arc) = &term_arc {
                 if let Ok(term_lock) = term_arc.lock() {
-                    let render_lines = term_lock.renderable_lines();
+                    let render_lines = term_lock.renderable_history_lines();
                     let v: Vec<(String, bool)> = render_lines
                         .iter()
                         .map(|line| {
@@ -413,6 +426,7 @@ impl AppState {
                     .id("terminal-output")
                     .flex_1()
                     .overflow_scroll()
+                    .track_scroll(&self.terminal_scroll_handle)
                     .p_2()
                     .font_family("Menlo")
                     .text_sm()
@@ -426,13 +440,24 @@ impl AppState {
                         } else {
                             text.clone()
                         };
-                        div()
-                            .h(px(18.0))
-                            .flex()
-                            .items_center()
-                            .text_color(PRIMARY_TEXT())
-                            .child(display_text)
-                            .into_any_element()
+                        if has_session_term {
+                            div()
+                                .h(px(18.0))
+                                .flex()
+                                .items_center()
+                                .text_color(PRIMARY_TEXT())
+                                .child(display_text)
+                                .into_any_element()
+                        } else {
+                            div()
+                                .min_h(px(18.0))
+                                .w_full()
+                                .line_height(relative(1.4))
+                                .whitespace_normal()
+                                .text_color(PRIMARY_TEXT())
+                                .child(display_text)
+                                .into_any_element()
+                        }
                     })),
             )
             .child(

@@ -269,7 +269,7 @@
 用户说明：
 
 - GUI：打开某个 workspace/task 后，右侧终端无 runtime 时会按 `coding_agents` 配置显示手动启动按钮，例如 `Start Claude`、`Start Codex`、`Start Gemini`；有 runtime 时终端显示当前 task 绑定的真实 CLI 运行状态，可直接键盘输入，`Stop` 停止并释放写锁。
-- MainAgent：主聊天框仍是主要入口。编码需求先通过 `detect_coding_clis` 检查本机 CLI；未安装时询问用户是否安装，用户确认后可调用 `install_coding_cli`；选定 CLI 后通过 `start_coding_session` 打开右侧终端 runtime；“继续/同意/选 1”等通过 `send_to_coding_session` 写入同一个终端 runtime；“看看进度”通过 `read_coding_session_output` 读取。
+- MainAgent：主聊天框仍是主要入口。编码需求先通过 `detect_coding_clis` 检查本机 CLI；未安装时询问用户是否安装，用户确认后可调用 `install_coding_cli`；选定 CLI 后通过 `start_coding_terminal_runtime` 打开右侧终端 runtime；“继续/同意/选 1”等通过 `send_to_coding_terminal_runtime` 写入同一个终端 runtime；“看看进度”优先通过 `inspect_coding_terminal_runtime` 判断状态，需要原始输出时通过 `read_coding_terminal_output` 读取。
 - Telegram：先 `/workspace <name>`，再使用 `/agent start <provider_id> [任务]`、`/agent send <内容>`、`/agent status`、`/agent stop`、`/agent sessions`、`/agent attach <task_id>`。`provider_id` 来自 `coding_agents` 配置；默认内置 `claude` 和 `codex`。
 - cwd：coding CLI 一律在 `workspace.path` 启动。空 workspace 会直接在 root 创建应用；已有项目会直接修改 root 项目代码。task 目录只用于 ONE 的 task storage。
 - 写锁：同一个 workspace 同时最多一个 write-active session。所有 provider 都可写，但必须串行。
@@ -326,13 +326,37 @@
 - [x] GUI 启动成功文案显示 `command=<cli command>`，说明实际运行的是终端命令。
 - [x] runtime 启动方式改为先打开默认 shell，再向 shell 输入 `claude` / `codex` / `gemini` 等命令，而不是 PTY 直接 exec CLI。
 - [x] Claude Code 启动后先等待 welcome/ready 输出，再发送 MainAgent 整理后的初始需求；超时则不盲发需求，并保留终端输出给用户处理登录/确认等提示。
+- [x] Claude Code 启动等待阶段识别登录、目录信任、权限确认、命令缺失等状态；遇到需要用户动作时保留终端 runtime，不发送任务正文。
+- [x] 新增 `inspect_coding_terminal_runtime`，MainAgent 可读取并结构化判断 Claude Code 当前状态。
+- [x] inspect 支持识别 ready、auth_required、trust_required、permission_required、command_missing、busy、not_active、unknown 等状态。
+- [x] 新增 `*_coding_terminal_runtime` 工具别名，产品语义改为右侧终端 runtime；旧 `*_coding_session` 仅保留兼容。
 - [x] 新增 dispatcher 单测覆盖 CLI 检测与安装确认保护。
+- [x] 编码意图进入本地 fast path：已有 terminal runtime 时直接转发；没有 runtime 时检测已安装 CLI 并优先启动 Claude，不再先请求 MiniMax Orchestrator。
+- [x] 右侧终端有 active coding runtime 时优先渲染 session PTY 输出，不再被普通命令输出覆盖。
+- [x] 普通终端命令输出支持自动换行；coding runtime PTY 输出保留终端布局。
+- [x] 终端 scrollback 扩展到历史行并支持向上滚动；在用户停留底部时自动跟随最新输出。
+- [x] shell 启动命令与 interactive prompt 输入路径拆分：启动 `claude` / `codex` 用 shell command + Enter，转发用户需求用 bracketed paste + 单独 Enter。
+- [x] 转发 prompt 时去掉末尾多余换行，避免 Claude Code TUI 把尾部换行当作继续编辑而不是提交。
+- [x] 转发长 prompt 时在 bracketed paste 结束后增加二次 Enter 兜底，修复 Claude Code TUI 已粘贴但未自动提交的问题。
+- [x] MainAgent 不再把 coding runtime 最近输出作为默认聊天内容反复粘贴；原始输出保留在右侧终端。
+- [x] 终端刷新循环会轻量检测 active coding runtime 是否出现用户交互请求，发现新请求时只在聊天区发一条中文解释。
+- [x] 识别 Claude Code 编号确认提示，例如 `Do you want to create index.html? 1. Yes 2. Yes, allow all edits ... 3. No`。
+- [x] 对重复的登录/信任/权限/编号选择提示做 session 级 fingerprint 去重，避免聊天区重复提醒同一个问题。
+- [x] MainAgent prompt 增加选项转发表达：同意/选1→`1`，全部允许/选2→`2`，拒绝/选3→`3`。
+- [x] 用户在聊天区回复 Claude Code 待确认选项时，应用层优先拦截并直接转发到对应 terminal runtime，不再交给 MainAgent 自由推理。
+- [x] 支持“同意/可以/允许/选1”→`1`，“全部允许/本次都允许/选2”→`2`，“拒绝/不允许/选3”→`3`。
+- [x] 对“你不能替我选么/你帮我选”这类非明确授权消息，不停止 session；改为提示用户可在聊天区回复明确选项，由 ONE 代发到终端。
+- [x] 权限确认文案改为“可在聊天区回复，我会帮你发送到右侧终端”，不再默认要求用户自己去终端操作。
+- [x] 提升 Claude Code 编号选择识别稳定性：支持 `Do you want ...?` 与 `1. Yes` 出现在同一行的 TUI 输出。
+- [x] 增加保守自动决策：`create/edit/modify` 这类低风险文件操作自动选择 `1` 允许一次，并在聊天区说明；`delete/remove/overwrite/run/install` 等高风险操作仍询问用户。
+- [x] Claude Code 编号选择不再走 bracketed paste；自动决策和用户回复“同意/选1/选2/拒绝”会直接发送短选择按键并回车。
 
 验证：
 
 - [x] `cargo fmt`
 - [x] `cargo check`
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，109 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，9 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，116 passed。
 
 ## 当前暂存任务
 

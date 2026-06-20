@@ -101,18 +101,6 @@ impl IntentRouter {
         // Default: general conversation, no precise routing needed
         (IntentLevel::General, None)
     }
-
-    /// Returns true if precise routing matched (system or coding)
-    pub fn needs_precise_route(&self, message: &str) -> bool {
-        let (level, _) = self.route(message);
-        !matches!(level, IntentLevel::General)
-    }
-
-    /// Quick sync routing - returns decision directly without LLM
-    pub fn quick_route(&self, message: &str) -> Option<RoutingDecision> {
-        let (_, decision) = self.route(message);
-        decision
-    }
 }
 
 impl Default for IntentRouter {

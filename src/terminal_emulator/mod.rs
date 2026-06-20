@@ -43,7 +43,7 @@ impl Dimensions for TermSize {
         self.rows
     }
     fn total_lines(&self) -> usize {
-        self.rows * 2
+        self.rows + 5000
     }
 }
 
@@ -187,6 +187,56 @@ impl TerminalEmulator {
         lines
     }
 
+    /// 获取包含 scrollback 历史的可渲染行。
+    pub fn renderable_history_lines(&self) -> Vec<RenderLine> {
+        use alacritty_terminal::index::{Column, Line, Point};
+
+        let term = self.term.lock();
+        let grid = term.grid();
+        let total_lines = grid.total_lines();
+        let visible_lines = grid.screen_lines();
+        let history_lines = total_lines.saturating_sub(visible_lines);
+        let cursor_point = grid.cursor.point;
+        let mut lines = Vec::with_capacity(total_lines);
+
+        for line in (0..history_lines).rev() {
+            let line_index = Line(-(line as i32) - 1);
+            lines.push(render_line_from_string(
+                term.bounds_to_string(
+                    Point::new(line_index, Column(0)),
+                    Point::new(line_index, Column(self.cols.saturating_sub(1))),
+                ),
+                false,
+                self.cols,
+            ));
+        }
+
+        for line_idx in 0..visible_lines as i32 {
+            let line_index = Line(line_idx);
+            let has_cursor = cursor_point.line == line_index;
+            let mut render_line = render_line_from_string(
+                term.bounds_to_string(
+                    Point::new(line_index, Column(0)),
+                    Point::new(line_index, Column(self.cols.saturating_sub(1))),
+                ),
+                false,
+                self.cols,
+            );
+            if has_cursor {
+                let col = cursor_point
+                    .column
+                    .0
+                    .min(render_line.chars.len().saturating_sub(1));
+                if let Some(ch) = render_line.chars.get_mut(col) {
+                    ch.is_cursor = true;
+                }
+            }
+            lines.push(render_line);
+        }
+
+        trim_leading_blank_lines(lines)
+    }
+
     /// 写入数据到 PTY
     pub fn write(&self, data: &[u8]) {
         if let Some(ref tx) = self.pty_sender {
@@ -196,11 +246,28 @@ impl TerminalEmulator {
         }
     }
 
-    /// 写入文本
-    pub fn write_text(&self, text: &str) {
-        let mut data = text.as_bytes().to_vec();
-        data.push(b'\n');
-        self.write(&data);
+    /// 输入一行 shell 命令并按 Enter。
+    pub fn write_command_line(&self, text: &str) {
+        self.write(text.as_bytes());
+        self.write(b"\r");
+    }
+
+    /// 向交互式 TUI 粘贴一段 prompt，然后按 Enter 提交。
+    pub fn write_interactive_prompt(&self, text: &str) {
+        let text = text.trim_end_matches(['\r', '\n']);
+        self.write(b"\x1b[200~");
+        self.write(text.as_bytes());
+        self.write(b"\x1b[201~");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        self.write(b"\r");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        self.write(b"\r");
+    }
+
+    /// 向交互式 TUI 发送短选择，例如 Claude Code 的 1/2/3 确认项。
+    pub fn write_interactive_choice(&self, text: &str) {
+        self.write(text.trim().as_bytes());
+        self.write(b"\r");
     }
 
     pub fn shutdown(&mut self) {
@@ -266,5 +333,35 @@ impl TerminalEmulator {
     }
     pub fn rows(&self) -> usize {
         self.rows
+    }
+}
+
+fn render_line_from_string(mut text: String, has_bg: bool, cols: usize) -> RenderLine {
+    let char_count = text.chars().count();
+    if char_count < cols {
+        text.push_str(&" ".repeat(cols - char_count));
+    }
+    RenderLine {
+        chars: text
+            .chars()
+            .take(cols)
+            .map(|c| RenderChar {
+                c,
+                is_cursor: false,
+                has_bg,
+            })
+            .collect(),
+    }
+}
+
+fn trim_leading_blank_lines(lines: Vec<RenderLine>) -> Vec<RenderLine> {
+    let first_content = lines.iter().position(|line| {
+        line.chars
+            .iter()
+            .any(|ch| ch.is_cursor || !ch.c.is_whitespace())
+    });
+    match first_content {
+        Some(index) => lines.into_iter().skip(index).collect(),
+        None => lines,
     }
 }

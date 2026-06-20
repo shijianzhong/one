@@ -11,7 +11,9 @@ use crate::memory::types::ChatMessage;
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
     /// MainAgent is generating a plan / thinking text
-    Plan { plan: String },
+    Plan {
+        plan: String,
+    },
     /// Real-time stream delta from the main assistant
     AssistantDelta(String),
     /// A sub-step has started (kept for UI compatibility, but no longer used for sub-agents)
@@ -20,23 +22,47 @@ pub enum OrchestratorEvent {
         agent_name: String,
     },
     /// A step has finished
-    StepFinished { result: String },
-    /// A tool has been called
-    ToolCall { name: String, args: String },
-    /// A tool returned a result
-    ToolResult { name: String, result: String },
-    /// Orchestrator is waiting for the user's next message (multi-turn)
-    AwaitingUserInput { reply: String },
-    /// Agent wants to run a command in the terminal
-    RunInTerminal { command: String, work_dir: String },
-    /// Agent identified a coding task and wants runtime to start the two-stage Claude Code workflow.
-    CodingWorkflowRequested {
-        user_request: String,
-        main_agent_summary: String,
-        known_constraints: Vec<String>,
-        suggested_direction: Option<String>,
-        clarification_focus: Vec<String>,
+    StepFinished {
+        result: String,
     },
+    /// A tool has been called
+    ToolCall {
+        name: String,
+        args: String,
+    },
+    /// A tool returned a result
+    ToolResult {
+        name: String,
+        result: String,
+    },
+    /// Orchestrator is waiting for the user's next message (multi-turn)
+    AwaitingUserInput {
+        reply: String,
+    },
+    /// Agent wants to run a command in the terminal
+    RunInTerminal {
+        command: String,
+        work_dir: String,
+    },
+    /// Agent wants runtime to start or operate a persistent coding CLI session.
+    StartCodingSession {
+        agent_kind: String,
+        prompt: String,
+        write_mode: bool,
+    },
+    SendToCodingSession {
+        session_id: Option<String>,
+        text: String,
+    },
+    ReadCodingSessionOutput {
+        session_id: Option<String>,
+        limit: usize,
+    },
+    StopCodingSession {
+        session_id: Option<String>,
+    },
+    ListCodingSessions,
+    GetWorkspaceWriteStatus,
 }
 
 pub struct Orchestrator {

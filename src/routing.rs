@@ -17,10 +17,6 @@ impl AppState {
         }
         cx.notify();
 
-        if self.try_handle_coding_workflow_input(&message, cx) {
-            return;
-        }
-
         // ── 如果 Orchestrator 正在等待用户输入，通过通道发送 ──────
         // 注意：只发送给所属 task 与当前 task 一致的 Orchestrator
         // 防止切换 task 后，新 task 的消息被错误路由到旧 Orchestrator

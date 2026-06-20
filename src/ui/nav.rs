@@ -210,6 +210,21 @@ impl AppState {
                     } else {
                         task.title.trim().to_string()
                     };
+                    let session_badge = self.coding_sessions.lock().ok().and_then(|sessions| {
+                        sessions.session_for_task(task.id).map(|session| {
+                            let label = format!(
+                                "{} {}",
+                                session.agent_kind.label(),
+                                session.status.label()
+                            );
+                            let color = if session.status.is_active() {
+                                BRAND_BLUE()
+                            } else {
+                                MUTED_TEXT()
+                            };
+                            (label, color)
+                        })
+                    });
 
                     task_div = task_div.on_mouse_down(
                         gpui::MouseButton::Left,
@@ -254,6 +269,19 @@ impl AppState {
                                     .text_ellipsis()
                                     .child(title_display.clone()),
                             )
+                            .when_some(session_badge, |this, (label, color)| {
+                                this.child(
+                                    div()
+                                        .px_1()
+                                        .py_0()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(color.opacity(0.4))
+                                        .text_xs()
+                                        .text_color(color)
+                                        .child(label),
+                                )
+                            })
                             .child(
                                 div()
                                     .ml_auto()

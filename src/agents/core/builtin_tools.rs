@@ -9,7 +9,14 @@ pub fn tools_for_workspace(workspace: &str) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(RunSystemTaskTool),
         Arc::new(RunInTerminalTool),
-        Arc::new(StartCodingWorkflowTool),
+        Arc::new(DetectCodingClisTool),
+        Arc::new(InstallCodingCliTool),
+        Arc::new(StartCodingSessionTool),
+        Arc::new(SendToCodingSessionTool),
+        Arc::new(ReadCodingSessionOutputTool),
+        Arc::new(StopCodingSessionTool),
+        Arc::new(ListCodingSessionsTool),
+        Arc::new(GetWorkspaceWriteStatusTool),
         Arc::new(RememberTool {
             workspace: workspace.to_string(),
         }),
@@ -66,6 +73,61 @@ impl Tool for RunSystemTaskTool {
 
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
         Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct DetectCodingClisTool;
+
+#[async_trait]
+impl Tool for DetectCodingClisTool {
+    fn name(&self) -> &str {
+        "detect_coding_clis"
+    }
+
+    fn description(&self) -> &str {
+        "检测当前机器上配置的交互式编码 CLI 是否已安装，例如 Claude Code、Codex、Gemini。编码任务启动前应先调用。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_dispatcher" }))
+    }
+}
+
+struct InstallCodingCliTool;
+
+#[async_trait]
+impl Tool for InstallCodingCliTool {
+    fn name(&self) -> &str {
+        "install_coding_cli"
+    }
+
+    fn description(&self) -> &str {
+        "安装指定的交互式编码 CLI。必须先向用户说明将执行的安装命令并获得确认；安装失败时返回安装说明。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_kind": {
+                    "type": "string",
+                    "description": "要安装的 coding CLI provider id，例如 claude。"
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "用户是否已经明确同意执行安装命令。必须为 true 才会安装。"
+                }
+            },
+            "required": ["agent_kind", "confirmed"]
+        })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_dispatcher" }))
     }
 }
 
@@ -218,38 +280,154 @@ impl Tool for RunInTerminalTool {
     }
 }
 
-struct StartCodingWorkflowTool;
+struct StartCodingSessionTool;
 
 #[async_trait]
-impl Tool for StartCodingWorkflowTool {
+impl Tool for StartCodingSessionTool {
     fn name(&self) -> &str {
-        "start_coding_workflow"
+        "start_coding_session"
     }
 
     fn description(&self) -> &str {
-        "启动两阶段 Claude Code 编码工作流。适用于开发应用、实现功能、创建页面、修改代码、修复 bug、重构项目等编码任务。第一阶段只做方案梳理，用户确认后第二阶段才编码。"
+        "在右侧终端启动一个真实的交互式 coding CLI runtime，例如运行 claude 进入 Claude Code。适用于开发应用、实现功能、创建页面、修改代码、修复 bug、重构项目等编码任务。runtime 在当前 workspace root 中运行，并绑定当前 task。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "user_request": { "type": "string", "description": "用户的原始编码需求" },
-                "main_agent_summary": { "type": "string", "description": "对需求的简要梳理，包括目标、范围和关键约束" },
-                "known_constraints": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "已经明确的约束条件"
+                "agent_kind": {
+                    "type": "string",
+                    "description": "要启动的 coding agent provider id，来自配置 coding_agents。默认优先 claude。"
                 },
-                "suggested_direction": { "type": "string", "description": "可选的建议技术方向或实现倾向" },
-                "clarification_focus": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "希望 Claude Code 在第一阶段重点澄清的问题"
-                }
+                "prompt": { "type": "string", "description": "启动后写入终端 CLI runtime 的任务说明，应是 MainAgent 理解和拆解后的用户需求" },
+                "write_mode": { "type": "boolean", "description": "是否需要写 workspace。编码任务通常为 true，查看状态或只读 review 可为 false。默认 true。" }
             },
-            "required": ["user_request", "main_agent_summary"]
+            "required": ["prompt"]
         })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct SendToCodingSessionTool;
+
+#[async_trait]
+impl Tool for SendToCodingSessionTool {
+    fn name(&self) -> &str {
+        "send_to_coding_session"
+    }
+
+    fn description(&self) -> &str {
+        "向当前 task 绑定的右侧终端 coding CLI runtime 写入输入。适合用户说继续、同意、选择某个选项、补充要求时使用。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 session" },
+                "text": { "type": "string", "description": "要发送给 coding agent 的内容" }
+            },
+            "required": ["text"]
+        })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct ReadCodingSessionOutputTool;
+
+#[async_trait]
+impl Tool for ReadCodingSessionOutputTool {
+    fn name(&self) -> &str {
+        "read_coding_session_output"
+    }
+
+    fn description(&self) -> &str {
+        "读取当前 task 绑定的右侧终端 coding CLI runtime 最近输出。适合用户问进度、状态、最近输出时使用。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 session" },
+                "limit": { "type": "integer", "description": "最近输出行数，默认 40" }
+            }
+        })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct StopCodingSessionTool;
+
+#[async_trait]
+impl Tool for StopCodingSessionTool {
+    fn name(&self) -> &str {
+        "stop_coding_session"
+    }
+
+    fn description(&self) -> &str {
+        "停止当前 task 绑定的右侧终端 coding CLI runtime，并释放 workspace 写锁。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "可选；不填则使用当前 task 绑定的 session" }
+            }
+        })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct ListCodingSessionsTool;
+
+#[async_trait]
+impl Tool for ListCodingSessionsTool {
+    fn name(&self) -> &str {
+        "list_coding_sessions"
+    }
+
+    fn description(&self) -> &str {
+        "列出当前应用内托管的右侧终端 coding CLI runtime。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(json!({ "status": "intercepted_by_orchestrator" }))
+    }
+}
+
+struct GetWorkspaceWriteStatusTool;
+
+#[async_trait]
+impl Tool for GetWorkspaceWriteStatusTool {
+    fn name(&self) -> &str {
+        "get_workspace_write_status"
+    }
+
+    fn description(&self) -> &str {
+        "查询当前 workspace 是否已有 write-active coding CLI 会话。"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
     }
 
     async fn call(&self, _args: serde_json::Value) -> Result<serde_json::Value> {

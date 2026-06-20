@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::i18n::{t, Translations};
+use crate::runtime::configured_coding_agents;
 use crate::terminal_emulator::mappings::keys::to_esc_str;
 use crate::terminal_emulator::TerminalEmulator;
 use crate::ui_theme::{
@@ -30,6 +31,23 @@ fn term_bg() -> Hsla {
 
 impl AppState {
     fn ensure_terminal(&mut self, cx: &mut Context<Self>) {
+        if let Ok(mut sessions) = self.coding_sessions.lock() {
+            sessions.refresh_all(&self.db.conn);
+        }
+        if self
+            .active_task_id
+            .and_then(|task_id| {
+                self.coding_sessions
+                    .lock()
+                    .ok()
+                    .and_then(|sessions| sessions.attached_session_id_for_task(task_id))
+            })
+            .is_some()
+        {
+            self.ensure_terminal_refresh_loop(cx);
+            return;
+        }
+
         let project_dir = std::path::PathBuf::from(self.get_work_dir());
         let _ = std::fs::create_dir_all(&project_dir);
 
@@ -44,7 +62,8 @@ impl AppState {
         self.terminal_refresh_generation = self.terminal_refresh_generation.wrapping_add(1);
         self.terminal_refresh_running = false;
 
-        match TerminalEmulator::new(None, Some(&project_dir), 80, 24) {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        match TerminalEmulator::new(Some(&shell), Some(&project_dir), 80, 24) {
             Ok(term) => {
                 let project_dir_str = project_dir.to_string_lossy().to_string();
                 self.terminal_emulator = Some(Arc::new(Mutex::new(term)));
@@ -75,17 +94,17 @@ impl AppState {
                 .await;
             let should_continue = this
                 .update(cx, |this, cx| {
-                    if this.terminal_refresh_generation != generation
-                        || !this.terminal_visible
-                        || this.terminal_emulator.is_none()
-                    {
+                    if this.terminal_refresh_generation != generation || !this.terminal_visible {
                         this.terminal_refresh_running = false;
                         return false;
                     }
                     if let Some(ref ta) = this.terminal_emulator {
-                        if let Ok(t) = ta.lock() {
+                        if let Ok(mut t) = ta.lock() {
                             t.process_events();
                         }
+                    }
+                    if let Ok(mut sessions) = this.coding_sessions.lock() {
+                        sessions.refresh_all(&this.db.conn);
                     }
                     cx.notify();
                     true
@@ -138,7 +157,7 @@ impl AppState {
     ) -> impl IntoElement {
         self.ensure_terminal(cx);
         let lang = self.current_lang;
-        let work_dir = self.get_work_dir();
+        let header = self.terminal_header_text();
 
         div()
             .id("terminal-view")
@@ -146,15 +165,44 @@ impl AppState {
             .flex_col()
             .size_full()
             .bg(term_bg())
-            .child(self.render_terminal_header(work_dir, lang))
+            .child(self.render_terminal_header(header, lang, cx))
             .child(self.render_terminal_body(window, cx))
     }
 
+    fn terminal_header_text(&self) -> String {
+        if let Some(task_id) = self.active_task_id {
+            let text = self.coding_sessions.lock().ok().and_then(|sessions| {
+                sessions.session_for_task(task_id).map(|session| {
+                    format!(
+                        "{} · {} · {}",
+                        session.agent_kind.label(),
+                        session.status.label(),
+                        session.cwd.to_string_lossy()
+                    )
+                })
+            });
+            if let Some(text) = text {
+                return text;
+            }
+        }
+        self.get_work_dir()
+    }
+
     fn render_terminal_header(
-        &self,
-        work_dir: String,
+        &mut self,
+        header_text: String,
         lang: crate::i18n::Lang,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let has_session = self
+            .active_task_id
+            .and_then(|task_id| {
+                self.coding_sessions
+                    .lock()
+                    .ok()
+                    .and_then(|sessions| sessions.attached_session_id_for_task(task_id))
+            })
+            .is_some();
         div()
             .flex()
             .items_center()
@@ -185,9 +233,75 @@ impl AppState {
                             .text_xs()
                             .text_color(TERTIARY_TEXT())
                             .ml_auto()
-                            .child(work_dir),
-                    ),
+                            .child(header_text),
+                    )
+                    .child(self.render_provider_start_buttons("", cx))
+                    .when(has_session, |this| {
+                        this.child(self.terminal_header_button(
+                            "Stop".to_string(),
+                            cx,
+                            |this, cx| {
+                                this.stop_persistent_coding_session(None, cx);
+                            },
+                        ))
+                    }),
             )
+    }
+
+    fn render_provider_start_buttons(
+        &mut self,
+        prefix: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut row = div().flex().gap_2();
+        for provider in configured_coding_agents() {
+            let label = if prefix.is_empty() {
+                provider.label().to_string()
+            } else {
+                format!("{} {}", prefix, provider.label())
+            };
+            let provider_for_handler = provider.clone();
+            row = row.child(self.terminal_header_button(label, cx, move |this, cx| {
+                this.start_persistent_coding_session(
+                    provider_for_handler.clone(),
+                    "请接手当前 task 的编码工作。先阅读当前 workspace，说明你准备如何推进；需要用户确认时停下来询问。"
+                        .to_string(),
+                    true,
+                    cx,
+                );
+            }));
+        }
+        row
+    }
+
+    fn terminal_header_button<F>(
+        &mut self,
+        label: String,
+        cx: &mut Context<Self>,
+        handler: F,
+    ) -> impl IntoElement
+    where
+        F: Fn(&mut AppState, &mut Context<AppState>) + 'static,
+    {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(INPUT_BG())
+            .border_1()
+            .border_color(BORDER_LIGHT())
+            .text_xs()
+            .text_color(PRIMARY_TEXT())
+            .cursor_pointer()
+            .hover(|this| this.bg(BORDER_LIGHT().opacity(0.45)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                    handler(this, cx);
+                    cx.notify();
+                }),
+            )
+            .child(label)
     }
 
     fn render_terminal_body(
@@ -195,7 +309,15 @@ impl AppState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let has_terminal = self.terminal_emulator.is_some();
+        let session_term = self.active_task_id.and_then(|task_id| {
+            self.coding_sessions.lock().ok().and_then(|sessions| {
+                sessions
+                    .session_for_task(task_id)
+                    .map(|session| session.terminal.clone())
+            })
+        });
+        let term_arc = session_term.or_else(|| self.terminal_emulator.as_ref().cloned());
+        let has_terminal = term_arc.is_some() || !self.terminal_output.is_empty();
         if !has_terminal {
             return div()
                 .flex_1()
@@ -209,7 +331,6 @@ impl AppState {
         }
 
         let focus_handle = self.terminal_focus_handle.clone();
-        let term_arc = self.terminal_emulator.as_ref().unwrap().clone();
         let output_lines = if !self.terminal_output.is_empty() {
             let mut lines = Vec::new();
             for entry in &self.terminal_output {
@@ -225,17 +346,21 @@ impl AppState {
             }
             lines
         } else {
-            if let Ok(term_lock) = term_arc.lock() {
-                let render_lines = term_lock.renderable_lines();
-                let v: Vec<(String, bool)> = render_lines
-                    .iter()
-                    .map(|line| {
-                        let s: String = line.chars.iter().map(|c| c.c).collect();
-                        let has_cursor = line.chars.iter().any(|c| c.is_cursor);
-                        (s, has_cursor)
-                    })
-                    .collect();
-                v
+            if let Some(term_arc) = &term_arc {
+                if let Ok(term_lock) = term_arc.lock() {
+                    let render_lines = term_lock.renderable_lines();
+                    let v: Vec<(String, bool)> = render_lines
+                        .iter()
+                        .map(|line| {
+                            let s: String = line.chars.iter().map(|c| c.c).collect();
+                            let has_cursor = line.chars.iter().any(|c| c.is_cursor);
+                            (s, has_cursor)
+                        })
+                        .collect();
+                    v
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             }
@@ -257,7 +382,17 @@ impl AppState {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if let Some(ref term_arc) = this.terminal_emulator {
+                let term_arc = this
+                    .active_task_id
+                    .and_then(|task_id| {
+                        this.coding_sessions.lock().ok().and_then(|sessions| {
+                            sessions
+                                .session_for_task(task_id)
+                                .map(|session| session.terminal.clone())
+                        })
+                    })
+                    .or_else(|| this.terminal_emulator.as_ref().cloned());
+                if let Some(ref term_arc) = term_arc {
                     if let Ok(term) = term_arc.lock() {
                         use alacritty_terminal::term::TermMode;
                         let mode = TermMode::default();

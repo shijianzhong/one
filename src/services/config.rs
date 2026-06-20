@@ -30,6 +30,50 @@ pub struct Config {
     /// Telegram 绑定的时间
     #[serde(default)]
     pub telegram_bound_at: Option<String>,
+    /// 可用的持久 coding CLI provider。
+    /// 留空时使用默认 claude/codex。
+    #[serde(default = "default_coding_agents")]
+    pub coding_agents: Vec<CodingAgentConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodingAgentConfig {
+    pub id: String,
+    pub label: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub install_command: Option<String>,
+    #[serde(default)]
+    pub install_instructions: Option<String>,
+}
+
+pub fn default_coding_agents() -> Vec<CodingAgentConfig> {
+    vec![
+        CodingAgentConfig {
+            id: "claude".to_string(),
+            label: "Claude".to_string(),
+            command: "claude".to_string(),
+            args: Vec::new(),
+            install_command: Some("curl -fsSL https://claude.ai/install.sh | bash".to_string()),
+            install_instructions: Some(
+                "Claude Code 官方安装：macOS/Linux/WSL 可运行 `curl -fsSL https://claude.ai/install.sh | bash`，或 macOS 使用 `brew install --cask claude-code`。安装后在项目目录运行 `claude` 并按提示登录。文档：https://code.claude.com/docs"
+                    .to_string(),
+            ),
+        },
+        CodingAgentConfig {
+            id: "codex".to_string(),
+            label: "Codex".to_string(),
+            command: "codex".to_string(),
+            args: Vec::new(),
+            install_command: None,
+            install_instructions: Some(
+                "未配置 Codex CLI 自动安装命令。请先安装并确保 `codex` 在 PATH 中可用。"
+                    .to_string(),
+            ),
+        },
+    ]
 }
 
 impl Default for Config {
@@ -46,6 +90,7 @@ impl Default for Config {
             telegram_bot_token: None,
             telegram_chat_id: None,
             telegram_bound_at: None,
+            coding_agents: default_coding_agents(),
         }
     }
 }

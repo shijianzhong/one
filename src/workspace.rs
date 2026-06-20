@@ -115,7 +115,6 @@ impl AppState {
         } else if let Some(task) = self.active_task_mut() {
             task.messages.clear();
         }
-        self.restore_coding_workflow_context();
     }
 
     pub(crate) fn active_task_ref(&self) -> Option<&TaskItem> {

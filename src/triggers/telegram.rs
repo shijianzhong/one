@@ -138,6 +138,273 @@ fn append_step_to_task(
     );
 }
 
+fn open_one_db() -> sqlez::connection::Connection {
+    let db_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".one")
+        .join("one.db");
+    sqlez::connection::Connection::open_file(db_path.to_str().unwrap_or("one.db"))
+}
+
+fn load_current_workspace(
+    conn: &sqlez::connection::Connection,
+    workspace_id: usize,
+) -> Option<(String, std::path::PathBuf)> {
+    crate::task_db::load_workspaces(conn)
+        .ok()?
+        .into_iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .map(|workspace| (workspace.name, std::path::PathBuf::from(workspace.path)))
+}
+
+async fn handle_agent_command(trigger: &TelegramTrigger, chat_id: i64, text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("/agent") else {
+        return false;
+    };
+    let rest = rest.trim();
+    let mut parts = rest.splitn(3, ' ');
+    let command = parts.next().unwrap_or_default();
+    let arg1 = parts.next().unwrap_or_default();
+    let arg2 = parts.next().unwrap_or_default();
+
+    let conn = open_one_db();
+    let workspace_id_str = trigger.current_workspace_id.lock().unwrap().clone();
+    let workspace_id: usize = match workspace_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = trigger
+                .send_message(chat_id, "请先发送 /workspace <name> 选择 workspace。")
+                .await;
+            return true;
+        }
+    };
+
+    match command {
+        "start" => {
+            let Some(agent_kind) = crate::runtime::resolve_coding_agent_provider(arg1) else {
+                let providers = crate::runtime::configured_coding_agent_usage();
+                let _ = trigger
+                    .send_message(
+                        chat_id,
+                        &format!("用法：/agent start {} [任务说明]", providers),
+                    )
+                    .await;
+                return true;
+            };
+            let task_id_str =
+                ensure_remote_task(&trigger.current_workspace_id, &trigger.current_task_id);
+            let task_id: usize = match task_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = trigger.send_message(chat_id, "创建远程 task 失败。").await;
+                    return true;
+                }
+            };
+            let Some((_workspace_name, cwd)) = load_current_workspace(&conn, workspace_id) else {
+                let _ = trigger
+                    .send_message(chat_id, "未找到当前 workspace。")
+                    .await;
+                return true;
+            };
+            let prompt = if arg2.trim().is_empty() {
+                "请接手当前 task 的编码工作。先阅读当前 workspace，说明你准备如何推进；需要用户确认时停下来询问。"
+                    .to_string()
+            } else {
+                arg2.trim().to_string()
+            };
+            let manager = crate::runtime::global_coding_session_manager();
+            let result = manager
+                .lock()
+                .map_err(|_| "coding session manager lock poisoned".to_string())
+                .and_then(|mut sessions| {
+                    sessions
+                        .start_session(
+                            &conn,
+                            task_id,
+                            workspace_id,
+                            agent_kind.clone(),
+                            cwd.clone(),
+                            true,
+                            Some(&prompt),
+                        )
+                        .map_err(|error| error.to_string())
+                });
+            let reply = match result {
+                Ok(session_id) => format!(
+                    "{} 持久会话已启动：`{}`\ncwd={}",
+                    agent_kind.label(),
+                    session_id,
+                    cwd.to_string_lossy()
+                ),
+                Err(error) => format!("启动失败：{}", error),
+            };
+            let _ = trigger.send_message(chat_id, &reply).await;
+            true
+        }
+        "send" => {
+            let text = if arg1.is_empty() {
+                String::new()
+            } else if arg2.is_empty() {
+                arg1.to_string()
+            } else {
+                format!("{} {}", arg1, arg2)
+            };
+            if text.trim().is_empty() {
+                let _ = trigger
+                    .send_message(chat_id, "用法：/agent send <内容>")
+                    .await;
+                return true;
+            }
+            let task_id_str =
+                ensure_remote_task(&trigger.current_workspace_id, &trigger.current_task_id);
+            let task_id: usize = match task_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = trigger.send_message(chat_id, "当前 task 无效。").await;
+                    return true;
+                }
+            };
+            let manager = crate::runtime::global_coding_session_manager();
+            let result = manager
+                .lock()
+                .map_err(|_| "coding session manager lock poisoned".to_string())
+                .and_then(|mut sessions| {
+                    let session_id = sessions
+                        .attached_session_id_for_task(task_id)
+                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?;
+                    sessions
+                        .send_input(&conn, &session_id, &text)
+                        .map(|_| session_id)
+                        .map_err(|error| error.to_string())
+                });
+            let reply = match result {
+                Ok(session_id) => format!("已发送到 `{}`。", session_id),
+                Err(error) => format!("发送失败：{}", error),
+            };
+            let _ = trigger.send_message(chat_id, &reply).await;
+            true
+        }
+        "status" => {
+            let task_id_str =
+                ensure_remote_task(&trigger.current_workspace_id, &trigger.current_task_id);
+            let task_id: usize = match task_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = trigger.send_message(chat_id, "当前 task 无效。").await;
+                    return true;
+                }
+            };
+            let manager = crate::runtime::global_coding_session_manager();
+            let reply = manager
+                .lock()
+                .map(|mut sessions| {
+                    let Some(session_id) = sessions.attached_session_id_for_task(task_id) else {
+                        return "当前 task 没有绑定 session。".to_string();
+                    };
+                    let output = sessions
+                        .read_recent_output(&conn, &session_id, 30)
+                        .unwrap_or_default()
+                        .join("\n");
+                    format!(
+                        "session `{}` 最近输出：\n{}",
+                        session_id,
+                        if output.trim().is_empty() {
+                            "(无可见输出)"
+                        } else {
+                            output.trim()
+                        }
+                    )
+                })
+                .unwrap_or_else(|_| "读取状态失败。".to_string());
+            let _ = trigger.send_message(chat_id, &reply).await;
+            true
+        }
+        "stop" => {
+            let task_id_str =
+                ensure_remote_task(&trigger.current_workspace_id, &trigger.current_task_id);
+            let task_id: usize = match task_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = trigger.send_message(chat_id, "当前 task 无效。").await;
+                    return true;
+                }
+            };
+            let manager = crate::runtime::global_coding_session_manager();
+            let result = manager
+                .lock()
+                .map_err(|_| "coding session manager lock poisoned".to_string())
+                .and_then(|mut sessions| {
+                    let session_id = sessions
+                        .attached_session_id_for_task(task_id)
+                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?;
+                    sessions
+                        .stop_session(&conn, &session_id)
+                        .map(|_| session_id)
+                        .map_err(|error| error.to_string())
+                });
+            let reply = match result {
+                Ok(session_id) => format!("已停止 `{}`。", session_id),
+                Err(error) => format!("停止失败：{}", error),
+            };
+            let _ = trigger.send_message(chat_id, &reply).await;
+            true
+        }
+        "attach" => {
+            let Ok(task_id) = arg1.parse::<usize>() else {
+                let _ = trigger
+                    .send_message(chat_id, "用法：/agent attach <task_id>")
+                    .await;
+                return true;
+            };
+            *trigger.current_task_id.lock().unwrap() = Some(task_id.to_string());
+            let _ = trigger
+                .send_message(chat_id, &format!("已 attach 到 task `{}`。", task_id))
+                .await;
+            true
+        }
+        "sessions" => {
+            let manager = crate::runtime::global_coding_session_manager();
+            let sessions = manager
+                .lock()
+                .map(|sessions| sessions.list_sessions())
+                .unwrap_or_default();
+            let reply = if sessions.is_empty() {
+                "当前没有持久 coding session。".to_string()
+            } else {
+                sessions
+                    .into_iter()
+                    .map(|session| {
+                        format!(
+                            "- `{}` {} task={} workspace={} status={} cwd={}",
+                            session.session_id,
+                            session.agent_kind.label(),
+                            session.task_id,
+                            session.workspace_id,
+                            session.status.label(),
+                            session.cwd.to_string_lossy()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let _ = trigger.send_message(chat_id, &reply).await;
+            true
+        }
+        _ => {
+            let _ = trigger
+                .send_message(
+                    chat_id,
+                    &format!(
+                        "用法：/agent start {} [任务]；/agent send <内容>；/agent status；/agent stop；/agent attach <task_id>；/agent sessions",
+                        crate::runtime::configured_coding_agent_usage()
+                    ),
+                )
+                .await;
+            true
+        }
+    }
+}
+
 impl TelegramTrigger {
     /// 停止正在运行的所有 Telegram trigger 实例。
     ///
@@ -537,6 +804,19 @@ impl Trigger for TelegramTrigger {
                             ) {
                                 Ok(orchestrator) => {
                                     let session_id = format!("telegram-task-{}", task_id_str);
+                                    let event_replies =
+                                        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                                    let event_replies_for_run = event_replies.clone();
+                                    let ws_path_for_events = match load_current_workspace(
+                                        &conn,
+                                        ws_id_str.parse().unwrap_or(0),
+                                    ) {
+                                        Some((_, path)) => path,
+                                        None => std::path::PathBuf::from("."),
+                                    };
+                                    let workspace_id_for_events: usize =
+                                        ws_id_str.parse().unwrap_or(0);
+                                    let task_id_for_events = task_id_usize;
 
                                     // 注意：user_input_rx=None → 不支持多轮追问
                                     let result = orchestrator
@@ -546,9 +826,151 @@ impl Trigger for TelegramTrigger {
                                             history,
                                             &ws_name,
                                             Some(task_id_usize),
-                                            None,   // cancel_flag=None
-                                            None,   // user_input_rx=None => 不支持多轮
-                                            |_| {}, // on_event（不关心中间事件）
+                                            None, // cancel_flag=None
+                                            None, // user_input_rx=None => 不支持多轮
+                                            move |event| {
+                                                use crate::agents::core::OrchestratorEvent;
+                                                let manager =
+                                                    crate::runtime::global_coding_session_manager();
+                                                let conn = open_one_db();
+                                                let mut push_reply = |reply: String| {
+                                                    if let Ok(mut replies) =
+                                                        event_replies_for_run.lock()
+                                                    {
+                                                        replies.push(reply);
+                                                    }
+                                                };
+                                                match event {
+                                                    OrchestratorEvent::StartCodingSession {
+                                                        agent_kind,
+                                                        prompt,
+                                                        write_mode,
+                                                    } => {
+                                                        let kind = crate::runtime::resolve_coding_agent_provider(&agent_kind)
+                                                            .unwrap_or_else(crate::runtime::default_coding_agent_provider);
+                                                        let result = manager
+                                                            .lock()
+                                                            .map_err(|_| "coding session manager lock poisoned".to_string())
+                                                            .and_then(|mut sessions| {
+                                                                sessions.start_session(
+                                                                    &conn,
+                                                                    task_id_for_events,
+                                                                    workspace_id_for_events,
+                                                                    kind.clone(),
+                                                                    ws_path_for_events.clone(),
+                                                                    write_mode,
+                                                                    Some(&prompt),
+                                                                ).map_err(|error| error.to_string())
+                                                            });
+                                                        match result {
+                                                            Ok(session_id) => push_reply(format!("{} 持久会话已启动：`{}`。", kind.label(), session_id)),
+                                                            Err(error) => push_reply(format!("启动 coding session 失败：{}", error)),
+                                                        }
+                                                    }
+                                                    OrchestratorEvent::SendToCodingSession {
+                                                        session_id,
+                                                        text,
+                                                    } => {
+                                                        let result = manager
+                                                            .lock()
+                                                            .map_err(|_| "coding session manager lock poisoned".to_string())
+                                                            .and_then(|mut sessions| {
+                                                                let id = match session_id {
+                                                                    Some(id) => id,
+                                                                    None => sessions.attached_session_id_for_task(task_id_for_events)
+                                                                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?,
+                                                                };
+                                                                sessions.send_input(&conn, &id, &text)
+                                                                    .map(|_| id)
+                                                                    .map_err(|error| error.to_string())
+                                                            });
+                                                        match result {
+                                                            Ok(id) => push_reply(format!("已发送到 coding session `{}`。", id)),
+                                                            Err(error) => push_reply(format!("发送到 coding session 失败：{}", error)),
+                                                        }
+                                                    }
+                                                    OrchestratorEvent::ReadCodingSessionOutput {
+                                                        session_id,
+                                                        limit,
+                                                    } => {
+                                                        let result = manager
+                                                            .lock()
+                                                            .map_err(|_| "coding session manager lock poisoned".to_string())
+                                                            .and_then(|mut sessions| {
+                                                                let id = match session_id {
+                                                                    Some(id) => id,
+                                                                    None => sessions.attached_session_id_for_task(task_id_for_events)
+                                                                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?,
+                                                                };
+                                                                sessions.read_recent_output(&conn, &id, limit)
+                                                                    .map(|lines| (id, lines))
+                                                                    .map_err(|error| error.to_string())
+                                                            });
+                                                        match result {
+                                                            Ok((id, lines)) => push_reply(format!("coding session `{}` 最近输出：\n{}", id, lines.join("\n"))),
+                                                            Err(error) => push_reply(format!("读取 coding session 输出失败：{}", error)),
+                                                        }
+                                                    }
+                                                    OrchestratorEvent::StopCodingSession {
+                                                        session_id,
+                                                    } => {
+                                                        let result = manager
+                                                            .lock()
+                                                            .map_err(|_| "coding session manager lock poisoned".to_string())
+                                                            .and_then(|mut sessions| {
+                                                                let id = match session_id {
+                                                                    Some(id) => id,
+                                                                    None => sessions.attached_session_id_for_task(task_id_for_events)
+                                                                        .ok_or_else(|| "当前 task 没有绑定 session。".to_string())?,
+                                                                };
+                                                                sessions.stop_session(&conn, &id)
+                                                                    .map(|_| id)
+                                                                    .map_err(|error| error.to_string())
+                                                            });
+                                                        match result {
+                                                            Ok(id) => push_reply(format!("已停止 coding session `{}`。", id)),
+                                                            Err(error) => push_reply(format!("停止 coding session 失败：{}", error)),
+                                                        }
+                                                    }
+                                                    OrchestratorEvent::ListCodingSessions => {
+                                                        let sessions = manager
+                                                            .lock()
+                                                            .map(|sessions| sessions.list_sessions())
+                                                            .unwrap_or_default();
+                                                        let reply = if sessions.is_empty() {
+                                                            "当前没有持久 coding session。".to_string()
+                                                        } else {
+                                                            sessions
+                                                                .into_iter()
+                                                                .map(|session| {
+                                                                    format!(
+                                                                        "- `{}` {} task={} workspace={} status={}",
+                                                                        session.session_id,
+                                                                        session.agent_kind.label(),
+                                                                        session.task_id,
+                                                                        session.workspace_id,
+                                                                        session.status.label()
+                                                                    )
+                                                                })
+                                                                .collect::<Vec<_>>()
+                                                                .join("\n")
+                                                        };
+                                                        push_reply(reply);
+                                                    }
+                                                    OrchestratorEvent::GetWorkspaceWriteStatus => {
+                                                        let reply = manager
+                                                            .lock()
+                                                            .ok()
+                                                            .and_then(|sessions| {
+                                                                sessions.active_write_session_for_workspace(workspace_id_for_events)
+                                                                    .map(|session| format!("写锁由 `{}` {} 持有。", session.session_id, session.agent_kind.label()))
+                                                            })
+                                                            .unwrap_or_else(|| "当前 workspace 没有 write-active coding session。".to_string());
+                                                        push_reply(reply);
+                                                    }
+                                                    _ => {}
+                                                }
+                                            },
                                         )
                                         .await;
 
@@ -556,6 +978,14 @@ impl Trigger for TelegramTrigger {
                                         Ok(reply_text) => {
                                             let cleaned =
                                                 crate::util::strip_think_tags(&reply_text);
+                                            let event_text = event_replies
+                                                .lock()
+                                                .map(|replies| replies.join("\n\n"))
+                                                .unwrap_or_default();
+                                            if !event_text.trim().is_empty() {
+                                                let _ =
+                                                    self.send_message(chat_id, &event_text).await;
+                                            }
                                             // 7. 写 AI 回复到 DB
                                             append_step_to_task(
                                                 &task_id_str,
@@ -578,6 +1008,10 @@ impl Trigger for TelegramTrigger {
                                     let _ = self.send_message(chat_id, &err_msg).await;
                                 }
                             }
+                            continue;
+                        }
+
+                        if handle_agent_command(self, chat_id, &text).await {
                             continue;
                         }
 

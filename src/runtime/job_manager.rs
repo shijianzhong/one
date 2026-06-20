@@ -19,7 +19,6 @@ use crate::{
 };
 
 pub struct JobManager {
-    pub next_claude_run_id: u64,
     pub request_in_flight: bool,
     pub request_status_text: Option<String>,
     pub request_kind: Option<RequestKind>,
@@ -38,16 +37,11 @@ pub struct JobManager {
     pub cancel_flag: Arc<AtomicBool>,
     /// Orchestrator 等待用户输入时的通道（发送端，由 route_message 使用）
     pub orchestrator_user_input_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    /// 当前编码工作流状态。
-    pub coding_workflow: Option<crate::runtime::coding_workflow::CodingWorkflowState>,
-    /// 当前 Claude Code 编码工作流的取消信号。
-    pub coding_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl JobManager {
     pub fn new() -> Self {
         Self {
-            next_claude_run_id: 0,
             request_in_flight: false,
             request_status_text: None,
             request_kind: None,
@@ -61,8 +55,6 @@ impl JobManager {
             pending_confirmation_tools: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             orchestrator_user_input_tx: None,
-            coding_workflow: None,
-            coding_cancel_tx: None,
         }
     }
 
@@ -494,8 +486,17 @@ impl AppState {
         self.job_manager.clear_request_full();
         self.job_manager.reset_general_ai_run();
         self.job_manager.orchestrator_user_input_tx = None;
-        if let Some(cancel_tx) = self.job_manager.coding_cancel_tx.take() {
-            let _ = cancel_tx.send(());
+        let attached_session_id = self.active_task_id.and_then(|task_id| {
+            self.coding_sessions
+                .lock()
+                .ok()
+                .and_then(|sessions| sessions.attached_session_id_for_task(task_id))
+        });
+        if let Some(session_id) = attached_session_id {
+            let _ = self
+                .coding_sessions
+                .lock()
+                .map(|mut sessions| sessions.stop_session(&self.db.conn, &session_id));
         }
 
         // 3. 标记当前 task 不活跃
@@ -742,21 +743,29 @@ impl AppState {
                                     });
                                 }).detach();
                             }
-                            OrchestratorEvent::CodingWorkflowRequested {
-                                user_request,
-                                main_agent_summary,
-                                known_constraints,
-                                suggested_direction,
-                                clarification_focus,
+                            OrchestratorEvent::StartCodingSession {
+                                agent_kind,
+                                prompt,
+                                write_mode,
                             } => {
-                                this.start_coding_workflow(
-                                    user_request,
-                                    main_agent_summary,
-                                    known_constraints,
-                                    suggested_direction,
-                                    clarification_focus,
-                                    cx,
-                                );
+                                let kind = crate::runtime::resolve_coding_agent_provider(&agent_kind)
+                                    .unwrap_or_else(crate::runtime::default_coding_agent_provider);
+                                this.start_persistent_coding_session(kind, prompt, write_mode, cx);
+                            }
+                            OrchestratorEvent::SendToCodingSession { session_id, text } => {
+                                this.send_to_persistent_coding_session(session_id, text, cx);
+                            }
+                            OrchestratorEvent::ReadCodingSessionOutput { session_id, limit } => {
+                                this.read_persistent_coding_session_output(session_id, limit, cx);
+                            }
+                            OrchestratorEvent::StopCodingSession { session_id } => {
+                                this.stop_persistent_coding_session(session_id, cx);
+                            }
+                            OrchestratorEvent::ListCodingSessions => {
+                                this.list_persistent_coding_sessions(cx);
+                            }
+                            OrchestratorEvent::GetWorkspaceWriteStatus => {
+                                this.describe_workspace_write_status(cx);
                             }
                             OrchestratorEvent::AwaitingUserInput { reply } => {
                                 // 将 MainAgent 的回复添加到对应 task 的消息列表

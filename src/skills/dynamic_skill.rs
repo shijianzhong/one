@@ -20,7 +20,7 @@
 //!   tool: tool-name       # MCP 工具名（mcp_tool 时必填）
 //!   # 或
 //!   # type: command
-//!   # command: "claude -p '{task}'"
+//!   # command: "some-cli '{task}'"
 //! ---
 //!
 //! # Skill 功能描述

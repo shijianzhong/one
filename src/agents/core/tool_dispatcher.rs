@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::ToolCall;
@@ -22,12 +22,30 @@ impl ToolDispatcher {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
         let name = &call.name;
 
-        if name == "start_coding_workflow" {
-            return self.dispatch_start_coding_workflow(args, on_event);
-        }
-
         if name == "run_in_terminal" {
             return self.dispatch_run_in_terminal(args, on_event);
+        }
+
+        match name.as_str() {
+            "detect_coding_clis" => return self.dispatch_detect_coding_clis(),
+            "install_coding_cli" => return self.dispatch_install_coding_cli(args),
+            "start_coding_session" => return self.dispatch_start_coding_session(args, on_event),
+            "send_to_coding_session" => {
+                return self.dispatch_send_to_coding_session(args, on_event)
+            }
+            "read_coding_session_output" => {
+                return self.dispatch_read_coding_session_output(args, on_event)
+            }
+            "stop_coding_session" => return self.dispatch_stop_coding_session(args, on_event),
+            "list_coding_sessions" => {
+                on_event(OrchestratorEvent::ListCodingSessions);
+                return "正在列出持久 coding session。".to_string();
+            }
+            "get_workspace_write_status" => {
+                on_event(OrchestratorEvent::GetWorkspaceWriteStatus);
+                return "正在查询当前 workspace 写入状态。".to_string();
+            }
+            _ => {}
         }
 
         if name == "run_system_task" {
@@ -72,40 +90,192 @@ impl ToolDispatcher {
         format!("Error: Tool '{}' not found", name)
     }
 
-    fn dispatch_start_coding_workflow<F>(&self, args: Value, on_event: &mut F) -> String
+    fn dispatch_start_coding_session<F>(&self, args: Value, on_event: &mut F) -> String
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
-        let user_request = args
-            .get("user_request")
+        let prompt = args
+            .get("prompt")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let main_agent_summary = args
-            .get("main_agent_summary")
+        let agent_kind = args
+            .get("agent_kind")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
+            .unwrap_or("claude")
             .to_string();
-        let known_constraints = string_array_arg(&args, "known_constraints");
-        let suggested_direction = args
-            .get("suggested_direction")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let clarification_focus = string_array_arg(&args, "clarification_focus");
+        let write_mode = args
+            .get("write_mode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
-        if user_request.trim().is_empty() {
-            return "请提供 user_request。".to_string();
+        if prompt.trim().is_empty() {
+            return "请提供 prompt。".to_string();
         }
 
-        on_event(OrchestratorEvent::CodingWorkflowRequested {
-            user_request,
-            main_agent_summary,
-            known_constraints,
-            suggested_direction,
-            clarification_focus,
+        let Some(provider) = crate::runtime::resolve_coding_agent_provider(&agent_kind) else {
+            return format!(
+                "未找到 coding CLI `{}`。可用 provider：{}",
+                agent_kind,
+                crate::runtime::configured_coding_agent_usage()
+            );
+        };
+        let availability = crate::runtime::detect_coding_cli(&provider);
+        if !availability.installed {
+            return format!(
+                "{} 未安装或不在 PATH 中，无法启动终端 runtime。\n安装说明：{}",
+                provider.label(),
+                provider.install_instructions()
+            );
+        }
+
+        on_event(OrchestratorEvent::StartCodingSession {
+            agent_kind: provider.id.clone(),
+            prompt,
+            write_mode,
         });
-        "编码工作流已启动。Claude Code 会先做方案梳理，完成后等待用户确认再执行编码。".to_string()
+        format!(
+            "终端 coding runtime 启动请求已提交，将在右侧终端运行 `{}`。",
+            provider.command_line()
+        )
+    }
+
+    fn dispatch_detect_coding_clis(&self) -> String {
+        let clis = crate::runtime::detect_configured_coding_clis()
+            .into_iter()
+            .map(|item| {
+                json!({
+                    "id": item.provider.id,
+                    "label": item.provider.label,
+                    "command": item.provider.command,
+                    "args": item.provider.args,
+                    "command_line": item.provider.command_line(),
+                    "installed": item.installed,
+                    "resolved_path": item.resolved_path,
+                    "has_install_command": item.provider.install_command.is_some(),
+                    "install_instructions": item.provider.install_instructions(),
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "coding_clis": clis,
+            "guidance": "编码任务前先检查 installed=true 的 CLI；如果没有可用 CLI，询问用户是否安装 Claude Code。用户确认后可调用 install_coding_cli。"
+        })
+        .to_string()
+    }
+
+    fn dispatch_install_coding_cli(&self, args: Value) -> String {
+        let agent_kind = args
+            .get("agent_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let confirmed = args
+            .get("confirmed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let Some(provider) = crate::runtime::resolve_coding_agent_provider(agent_kind) else {
+            return format!(
+                "未找到 coding CLI `{}`。可用 provider：{}",
+                agent_kind,
+                crate::runtime::configured_coding_agent_usage()
+            );
+        };
+        if crate::runtime::detect_coding_cli(&provider).installed {
+            return format!(
+                "{} 已安装，可直接启动 `{}`。",
+                provider.label(),
+                provider.command_line()
+            );
+        }
+        let Some(command) = provider.install_command.clone() else {
+            return format!(
+                "{} 没有配置自动安装命令。\n安装说明：{}",
+                provider.label(),
+                provider.install_instructions()
+            );
+        };
+        if !confirmed {
+            return format!(
+                "安装 {} 需要执行命令：\n{}\n请先征得用户确认；确认后用 confirmed=true 再调用 install_coding_cli。",
+                provider.label(),
+                command
+            );
+        }
+
+        let output = std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(&command)
+            .output();
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                if crate::runtime::detect_coding_cli(&provider).installed {
+                    return format!(
+                        "{} 安装完成，已检测到 `{}`。\nstdout:\n{}\nstderr:\n{}",
+                        provider.label(),
+                        provider.command,
+                        stdout,
+                        stderr
+                    );
+                }
+                format!(
+                    "{} 安装命令已结束，但仍未检测到 `{}`。\nstatus={}\nstdout:\n{}\nstderr:\n{}\n安装说明：{}",
+                    provider.label(),
+                    provider.command,
+                    output.status,
+                    stdout,
+                    stderr,
+                    provider.install_instructions()
+                )
+            }
+            Err(error) => format!(
+                "{} 安装命令执行失败：{}\n安装说明：{}",
+                provider.label(),
+                error,
+                provider.install_instructions()
+            ),
+        }
+    }
+
+    fn dispatch_send_to_coding_session<F>(&self, args: Value, on_event: &mut F) -> String
+    where
+        F: FnMut(OrchestratorEvent) + Send,
+    {
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if text.trim().is_empty() {
+            return "请提供 text。".to_string();
+        }
+        let session_id = optional_string_arg(&args, "session_id");
+        on_event(OrchestratorEvent::SendToCodingSession { session_id, text });
+        "输入已发送到持久 coding session。".to_string()
+    }
+
+    fn dispatch_read_coding_session_output<F>(&self, args: Value, on_event: &mut F) -> String
+    where
+        F: FnMut(OrchestratorEvent) + Send,
+    {
+        let session_id = optional_string_arg(&args, "session_id");
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(40)
+            .clamp(1, 200) as usize;
+        on_event(OrchestratorEvent::ReadCodingSessionOutput { session_id, limit });
+        "正在读取持久 coding session 最近输出。".to_string()
+    }
+
+    fn dispatch_stop_coding_session<F>(&self, args: Value, on_event: &mut F) -> String
+    where
+        F: FnMut(OrchestratorEvent) + Send,
+    {
+        let session_id = optional_string_arg(&args, "session_id");
+        on_event(OrchestratorEvent::StopCodingSession { session_id });
+        "停止持久 coding session 的请求已提交。".to_string()
     }
 
     fn dispatch_run_in_terminal<F>(&self, args: Value, on_event: &mut F) -> String
@@ -218,18 +388,12 @@ impl ToolDispatcher {
     }
 }
 
-fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -310,6 +474,133 @@ mod tests {
             [OrchestratorEvent::RunInTerminal { command, work_dir }]
                 if command == "cargo test" && work_dir == "/tmp/project"
         ));
+    }
+
+    #[tokio::test]
+    async fn start_coding_session_emits_runtime_event() {
+        let dispatcher = ToolDispatcher::new(None);
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "start_coding_session".to_string(),
+            arguments: serde_json::json!({
+                "agent_kind": "codex",
+                "prompt": "review this project",
+                "write_mode": false
+            })
+            .to_string(),
+        };
+        let mut events = Vec::new();
+
+        let result = dispatcher
+            .dispatch(&call, &mut |event| events.push(event))
+            .await;
+
+        if events.is_empty() {
+            assert!(result.contains("未安装") || result.contains("无法启动"));
+        } else {
+            assert!(result.contains("终端 coding runtime"));
+            assert!(matches!(
+                events.as_slice(),
+                [OrchestratorEvent::StartCodingSession {
+                    agent_kind,
+                    prompt,
+                    write_mode
+                }] if agent_kind == "codex" && prompt == "review this project" && !write_mode
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_session_control_tools_emit_runtime_events() {
+        let dispatcher = ToolDispatcher::new(None);
+        let mut events = Vec::new();
+
+        let send = ToolCall {
+            id: "call_1".to_string(),
+            name: "send_to_coding_session".to_string(),
+            arguments: serde_json::json!({"text": "continue"}).to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&send, &mut |event| events.push(event))
+            .await;
+
+        let read = ToolCall {
+            id: "call_2".to_string(),
+            name: "read_coding_session_output".to_string(),
+            arguments: serde_json::json!({"limit": 12}).to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&read, &mut |event| events.push(event))
+            .await;
+
+        let stop = ToolCall {
+            id: "call_3".to_string(),
+            name: "stop_coding_session".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let _ = dispatcher
+            .dispatch(&stop, &mut |event| events.push(event))
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            OrchestratorEvent::SendToCodingSession { session_id: None, text }
+                if text == "continue"
+        ));
+        assert!(matches!(
+            &events[1],
+            OrchestratorEvent::ReadCodingSessionOutput { session_id: None, limit }
+                if *limit == 12
+        ));
+        assert!(matches!(
+            &events[2],
+            OrchestratorEvent::StopCodingSession { session_id: None }
+        ));
+    }
+
+    #[tokio::test]
+    async fn detect_coding_clis_returns_configured_status() {
+        let dispatcher = ToolDispatcher::new(None);
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "detect_coding_clis".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let mut events = Vec::new();
+
+        let result = dispatcher
+            .dispatch(&call, &mut |event| events.push(event))
+            .await;
+
+        assert!(events.is_empty());
+        assert!(result.contains("coding_clis"));
+        assert!(result.contains("installed"));
+    }
+
+    #[tokio::test]
+    async fn install_coding_cli_requires_confirmation() {
+        let dispatcher = ToolDispatcher::new(None);
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "install_coding_cli".to_string(),
+            arguments: serde_json::json!({
+                "agent_kind": "claude",
+                "confirmed": false
+            })
+            .to_string(),
+        };
+        let mut events = Vec::new();
+
+        let result = dispatcher
+            .dispatch(&call, &mut |event| events.push(event))
+            .await;
+
+        assert!(events.is_empty());
+        assert!(
+            result.contains("需要执行命令")
+                || result.contains("已安装")
+                || result.contains("没有配置自动安装命令")
+        );
     }
 
     #[tokio::test]

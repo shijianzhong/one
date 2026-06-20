@@ -90,6 +90,8 @@ pub(crate) struct AppState {
     pub(crate) delete_confirm_workspace_id: Option<usize>,
     pub(crate) popup_position: Point<Pixels>,
     pub(crate) terminal_output: Vec<TerminalLine>,
+    pub(crate) coding_sessions:
+        std::sync::Arc<std::sync::Mutex<crate::runtime::PersistentCliSessionManager>>,
     pub(crate) preview_process: Option<PreviewProcessHandle>,
     pub(crate) preview_state: Option<PreviewState>,
     pub(crate) titlebar_should_move: bool,
@@ -159,6 +161,14 @@ impl AppState {
     pub(crate) fn get_active_references(&self) -> Vec<String> {
         // 占位：未来扩展为真实属性
         Vec::new()
+    }
+}
+
+impl Drop for AppState {
+    fn drop(&mut self) {
+        if let Ok(mut sessions) = self.coding_sessions.lock() {
+            sessions.stop_all_sessions(&self.db.conn);
+        }
     }
 }
 
@@ -339,6 +349,7 @@ impl AppState {
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
+            coding_sessions: crate::runtime::global_coding_session_manager(),
             preview_process: None,
             preview_state: None,
             hovered_workspace_id: None,
@@ -761,17 +772,14 @@ impl AppState {
     }
 
     pub(crate) fn prepare_active_task_preview(&mut self) {
-        let Some(task_dir) = self.get_active_task_dir_path() else {
+        let Some(workspace_path) = self
+            .get_active_workspace()
+            .map(|workspace| workspace.path.clone())
+        else {
             self.preview_state = None;
             return;
         };
-        let hint_text = self
-            .job_manager
-            .coding_workflow
-            .as_ref()
-            .and_then(|workflow| workflow.plan_text.clone())
-            .unwrap_or_default();
-        let result = self.try_prepare_preview(&task_dir.to_string_lossy(), &hint_text);
+        let result = self.try_prepare_preview(&workspace_path.to_string_lossy(), "");
         self.preview_state = Some(match result {
             PreviewLaunchResult::Ready {
                 url,

@@ -84,6 +84,8 @@ pub struct TerminalEmulator {
     term: Arc<FairMutex<Term<TerminalListener>>>,
     pty_sender: Option<EventLoopSender>,
     event_rx: mpsc::Receiver<TerminalEvent>,
+    exited: bool,
+    title: Option<String>,
     cols: usize,
     rows: usize,
 }
@@ -91,6 +93,16 @@ pub struct TerminalEmulator {
 impl TerminalEmulator {
     pub fn new(
         shell: Option<&str>,
+        working_dir: Option<&Path>,
+        cols: usize,
+        rows: usize,
+    ) -> Result<Self> {
+        Self::new_with_args(shell, &[], working_dir, cols, rows)
+    }
+
+    pub fn new_with_args(
+        shell: Option<&str>,
+        args: &[String],
         working_dir: Option<&Path>,
         cols: usize,
         rows: usize,
@@ -108,7 +120,7 @@ impl TerminalEmulator {
         let term = Arc::new(FairMutex::new(term));
 
         let pty_config = PtyOptions {
-            shell: shell.map(|s| Shell::new(s.to_string(), Vec::new())),
+            shell: shell.map(|s| Shell::new(s.to_string(), args.to_vec())),
             working_directory: working_dir.map(|p| p.to_path_buf()),
             drain_on_exit: false,
             env: std::collections::HashMap::from([(
@@ -139,6 +151,8 @@ impl TerminalEmulator {
             term,
             pty_sender: Some(channel),
             event_rx,
+            exited: false,
+            title: None,
             cols,
             rows,
         })
@@ -189,6 +203,13 @@ impl TerminalEmulator {
         self.write(&data);
     }
 
+    pub fn shutdown(&mut self) {
+        if let Some(tx) = self.pty_sender.take() {
+            let _ = tx.send(Msg::Shutdown);
+        }
+        self.exited = true;
+    }
+
     /// 调整大小
     pub fn resize(&mut self, cols: usize, rows: usize) {
         if cols != self.cols || rows != self.rows {
@@ -203,13 +224,41 @@ impl TerminalEmulator {
     }
 
     /// 处理事件
-    pub fn process_events(&self) {
+    pub fn process_events(&mut self) {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                TerminalEvent::Exited => info!("[Terminal] Process exited"),
-                TerminalEvent::Title(t) => info!("[Terminal] Title: {}", t),
+                TerminalEvent::Exited => {
+                    self.exited = true;
+                    info!("[Terminal] Process exited");
+                }
+                TerminalEvent::Title(t) => {
+                    self.title = Some(t.clone());
+                    info!("[Terminal] Title: {}", t);
+                }
             }
         }
+    }
+
+    pub fn is_exited(&self) -> bool {
+        self.exited
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    pub fn screen_text_lines(&self) -> Vec<String> {
+        self.renderable_lines()
+            .into_iter()
+            .map(|line| {
+                line.chars
+                    .into_iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
     }
 
     pub fn columns(&self) -> usize {

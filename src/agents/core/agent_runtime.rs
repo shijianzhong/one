@@ -73,8 +73,12 @@ impl AgentRuntime {
                     if !thinking.is_empty() {
                         on_event(OrchestratorEvent::Plan { plan: thinking });
                     }
-                    self.execute_tool_calls(&mut context, &calls, &mut on_event)
+                    let handoff = self
+                        .execute_tool_calls(&mut context, &calls, &mut on_event)
                         .await?;
+                    if handoff {
+                        return Ok(String::new());
+                    }
                 }
             }
         }
@@ -123,7 +127,7 @@ impl AgentRuntime {
         context: &mut AgentRunContext,
         calls: &[ToolCall],
         on_event: &mut F,
-    ) -> Result<()>
+    ) -> Result<bool>
     where
         F: FnMut(OrchestratorEvent) + Send,
     {
@@ -145,6 +149,7 @@ impl AgentRuntime {
             tool_call_id: None,
         });
 
+        let mut handoff_to_coding_runtime = false;
         for call in calls {
             on_event(OrchestratorEvent::ToolCall {
                 name: call.name.clone(),
@@ -164,9 +169,12 @@ impl AgentRuntime {
                 tool_calls: None,
                 tool_call_id: Some(call.id.clone()),
             });
+            if is_coding_runtime_handoff_tool(&call.name) {
+                handoff_to_coding_runtime = true;
+            }
         }
 
-        Ok(())
+        Ok(handoff_to_coding_runtime)
     }
 
     fn refresh_agent_tools(&self, context: &mut AgentRunContext) {
@@ -176,6 +184,16 @@ impl AgentRuntime {
             context.tool_definitions = registry.tool_definitions(filter.as_deref());
         }
     }
+}
+
+fn is_coding_runtime_handoff_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "start_coding_session"
+            | "start_coding_terminal_runtime"
+            | "send_to_coding_session"
+            | "send_to_coding_terminal_runtime"
+    )
 }
 
 #[cfg(test)]
@@ -225,6 +243,45 @@ mod tests {
         }
     }
 
+    struct ToolAgent {
+        calls: Vec<ToolCall>,
+    }
+
+    #[async_trait]
+    impl AgentTrait for ToolAgent {
+        fn id(&self) -> &str {
+            "tool_agent"
+        }
+
+        fn name(&self) -> &str {
+            "Tool Agent"
+        }
+
+        fn soul_prompt(&self) -> &str {
+            ""
+        }
+
+        fn model(&self) -> &str {
+            "test"
+        }
+
+        fn api_base(&self) -> &str {
+            ""
+        }
+
+        fn api_key(&self) -> &str {
+            ""
+        }
+
+        async fn step_stream(
+            &self,
+            _context: &mut AgentRunContext,
+            _on_delta: Box<dyn FnMut(String) + Send>,
+        ) -> Result<AgentResponse> {
+            Ok(AgentResponse::ToolCalls(self.calls.clone(), String::new()))
+        }
+    }
+
     #[tokio::test]
     async fn runtime_returns_answer_and_emits_delta() {
         let runtime = AgentRuntime::new(
@@ -254,5 +311,37 @@ mod tests {
                 OrchestratorEvent::StepFinished { result }
             ] if delta == "hello" && result == "done"
         ));
+    }
+
+    #[tokio::test]
+    async fn runtime_handoffs_after_coding_runtime_tool_call() {
+        let runtime = AgentRuntime::new(
+            Arc::new(ToolAgent {
+                calls: vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "send_to_coding_terminal_runtime".to_string(),
+                    arguments: serde_json::json!({"text": "continue"}).to_string(),
+                }],
+            }),
+            ToolDispatcher::new(None),
+        );
+        let mut context = AgentRunContext::new("session".to_string());
+        context.add_message(ChatMessage::new("user", "continue"));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_callback = events.clone();
+
+        let result = runtime
+            .run(context, move |event| {
+                events_for_callback.lock().unwrap().push(event);
+            })
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            OrchestratorEvent::SendToCodingSession { text, .. } if text == "continue"
+        )));
     }
 }

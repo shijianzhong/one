@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::i18n::{t, Translations};
-use crate::runtime::configured_coding_agents;
+use crate::runtime::{
+    configured_coding_agents, supervise_coding_session, CodingSessionNotification,
+};
 use crate::terminal_emulator::mappings::keys::to_esc_str;
 use crate::terminal_emulator::TerminalEmulator;
 use crate::ui_theme::{
@@ -103,15 +105,70 @@ impl AppState {
                             t.process_events();
                         }
                     }
-                    let user_action_prompts = if let Ok(mut sessions) = this.coding_sessions.lock()
+                    let supervision_requests = if let Ok(mut sessions) = this.coding_sessions.lock()
                     {
                         sessions.refresh_all(&this.db.conn);
-                        sessions.poll_user_action_prompts(&this.db.conn, 80)
+                        sessions.collect_supervision_requests(&this.db.conn, 120)
                     } else {
                         Vec::new()
                     };
-                    for (task_id, message) in user_action_prompts {
-                        this.append_task_message(Some(task_id), "assistant", &message, cx);
+                    for request in supervision_requests {
+                        let base_url = this.model_base_url.clone();
+                        let api_key = this.model_api_key.clone();
+                        let model = crate::services::load_config()
+                            .light_model
+                            .unwrap_or_else(|| this.model_name.clone());
+                        cx.spawn(async move |this, cx| {
+                            let request_for_task = request.clone();
+                            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                                supervise_coding_session(
+                                    &base_url,
+                                    &api_key,
+                                    &model,
+                                    &request_for_task,
+                                )
+                                .await
+                            })
+                            .await
+                            .unwrap_or_else(|error| {
+                                Err(format!("supervisor task join failed: {}", error))
+                            });
+                            let _ = this.update(cx, |this, cx| {
+                                match result {
+                                    Ok(decision) => {
+                                        let notification = this
+                                            .coding_sessions
+                                            .lock()
+                                            .ok()
+                                            .and_then(|mut sessions| {
+                                                sessions
+                                                    .apply_supervision_decision(&request, decision)
+                                            });
+                                        if let Some(notification) = notification {
+                                            append_coding_session_notification(
+                                                this,
+                                                notification,
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if let Ok(mut sessions) = this.coding_sessions.lock() {
+                                            sessions.mark_supervision_failed(
+                                                &request.session_id,
+                                                &request.fingerprint,
+                                            );
+                                        }
+                                        eprintln!(
+                                            "[CodingSupervisor] session={} failed: {}",
+                                            request.session_id, error
+                                        );
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .detach();
                     }
                     let max_scroll_y: f32 = this.terminal_scroll_handle.max_offset().y.into();
                     let current_scroll_y: f32 = this.terminal_scroll_handle.offset().y.into();
@@ -498,5 +555,19 @@ impl AppState {
                     ),
             )
             .into_any_element()
+    }
+}
+
+fn append_coding_session_notification(
+    app: &mut AppState,
+    notification: CodingSessionNotification,
+    cx: &mut Context<AppState>,
+) {
+    match notification {
+        CodingSessionNotification::UserAction { task_id, message }
+        | CodingSessionNotification::Completed { task_id, message }
+        | CodingSessionNotification::Failed { task_id, message } => {
+            app.append_task_message(Some(task_id), "assistant", &message, cx);
+        }
     }
 }

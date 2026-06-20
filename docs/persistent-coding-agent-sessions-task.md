@@ -331,7 +331,7 @@
 - [x] inspect 支持识别 ready、auth_required、trust_required、permission_required、command_missing、busy、not_active、unknown 等状态。
 - [x] 新增 `*_coding_terminal_runtime` 工具别名，产品语义改为右侧终端 runtime；旧 `*_coding_session` 仅保留兼容。
 - [x] 新增 dispatcher 单测覆盖 CLI 检测与安装确认保护。
-- [x] 编码意图进入本地 fast path：已有 terminal runtime 时直接转发；没有 runtime 时检测已安装 CLI 并优先启动 Claude，不再先请求 MiniMax Orchestrator。
+- [x] 移除编码意图本地 fast path：主聊天区编码需求统一进入 MainAgent，由 MainAgent 理解、拆解后通过工具启动或操作 terminal runtime。
 - [x] 右侧终端有 active coding runtime 时优先渲染 session PTY 输出，不再被普通命令输出覆盖。
 - [x] 普通终端命令输出支持自动换行；coding runtime PTY 输出保留终端布局。
 - [x] 终端 scrollback 扩展到历史行并支持向上滚动；在用户停留底部时自动跟随最新输出。
@@ -339,7 +339,9 @@
 - [x] 转发 prompt 时去掉末尾多余换行，避免 Claude Code TUI 把尾部换行当作继续编辑而不是提交。
 - [x] 转发长 prompt 时在 bracketed paste 结束后增加二次 Enter 兜底，修复 Claude Code TUI 已粘贴但未自动提交的问题。
 - [x] MainAgent 不再把 coding runtime 最近输出作为默认聊天内容反复粘贴；原始输出保留在右侧终端。
-- [x] 终端刷新循环会轻量检测 active coding runtime 是否出现用户交互请求，发现新请求时只在聊天区发一条中文解释。
+- [x] 新增 `CodingSessionSupervisor`：基于 terminal transcript、提交任务、runtime cwd 和 workspace diff 做结构化语义监督，不再依赖终端日志关键词补丁判断完成状态。
+- [x] Supervisor 输出 `running | waiting_user | completed | failed | unclear` JSON 决策，并通过置信度门槛和 fingerprint 去重控制主聊天区通知。
+- [x] 终端刷新循环只收集 supervision request，异步调用 supervisor；聊天区只在需要用户交互、任务完成或失败时得到中间人式反馈。
 - [x] 识别 Claude Code 编号确认提示，例如 `Do you want to create index.html? 1. Yes 2. Yes, allow all edits ... 3. No`。
 - [x] 对重复的登录/信任/权限/编号选择提示做 session 级 fingerprint 去重，避免聊天区重复提醒同一个问题。
 - [x] MainAgent prompt 增加选项转发表达：同意/选1→`1`，全部允许/选2→`2`，拒绝/选3→`3`。
@@ -352,16 +354,22 @@
 - [x] 登录识别改为严格匹配“明确要求登录”的提示；`Authenticated successfully`、`Read/Write/Listed`、`thinking/working` 等正常执行输出不再触发登录提醒。
 - [x] 识别 Claude Code plan mode 菜单选择，例如技术栈/功能范围/Submit 的 `Enter to select` 编号菜单，并在聊天区提示用户可回复“选1/选2/选3”。
 - [x] 启动或转发给 coding terminal runtime 成功后立即释放 MainAgent 聊天输入 busy 状态，用户可继续聊天、问进度或补充需求。
-- [x] 增加保守自动决策：`create/edit/modify` 这类低风险文件操作自动选择 `1` 允许一次，并在聊天区说明；`delete/remove/overwrite/run/install` 等高风险操作仍询问用户。
-- [x] Claude Code 编号选择不再走 bracketed paste；自动决策和用户回复“同意/选1/选2/拒绝”会直接发送短选择按键并回车。
+- [x] 删除本地低风险自动决策逻辑，不再由应用层基于规则替用户选择；需要决策时由 MainAgent/Supervisor 语义判断后与用户沟通。
+- [x] Claude Code 编号选择不再走 bracketed paste；用户回复“同意/选1/选2/拒绝”会直接发送短选择按键并回车。
 - [x] 右侧终端中 Claude `<think>` 输出在 UI 上弱化显示，减少对关键确认问题的干扰。
+- [x] 启动/发送 coding terminal runtime 工具成功后，Orchestrator 本轮立即 handoff 结束，不再额外调用 MainAgent 模型生成收尾，避免 `error decoding response body` 污染聊天区。
+- [x] 发送给 runtime 的最终任务文本强制注入当前 runtime cwd 约束：除非用户明确给出绝对路径，否则所有文件操作必须发生在当前 cwd 内。
+- [x] 启动 coding session 时记录 workspace baseline，supervisor 每轮基于 workspace diff 验证产物与完成状态；完成后由主聊天区给出闭环反馈。
 
 验证：
 
 - [x] `cargo fmt`
 - [x] `cargo check`
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，12 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，116 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test coding_supervisor`，2 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test agent_runtime`，2 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，11 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test tool_dispatcher`，10 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，121 passed。
 
 ## 当前暂存任务
 

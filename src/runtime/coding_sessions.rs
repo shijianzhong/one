@@ -58,6 +58,7 @@ impl AppState {
                 self.ensure_task_storage_dir(workspace_id, task_id, &title)
             });
 
+        let prompt = format_coding_runtime_instruction(&prompt, &cwd);
         let start_result = self
             .coding_sessions
             .lock()
@@ -150,6 +151,17 @@ impl AppState {
                 }
             };
 
+        let cwd = self.coding_sessions.lock().ok().and_then(|sessions| {
+            sessions
+                .list_sessions()
+                .into_iter()
+                .find(|session| session.session_id == session_id)
+                .map(|session| session.cwd)
+        });
+        let text = cwd
+            .as_ref()
+            .map(|cwd| format_coding_runtime_instruction(&text, cwd))
+            .unwrap_or(text);
         let send_result = self
             .coding_sessions
             .lock()
@@ -420,4 +432,15 @@ impl AppState {
             .unwrap_or_else(|| "当前 workspace 没有 write-active coding session。".to_string());
         self.append_task_message(task_id, "assistant", &message, cx);
     }
+}
+
+fn format_coding_runtime_instruction(text: &str, cwd: &std::path::Path) -> String {
+    format!(
+        "MainAgent 已理解用户需求并整理成以下工程任务。请严格在当前 runtime cwd 内工作。\n\
+         runtime cwd: {}\n\
+         约束：除非用户明确给出绝对路径，否则所有创建、读取、修改、删除都必须发生在上述 cwd 内；不要使用历史 workspace、其他 task 目录或父级目录作为目标路径。\n\n\
+         任务说明：\n{}",
+        cwd.to_string_lossy(),
+        text.trim()
+    )
 }

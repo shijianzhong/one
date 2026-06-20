@@ -1,10 +1,16 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
+use crate::runtime::coding_supervisor::{
+    capture_workspace_snapshot, diff_workspace_snapshot, CodingSupervisionRequest,
+    CodingSupervisorDecision, CodingSupervisorState, WorkspaceDelta, WorkspaceSnapshot,
+};
 use crate::services::{default_coding_agents, CodingAgentConfig};
 use crate::terminal_emulator::TerminalEmulator;
 
@@ -219,9 +225,14 @@ pub(crate) struct PersistentCliSession {
     pub(crate) output_seq: u64,
     pub(crate) terminal: Arc<Mutex<TerminalEmulator>>,
     pub(crate) git_baseline: Option<GitBaseline>,
+    pub(crate) workspace_baseline: Option<WorkspaceSnapshot>,
     pub(crate) run_id: Option<usize>,
     pub(crate) last_error: Option<String>,
     pub(crate) last_user_action_fingerprint: Option<String>,
+    pub(crate) submitted_task: Option<String>,
+    pub(crate) supervisor_in_flight: bool,
+    pub(crate) last_supervised_fingerprint: Option<String>,
+    pub(crate) last_notified_fingerprint: Option<String>,
 }
 
 impl PersistentCliSession {
@@ -241,6 +252,13 @@ pub(crate) struct PersistentCliSessionSummary {
     pub(crate) write_mode: bool,
     pub(crate) output_seq: u64,
     pub(crate) last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CodingSessionNotification {
+    UserAction { task_id: usize, message: String },
+    Completed { task_id: usize, message: String },
+    Failed { task_id: usize, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +391,7 @@ impl PersistentCliSessionManager {
         } else {
             None
         };
+        let workspace_baseline = write_mode.then(|| capture_workspace_snapshot(&cwd));
         let run_id = RunRecorder::begin(
             db_conn,
             task_id,
@@ -420,9 +439,14 @@ impl PersistentCliSessionManager {
             output_seq: 0,
             terminal: terminal.clone(),
             git_baseline: baseline,
+            workspace_baseline,
             run_id,
             last_error: None,
             last_user_action_fingerprint: None,
+            submitted_task: initial_input.map(ToOwned::to_owned),
+            supervisor_in_flight: false,
+            last_supervised_fingerprint: None,
+            last_notified_fingerprint: None,
         };
         self.sessions.insert(session_id.clone(), session);
         self.task_attached_session
@@ -496,85 +520,16 @@ impl PersistentCliSessionManager {
         session.status = PersistentSessionStatus::Running;
         session.last_active_at = chrono::Local::now();
         session.output_seq = session.output_seq.saturating_add(1);
+        session.submitted_task = Some(text.to_string());
+        session.supervisor_in_flight = false;
+        session.last_supervised_fingerprint = None;
+        session.last_notified_fingerprint = None;
         if let Some(run_id) = session.run_id {
             RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
                 text: format!("USER INPUT:\n{}", text),
             });
         }
         Ok(())
-    }
-
-    pub(crate) fn poll_user_action_prompts(
-        &mut self,
-        db_conn: &sqlez::connection::Connection,
-        limit: usize,
-    ) -> Vec<(usize, String)> {
-        let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
-        let mut prompts = Vec::new();
-        for session_id in session_ids {
-            self.refresh_session_status(db_conn, &session_id);
-            let Some(session) = self.sessions.get(&session_id) else {
-                continue;
-            };
-            if !session.status.is_active() {
-                continue;
-            }
-            let task_id = session.task_id;
-            let agent_label = session.agent_kind.label().to_string();
-            let last_fingerprint = session.last_user_action_fingerprint.clone();
-            let lines = match session.terminal.lock() {
-                Ok(terminal) => {
-                    let mut lines = terminal.screen_text_lines();
-                    lines.retain(|line| !line.trim().is_empty());
-                    if lines.len() > limit {
-                        lines.split_off(lines.len() - limit)
-                    } else {
-                        lines
-                    }
-                }
-                Err(_) => continue,
-            };
-            let inspection = inspect_terminal_lines(session, lines);
-            if !requires_user_action(&inspection.kind) {
-                continue;
-            }
-            let fingerprint = inspection.fingerprint.clone().unwrap_or_else(|| {
-                format!(
-                    "{}:{}:{}",
-                    inspection.session_id, inspection.kind, inspection.summary
-                )
-            });
-            if last_fingerprint.as_deref() == Some(fingerprint.as_str()) {
-                continue;
-            }
-            if let Some(session) = self.sessions.get_mut(&session_id) {
-                session.last_user_action_fingerprint = Some(fingerprint);
-            }
-            if let Some(decision) = auto_decision_for_user_action(&inspection) {
-                match self.send_choice(db_conn, &session_id, &decision.choice) {
-                    Ok(()) => prompts.push((
-                        task_id,
-                        format!(
-                            "{} 需要确认：{}\n\n我已自动选择“{}”（发送 `{}`）。Claude Code 会继续执行。",
-                            agent_label, inspection.summary, decision.meaning, decision.choice
-                        ),
-                    )),
-                    Err(error) => prompts.push((
-                        task_id,
-                        format!(
-                            "{} 需要确认，但我自动发送选择失败：{}。你仍可以在聊天区回复“选1/选2/拒绝”，或直接在右侧终端操作。",
-                            agent_label, error
-                        ),
-                    )),
-                }
-                continue;
-            }
-            prompts.push((
-                task_id,
-                format_user_action_message(&inspection, &agent_label),
-            ));
-        }
-        prompts
     }
 
     pub(crate) fn reply_to_pending_user_action(
@@ -611,13 +566,168 @@ impl PersistentCliSessionManager {
         .to_string();
         self.send_choice(db_conn, &session_id, &choice)?;
         if let Some(session) = self.sessions.get_mut(&session_id) {
-            session.last_user_action_fingerprint = None;
+            session.last_user_action_fingerprint = inspection.fingerprint.or_else(|| {
+                Some(format!(
+                    "{}:{}:{}",
+                    inspection.session_id, inspection.kind, inspection.summary
+                ))
+            });
         }
         Ok(Some(PendingCodingActionReply::Sent {
             session_id,
             choice,
             meaning,
         }))
+    }
+
+    pub(crate) fn collect_supervision_requests(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        limit: usize,
+    ) -> Vec<CodingSupervisionRequest> {
+        let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
+        let mut requests = Vec::new();
+        for session_id in session_ids {
+            self.refresh_session_status(db_conn, &session_id);
+            let Some(session) = self.sessions.get(&session_id) else {
+                continue;
+            };
+            if !session.status.is_active() || session.supervisor_in_flight {
+                continue;
+            }
+            let Some(submitted_task) = session.submitted_task.clone() else {
+                continue;
+            };
+            let lines = match session.terminal.lock() {
+                Ok(terminal) => {
+                    let mut lines = terminal.screen_text_lines();
+                    lines.retain(|line| !line.trim().is_empty());
+                    if lines.len() > limit {
+                        lines.split_off(lines.len() - limit)
+                    } else {
+                        lines
+                    }
+                }
+                Err(_) => continue,
+            };
+            if lines.is_empty() {
+                continue;
+            }
+            let workspace_delta = session
+                .workspace_baseline
+                .as_ref()
+                .map(|baseline| {
+                    let current = capture_workspace_snapshot(&session.cwd);
+                    diff_workspace_snapshot(baseline, &current)
+                })
+                .unwrap_or_else(|| WorkspaceDelta {
+                    added: Vec::new(),
+                    modified: Vec::new(),
+                    deleted: Vec::new(),
+                });
+            let fingerprint = supervision_fingerprint(
+                &session.session_id,
+                session.output_seq,
+                &lines,
+                &workspace_delta.describe(),
+            );
+            if session.last_supervised_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                continue;
+            }
+            let request = CodingSupervisionRequest {
+                session_id: session.session_id.clone(),
+                agent_label: session.agent_kind.label().to_string(),
+                cwd: session.cwd.clone(),
+                submitted_task,
+                terminal_transcript: lines,
+                workspace_delta,
+                fingerprint: fingerprint.clone(),
+            };
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                session.supervisor_in_flight = true;
+            }
+            requests.push(request);
+        }
+        requests
+    }
+
+    pub(crate) fn apply_supervision_decision(
+        &mut self,
+        request: &CodingSupervisionRequest,
+        decision: CodingSupervisorDecision,
+    ) -> Option<CodingSessionNotification> {
+        let session = self.sessions.get_mut(&request.session_id)?;
+        session.supervisor_in_flight = false;
+        session.last_supervised_fingerprint = Some(request.fingerprint.clone());
+        if decision.confidence < 60 {
+            return None;
+        }
+        match decision.state {
+            CodingSupervisorState::Running | CodingSupervisorState::Unclear => None,
+            CodingSupervisorState::WaitingUser => {
+                let notify_fingerprint = format!("waiting:{}", request.fingerprint);
+                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
+                {
+                    return None;
+                }
+                session.status = PersistentSessionStatus::WaitingInput;
+                session.last_notified_fingerprint = Some(notify_fingerprint);
+                Some(CodingSessionNotification::UserAction {
+                    task_id: session.task_id,
+                    message: normalize_supervisor_message(
+                        &decision.user_message,
+                        "Claude Code 需要你确认下一步。",
+                    ),
+                })
+            }
+            CodingSupervisorState::Completed => {
+                let notify_fingerprint = format!("completed:{}", request.fingerprint);
+                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
+                {
+                    return None;
+                }
+                session.status = PersistentSessionStatus::Idle;
+                session.last_notified_fingerprint = Some(notify_fingerprint);
+                if session.write_mode {
+                    if let Some(owner) = self.workspace_write_owner.get(&session.workspace_id) {
+                        if owner == &session.session_id {
+                            self.workspace_write_owner.remove(&session.workspace_id);
+                        }
+                    }
+                }
+                Some(CodingSessionNotification::Completed {
+                    task_id: session.task_id,
+                    message: normalize_supervisor_message(
+                        &decision.user_message,
+                        "Claude Code 已完成这次任务。",
+                    ),
+                })
+            }
+            CodingSupervisorState::Failed => {
+                let notify_fingerprint = format!("failed:{}", request.fingerprint);
+                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
+                {
+                    return None;
+                }
+                session.status = PersistentSessionStatus::Failed;
+                session.last_notified_fingerprint = Some(notify_fingerprint);
+                session.last_error = Some(decision.user_message.clone());
+                Some(CodingSessionNotification::Failed {
+                    task_id: session.task_id,
+                    message: normalize_supervisor_message(
+                        &decision.user_message,
+                        "Claude Code 执行失败，需要你查看或调整需求。",
+                    ),
+                })
+            }
+        }
+    }
+
+    pub(crate) fn mark_supervision_failed(&mut self, session_id: &str, fingerprint: &str) {
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.supervisor_in_flight = false;
+            session.last_supervised_fingerprint = Some(fingerprint.to_string());
+        }
     }
 
     fn send_choice(
@@ -1094,7 +1204,6 @@ fn classify_terminal_lines(
 struct ChoicePrompt {
     summary: String,
     suggested_message: String,
-    action: String,
 }
 
 fn parse_numbered_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
@@ -1142,7 +1251,6 @@ fn parse_confirmation_choice_prompt(recent_output: &[String]) -> Option<ChoicePr
             "{}\n\n你可以回复“同意”或“选1”允许这一次；回复“选2”表示本次会话后续类似编辑都允许；回复“拒绝”或“选3”则不允许。",
             zh_action
         ),
-        action,
     })
 }
 
@@ -1190,7 +1298,6 @@ fn parse_menu_choice_prompt(recent_output: &[String]) -> Option<ChoicePrompt> {
             "{}\n\n你可以回复“选1”“选2”“选3”等，我会把对应数字发送到右侧终端；如果你不确定，也可以直接告诉我你的偏好，我再帮你选择。",
             question
         ),
-        action: format!("menu choice: {}", question),
     })
 }
 
@@ -1254,58 +1361,6 @@ fn requires_user_action(kind: &str) -> bool {
     )
 }
 
-struct AutoDecision {
-    choice: String,
-    meaning: String,
-}
-
-fn auto_decision_for_user_action(inspection: &CodingRuntimeInspection) -> Option<AutoDecision> {
-    if inspection.kind != "choice_required" {
-        return None;
-    }
-    let choice = parse_numbered_choice_prompt(&inspection.recent_output)?;
-    let action = choice.action.trim().to_ascii_lowercase();
-    let risky = contains_any(
-        &action,
-        &[
-            "delete",
-            "remove",
-            "rm ",
-            "overwrite",
-            "replace",
-            "run ",
-            "execute",
-            "install",
-            "permission",
-        ],
-    );
-    if risky {
-        return None;
-    }
-    if action.starts_with("create ") || action.starts_with("edit ") || action.starts_with("modify ")
-    {
-        return Some(AutoDecision {
-            choice: "1".to_string(),
-            meaning: "允许这一次操作".to_string(),
-        });
-    }
-    None
-}
-
-fn format_user_action_message(inspection: &CodingRuntimeInspection, agent_label: &str) -> String {
-    match inspection.kind.as_str() {
-        "choice_required" => format!(
-            "{} 需要你确认下一步。\n\n{}",
-            agent_label, inspection.suggested_message
-        ),
-        "auth_required" | "trust_required" | "permission_required" => format!(
-            "{} 暂停下来等待你的操作。\n\n{}",
-            agent_label, inspection.suggested_message
-        ),
-        _ => inspection.suggested_message.clone(),
-    }
-}
-
 fn map_user_message_to_choice(message: &str) -> Option<String> {
     let normalized = message
         .trim()
@@ -1346,6 +1401,31 @@ fn map_user_message_to_choice(message: &str) -> Option<String> {
         return Some("3".to_string());
     }
     None
+}
+
+fn supervision_fingerprint(
+    session_id: &str,
+    output_seq: u64,
+    lines: &[String],
+    workspace_delta: &str,
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    session_id.hash(&mut hasher);
+    output_seq.hash(&mut hasher);
+    workspace_delta.hash(&mut hasher);
+    for line in lines.iter().rev().take(80) {
+        line.hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
+fn normalize_supervisor_message(message: &str, fallback: &str) -> String {
+    let message = message.trim();
+    if message.is_empty() {
+        fallback.to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 fn asks_agent_to_choose(message: &str) -> bool {
@@ -1598,41 +1678,6 @@ mod tests {
             ],
         );
         assert_ne!(state.1, "auth_required");
-    }
-
-    #[test]
-    fn auto_decision_allows_simple_create_once_but_not_delete() {
-        let create = CodingRuntimeInspection {
-            session_id: "claude-1".to_string(),
-            status: "waiting_user_action".to_string(),
-            kind: "choice_required".to_string(),
-            summary: "Claude Code 正在请求确认：它想创建 `member-list.html`。".to_string(),
-            suggested_message: String::new(),
-            recent_output: vec![
-                "Do you want to create member-list.html?".to_string(),
-                "1. Yes".to_string(),
-                "2. Yes, allow all edits during this session".to_string(),
-                "3. No".to_string(),
-            ],
-            fingerprint: None,
-        };
-        assert_eq!(
-            auto_decision_for_user_action(&create)
-                .map(|decision| decision.choice)
-                .as_deref(),
-            Some("1")
-        );
-
-        let delete = CodingRuntimeInspection {
-            recent_output: vec![
-                "Do you want to delete member-list.html?".to_string(),
-                "1. Yes".to_string(),
-                "2. Yes, allow all edits during this session".to_string(),
-                "3. No".to_string(),
-            ],
-            ..create
-        };
-        assert!(auto_decision_for_user_action(&delete).is_none());
     }
 
     #[test]

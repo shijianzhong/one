@@ -118,6 +118,7 @@ fn should_ignore_path(name: &str) -> bool {
 #[derive(Debug, Clone)]
 pub(crate) struct CodingSupervisionRequest {
     pub(crate) session_id: String,
+    pub(crate) turn_id: String,
     pub(crate) agent_label: String,
     pub(crate) cwd: PathBuf,
     pub(crate) submitted_task: String,
@@ -142,13 +143,29 @@ pub(crate) struct CodingSupervisorDecision {
     #[serde(default)]
     pub(crate) confidence: u8,
     #[serde(default)]
-    pub(crate) user_message: String,
+    pub(crate) action_id: String,
     #[serde(default)]
-    pub(crate) options: Vec<String>,
+    pub(crate) action_kind: String,
+    #[serde(default)]
+    pub(crate) target: String,
+    #[serde(default)]
+    pub(crate) options: Vec<CodingSupervisorOption>,
+    #[serde(default)]
+    pub(crate) completion_id: String,
+    #[serde(default)]
+    pub(crate) failure_id: String,
     #[serde(default)]
     pub(crate) artifacts: Vec<String>,
     #[serde(default)]
     pub(crate) risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct CodingSupervisorOption {
+    #[serde(default)]
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) terminal_input: String,
 }
 
 pub(crate) async fn supervise_coding_session(
@@ -163,19 +180,24 @@ pub(crate) async fn supervise_coding_session(
          请基于任务、终端 transcript、workspace cwd 和文件变更，判断 coding CLI 当前语义状态。\n\
          严格只返回 JSON，不要 Markdown，不要解释。\n\n\
          JSON schema:\n\
-         {{\"state\":\"running|waiting_user|completed|failed|unclear\",\"confidence\":0-100,\"user_message\":\"给主聊天区用户看的中文简洁消息\",\"options\":[\"用户可选项\"],\"artifacts\":[\"产物路径或文件\"],\"risks\":[\"风险或异常\"]}}\n\n\
+         {{\"state\":\"running|waiting_user|completed|failed|unclear\",\"confidence\":0-100,\"action_id\":\"稳定的待确认动作 id\",\"action_kind\":\"create_file|edit_file|delete_file|run_command|install|auth|trust|menu|other\",\"target\":\"动作对象，例如文件路径或命令\",\"options\":[{{\"label\":\"给用户看的选项\",\"terminal_input\":\"要发送给终端的输入，例如 1\"}}],\"completion_id\":\"稳定的完成事件 id\",\"failure_id\":\"稳定的失败事件 id\",\"artifacts\":[\"产物路径或文件\"],\"risks\":[\"风险或异常\"]}}\n\n\
          判断要求：\n\
          - 不要依赖固定关键词；要综合 transcript、任务目标和文件变更。\n\
-         - 如果 runtime 明显还在执行，state=running，user_message 简短，不要复述日志。\n\
-         - 如果需要用户确认、登录、授权或选择，state=waiting_user，并把选项转成用户能理解的中文。\n\
-         - 如果任务已经完成，state=completed，必须总结完成内容和产物。\n\
+         - 如果 runtime 明显还在执行，state=running，不要生成聊天文案。\n\
+         - 如果需要用户确认、登录、授权或选择，state=waiting_user，必须给 action_id/action_kind/target/options。\n\
+         - 如果任务已经完成，state=completed，必须给 completion_id 和 artifacts。\n\
+         - 如果任务失败，state=failed，必须给 failure_id 和 risks。\n\
          - 如果写入路径不在 cwd 下，必须在 risks 中指出。\n\
          - workspace_delta 是事实验证信号；没有变更时不要轻易判 completed。\n\n\
+         session: {}\n\
+         turn: {}\n\
          agent: {}\n\
          cwd: {}\n\
          submitted_task:\n{}\n\n\
          workspace_delta:\n{}\n\n\
          terminal_transcript:\n{}",
+        request.session_id,
+        request.turn_id,
         request.agent_label,
         request.cwd.to_string_lossy(),
         request.submitted_task,
@@ -203,7 +225,15 @@ pub(crate) fn parse_supervisor_decision(raw: &str) -> Result<CodingSupervisorDec
     let mut decision: CodingSupervisorDecision =
         serde_json::from_str(json_text).map_err(|error| error.to_string())?;
     decision.confidence = decision.confidence.min(100);
-    decision.user_message = decision.user_message.trim().to_string();
+    decision.action_id = decision.action_id.trim().to_string();
+    decision.action_kind = decision.action_kind.trim().to_string();
+    decision.target = decision.target.trim().to_string();
+    decision.completion_id = decision.completion_id.trim().to_string();
+    decision.failure_id = decision.failure_id.trim().to_string();
+    for option in &mut decision.options {
+        option.label = option.label.trim().to_string();
+        option.terminal_input = option.terminal_input.trim().to_string();
+    }
     Ok(decision)
 }
 
@@ -214,7 +244,7 @@ mod tests {
     #[test]
     fn parses_json_inside_text() {
         let decision = parse_supervisor_decision(
-            "```json\n{\"state\":\"completed\",\"confidence\":91,\"user_message\":\"完成\",\"artifacts\":[\"a.html\"]}\n```",
+            "```json\n{\"state\":\"completed\",\"confidence\":91,\"completion_id\":\"artifact:a.html\",\"artifacts\":[\"a.html\"]}\n```",
         )
         .unwrap();
         assert_eq!(decision.state, CodingSupervisorState::Completed);

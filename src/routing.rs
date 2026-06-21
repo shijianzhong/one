@@ -29,22 +29,10 @@ impl AppState {
                         .map_err(|error| error.to_string())
                 });
             match pending_reply {
-                Ok(Some(PendingCodingActionReply::Sent {
-                    session_id,
-                    choice,
-                    meaning,
-                })) => {
+                Ok(Some(PendingCodingActionReply::Sent { message })) => {
                     self.terminal_visible = true;
                     self.terminal_scroll_handle.scroll_to_bottom();
-                    self.append_task_message(
-                        Some(task_id),
-                        "assistant",
-                        &format!(
-                            "已帮你选择：{}（发送 `{}` 到 Claude terminal runtime `{}`）。Claude Code 会继续执行。",
-                            meaning, choice, session_id
-                        ),
-                        cx,
-                    );
+                    self.append_task_message(Some(task_id), "assistant", &message, cx);
                     return;
                 }
                 Ok(Some(PendingCodingActionReply::NeedsExplicitChoice { message })) => {

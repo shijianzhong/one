@@ -340,7 +340,12 @@
 - [x] 转发长 prompt 时在 bracketed paste 结束后增加二次 Enter 兜底，修复 Claude Code TUI 已粘贴但未自动提交的问题。
 - [x] MainAgent 不再把 coding runtime 最近输出作为默认聊天内容反复粘贴；原始输出保留在右侧终端。
 - [x] 新增 `CodingSessionSupervisor`：基于 terminal transcript、提交任务、runtime cwd 和 workspace diff 做结构化语义监督，不再依赖终端日志关键词补丁判断完成状态。
-- [x] Supervisor 输出 `running | waiting_user | completed | failed | unclear` JSON 决策，并通过置信度门槛和 fingerprint 去重控制主聊天区通知。
+- [x] Supervisor 输出 `running | waiting_user | completed | failed | unclear` JSON 决策，并通过置信度门槛控制主聊天区通知。
+- [x] Supervisor 不再直接生成主聊天区文案；只输出 action/completion/failure 的结构化语义事件，由 ONE 侧模板生成稳定、自然、非技术化的中间人反馈。
+- [x] 新增单 active `CodingTaskTurn` 生命周期：每次发送给 terminal runtime 的任务都有 turn_id、submitted_task、cwd、workspace baseline、状态和通知去重状态。
+- [x] 主聊天区 waiting/completed/failed 通知按 turn 语义事件去重：等待按 `turn_id + action_id`，完成按 turn 只通知一次，失败按 `turn_id + failure_id`。
+- [x] 删除旧 `last_notified_fingerprint` 通知去重路径，避免终端 transcript 刷新导致同一语义事件反复通知。
+- [x] 用户在聊天区确认 Claude Code 选项后的反馈改为自然中间人文案，不再暴露 runtime/session id 或“发送 `1` 到 runtime”这类实现细节。
 - [x] 终端刷新循环只收集 supervision request，异步调用 supervisor；聊天区只在需要用户交互、任务完成或失败时得到中间人式反馈。
 - [x] 识别 Claude Code 编号确认提示，例如 `Do you want to create index.html? 1. Yes 2. Yes, allow all edits ... 3. No`。
 - [x] 对重复的登录/信任/权限/编号选择提示做 session 级 fingerprint 去重，避免聊天区重复提醒同一个问题。
@@ -367,9 +372,9 @@
 - [x] `cargo check`
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test coding_supervisor`，2 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test agent_runtime`，2 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，11 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，12 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test tool_dispatcher`，10 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，121 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，122 passed。
 
 ## 当前暂存任务
 

@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -225,14 +225,13 @@ pub(crate) struct PersistentCliSession {
     pub(crate) output_seq: u64,
     pub(crate) terminal: Arc<Mutex<TerminalEmulator>>,
     pub(crate) git_baseline: Option<GitBaseline>,
-    pub(crate) workspace_baseline: Option<WorkspaceSnapshot>,
     pub(crate) run_id: Option<usize>,
     pub(crate) last_error: Option<String>,
     pub(crate) last_user_action_fingerprint: Option<String>,
     pub(crate) submitted_task: Option<String>,
+    pub(crate) active_turn: Option<CodingTaskTurn>,
     pub(crate) supervisor_in_flight: bool,
     pub(crate) last_supervised_fingerprint: Option<String>,
-    pub(crate) last_notified_fingerprint: Option<String>,
 }
 
 impl PersistentCliSession {
@@ -273,14 +272,30 @@ pub(crate) struct CodingRuntimeInspection {
 }
 
 pub(crate) enum PendingCodingActionReply {
-    Sent {
-        session_id: String,
-        choice: String,
-        meaning: String,
-    },
-    NeedsExplicitChoice {
-        message: String,
-    },
+    Sent { message: String },
+    NeedsExplicitChoice { message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodingTaskTurnStatus {
+    Running,
+    WaitingUser,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone)]
+pub(crate) struct CodingTaskTurn {
+    pub(crate) turn_id: String,
+    pub(crate) submitted_task: String,
+    pub(crate) cwd: PathBuf,
+    pub(crate) status: CodingTaskTurnStatus,
+    pub(crate) workspace_baseline: Option<WorkspaceSnapshot>,
+    pub(crate) waiting_action_id: Option<String>,
+    pub(crate) waiting_notified_ids: BTreeSet<String>,
+    pub(crate) completed_notified: bool,
+    pub(crate) failed_notified_ids: BTreeSet<String>,
+    pub(crate) artifacts: Vec<String>,
 }
 
 impl From<&PersistentCliSession> for PersistentCliSessionSummary {
@@ -391,7 +406,6 @@ impl PersistentCliSessionManager {
         } else {
             None
         };
-        let workspace_baseline = write_mode.then(|| capture_workspace_snapshot(&cwd));
         let run_id = RunRecorder::begin(
             db_conn,
             task_id,
@@ -439,14 +453,13 @@ impl PersistentCliSessionManager {
             output_seq: 0,
             terminal: terminal.clone(),
             git_baseline: baseline,
-            workspace_baseline,
             run_id,
             last_error: None,
             last_user_action_fingerprint: None,
             submitted_task: initial_input.map(ToOwned::to_owned),
+            active_turn: None,
             supervisor_in_flight: false,
             last_supervised_fingerprint: None,
-            last_notified_fingerprint: None,
         };
         self.sessions.insert(session_id.clone(), session);
         self.task_attached_session
@@ -521,9 +534,22 @@ impl PersistentCliSessionManager {
         session.last_active_at = chrono::Local::now();
         session.output_seq = session.output_seq.saturating_add(1);
         session.submitted_task = Some(text.to_string());
+        session.active_turn = Some(CodingTaskTurn {
+            turn_id: format!("{}:{}", session.session_id, session.output_seq),
+            submitted_task: text.to_string(),
+            cwd: session.cwd.clone(),
+            status: CodingTaskTurnStatus::Running,
+            workspace_baseline: session
+                .write_mode
+                .then(|| capture_workspace_snapshot(&session.cwd)),
+            waiting_action_id: None,
+            waiting_notified_ids: BTreeSet::new(),
+            completed_notified: false,
+            failed_notified_ids: BTreeSet::new(),
+            artifacts: Vec::new(),
+        });
         session.supervisor_in_flight = false;
         session.last_supervised_fingerprint = None;
-        session.last_notified_fingerprint = None;
         if let Some(run_id) = session.run_id {
             RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
                 text: format!("USER INPUT:\n{}", text),
@@ -572,11 +598,13 @@ impl PersistentCliSessionManager {
                     inspection.session_id, inspection.kind, inspection.summary
                 ))
             });
+            if let Some(turn) = &mut session.active_turn {
+                turn.status = CodingTaskTurnStatus::Running;
+                turn.waiting_action_id = None;
+            }
         }
         Ok(Some(PendingCodingActionReply::Sent {
-            session_id,
-            choice,
-            meaning,
+            message: format!("已确认：{}。Claude Code 正在继续执行。", meaning),
         }))
     }
 
@@ -595,9 +623,15 @@ impl PersistentCliSessionManager {
             if !session.status.is_active() || session.supervisor_in_flight {
                 continue;
             }
-            let Some(submitted_task) = session.submitted_task.clone() else {
+            let Some(turn) = session.active_turn.clone() else {
                 continue;
             };
+            if matches!(
+                turn.status,
+                CodingTaskTurnStatus::Completed | CodingTaskTurnStatus::Failed
+            ) {
+                continue;
+            }
             let lines = match session.terminal.lock() {
                 Ok(terminal) => {
                     let mut lines = terminal.screen_text_lines();
@@ -614,8 +648,9 @@ impl PersistentCliSessionManager {
                 continue;
             }
             let workspace_delta = session
-                .workspace_baseline
+                .active_turn
                 .as_ref()
+                .and_then(|turn| turn.workspace_baseline.as_ref())
                 .map(|baseline| {
                     let current = capture_workspace_snapshot(&session.cwd);
                     diff_workspace_snapshot(baseline, &current)
@@ -636,9 +671,10 @@ impl PersistentCliSessionManager {
             }
             let request = CodingSupervisionRequest {
                 session_id: session.session_id.clone(),
+                turn_id: turn.turn_id,
                 agent_label: session.agent_kind.label().to_string(),
-                cwd: session.cwd.clone(),
-                submitted_task,
+                cwd: turn.cwd,
+                submitted_task: turn.submitted_task,
                 terminal_transcript: lines,
                 workspace_delta,
                 fingerprint: fingerprint.clone(),
@@ -662,62 +698,72 @@ impl PersistentCliSessionManager {
         if decision.confidence < 60 {
             return None;
         }
+        let Some(turn) = session.active_turn.as_mut() else {
+            return None;
+        };
+        if turn.turn_id != request.turn_id {
+            return None;
+        }
         match decision.state {
             CodingSupervisorState::Running | CodingSupervisorState::Unclear => None,
             CodingSupervisorState::WaitingUser => {
-                let notify_fingerprint = format!("waiting:{}", request.fingerprint);
-                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
-                {
+                let action_id = semantic_action_id(&request.turn_id, &decision);
+                if turn.waiting_notified_ids.contains(&action_id) {
                     return None;
                 }
                 session.status = PersistentSessionStatus::WaitingInput;
-                session.last_notified_fingerprint = Some(notify_fingerprint);
+                turn.status = CodingTaskTurnStatus::WaitingUser;
+                turn.waiting_action_id = Some(action_id.clone());
+                turn.waiting_notified_ids.insert(action_id);
                 Some(CodingSessionNotification::UserAction {
                     task_id: session.task_id,
-                    message: normalize_supervisor_message(
-                        &decision.user_message,
-                        "Claude Code 需要你确认下一步。",
-                    ),
+                    message: format_waiting_user_message(session.agent_kind.label(), &decision),
                 })
             }
             CodingSupervisorState::Completed => {
-                let notify_fingerprint = format!("completed:{}", request.fingerprint);
-                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
-                {
+                if turn.completed_notified {
                     return None;
                 }
                 session.status = PersistentSessionStatus::Idle;
-                session.last_notified_fingerprint = Some(notify_fingerprint);
-                if session.write_mode {
-                    if let Some(owner) = self.workspace_write_owner.get(&session.workspace_id) {
-                        if owner == &session.session_id {
-                            self.workspace_write_owner.remove(&session.workspace_id);
-                        }
-                    }
+                turn.status = CodingTaskTurnStatus::Completed;
+                turn.completed_notified = true;
+                turn.artifacts = if decision.artifacts.is_empty() {
+                    workspace_delta_artifacts(&request.workspace_delta)
+                } else {
+                    decision.artifacts.clone()
+                };
+                let release_write_owner = session.write_mode
+                    && self
+                        .workspace_write_owner
+                        .get(&session.workspace_id)
+                        .map(|owner| owner == &session.session_id)
+                        .unwrap_or(false);
+                if release_write_owner {
+                    self.workspace_write_owner.remove(&session.workspace_id);
                 }
                 Some(CodingSessionNotification::Completed {
                     task_id: session.task_id,
-                    message: normalize_supervisor_message(
-                        &decision.user_message,
-                        "Claude Code 已完成这次任务。",
-                    ),
+                    message: format_completed_message(session.agent_kind.label(), turn),
                 })
             }
             CodingSupervisorState::Failed => {
-                let notify_fingerprint = format!("failed:{}", request.fingerprint);
-                if session.last_notified_fingerprint.as_deref() == Some(notify_fingerprint.as_str())
-                {
+                let failure_id = semantic_failure_id(&request.turn_id, &decision);
+                if turn.failed_notified_ids.contains(&failure_id) {
                     return None;
                 }
                 session.status = PersistentSessionStatus::Failed;
-                session.last_notified_fingerprint = Some(notify_fingerprint);
-                session.last_error = Some(decision.user_message.clone());
+                turn.status = CodingTaskTurnStatus::Failed;
+                turn.failed_notified_ids.insert(failure_id);
+                session.last_error =
+                    Some(format_failed_message(session.agent_kind.label(), &decision));
                 Some(CodingSessionNotification::Failed {
                     task_id: session.task_id,
-                    message: normalize_supervisor_message(
-                        &decision.user_message,
-                        "Claude Code 执行失败，需要你查看或调整需求。",
-                    ),
+                    message: session.last_error.clone().unwrap_or_else(|| {
+                        format!(
+                            "{} 执行遇到问题，需要你查看或调整需求。",
+                            session.agent_kind.label()
+                        )
+                    }),
                 })
             }
         }
@@ -757,6 +803,10 @@ impl PersistentCliSessionManager {
         session.status = PersistentSessionStatus::Running;
         session.last_active_at = chrono::Local::now();
         session.output_seq = session.output_seq.saturating_add(1);
+        if let Some(turn) = &mut session.active_turn {
+            turn.status = CodingTaskTurnStatus::Running;
+            turn.waiting_action_id = None;
+        }
         if let Some(run_id) = session.run_id {
             RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
                 text: format!("USER CHOICE:\n{}", text),
@@ -1419,13 +1469,103 @@ fn supervision_fingerprint(
     format!("{:x}", hasher.finish())
 }
 
-fn normalize_supervisor_message(message: &str, fallback: &str) -> String {
-    let message = message.trim();
-    if message.is_empty() {
-        fallback.to_string()
-    } else {
-        message.to_string()
+fn semantic_action_id(turn_id: &str, decision: &CodingSupervisorDecision) -> String {
+    if !decision.action_id.is_empty() {
+        return format!("{}:{}", turn_id, decision.action_id);
     }
+    let mut hasher = DefaultHasher::new();
+    turn_id.hash(&mut hasher);
+    decision.action_kind.hash(&mut hasher);
+    decision.target.hash(&mut hasher);
+    for option in &decision.options {
+        option.label.hash(&mut hasher);
+        option.terminal_input.hash(&mut hasher);
+    }
+    format!("{}:action:{:x}", turn_id, hasher.finish())
+}
+
+fn semantic_failure_id(turn_id: &str, decision: &CodingSupervisorDecision) -> String {
+    if !decision.failure_id.is_empty() {
+        return format!("{}:{}", turn_id, decision.failure_id);
+    }
+    let mut hasher = DefaultHasher::new();
+    turn_id.hash(&mut hasher);
+    decision.action_kind.hash(&mut hasher);
+    decision.target.hash(&mut hasher);
+    for risk in &decision.risks {
+        risk.hash(&mut hasher);
+    }
+    format!("{}:failed:{:x}", turn_id, hasher.finish())
+}
+
+fn format_waiting_user_message(agent_label: &str, decision: &CodingSupervisorDecision) -> String {
+    let target = decision.target.trim();
+    let subject = match decision.action_kind.as_str() {
+        "create_file" if !target.is_empty() => format!("创建 `{}`", target),
+        "edit_file" if !target.is_empty() => format!("编辑 `{}`", target),
+        "delete_file" if !target.is_empty() => format!("删除 `{}`", target),
+        "run_command" if !target.is_empty() => format!("执行 `{}`", target),
+        "install" if !target.is_empty() => format!("安装 `{}`", target),
+        "auth" => "完成登录或认证".to_string(),
+        "trust" => "确认是否信任当前工作目录".to_string(),
+        "menu" if !target.is_empty() => target.to_string(),
+        _ if !target.is_empty() => target.to_string(),
+        _ => "确认下一步操作".to_string(),
+    };
+    let options = decision
+        .options
+        .iter()
+        .filter(|option| !option.label.is_empty())
+        .map(|option| {
+            if option.terminal_input.is_empty() {
+                option.label.clone()
+            } else {
+                format!("{}（回复“{}”）", option.label, option.terminal_input)
+            }
+        })
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        format!(
+            "{} 需要你确认：{}。你可以直接回复你的选择，我会帮你转给右侧终端。",
+            agent_label, subject
+        )
+    } else {
+        format!(
+            "{} 需要你确认：{}。\n\n可选项：{}。\n你可以直接回复选项，我会帮你转给右侧终端。",
+            agent_label,
+            subject,
+            options.join("；")
+        )
+    }
+}
+
+fn format_completed_message(agent_label: &str, turn: &CodingTaskTurn) -> String {
+    let mut message = format!("{} 已完成这次编码任务。", agent_label);
+    if !turn.artifacts.is_empty() {
+        message.push_str(&format!("\n\n产物/变更：{}。", turn.artifacts.join("、")));
+    }
+    message
+}
+
+fn format_failed_message(agent_label: &str, decision: &CodingSupervisorDecision) -> String {
+    if decision.risks.is_empty() {
+        format!("{} 执行遇到问题，需要你查看或调整需求。", agent_label)
+    } else {
+        format!(
+            "{} 执行遇到问题：{}。需要你查看或调整需求。",
+            agent_label,
+            decision.risks.join("；")
+        )
+    }
+}
+
+fn workspace_delta_artifacts(delta: &WorkspaceDelta) -> Vec<String> {
+    delta
+        .added
+        .iter()
+        .chain(delta.modified.iter())
+        .cloned()
+        .collect()
 }
 
 fn asks_agent_to_choose(message: &str) -> bool {
@@ -1512,6 +1652,7 @@ fn tail_lines(lines: &[String], limit: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::coding_supervisor::CodingSupervisorOption;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1689,6 +1830,99 @@ mod tests {
         assert_eq!(map_user_message_to_choice("拒绝").as_deref(), Some("3"));
         assert_eq!(map_user_message_to_choice("选3").as_deref(), Some("3"));
         assert_eq!(map_user_message_to_choice("你不能替我选么"), None);
+    }
+
+    #[test]
+    fn coding_turn_deduplicates_semantic_notifications() {
+        let conn = temp_conn();
+        let cwd = temp_dir("turn");
+        let mut manager = PersistentCliSessionManager::new();
+        let session_id = manager
+            .start_session_with_program(
+                &conn,
+                30,
+                40,
+                test_provider("claude"),
+                "sh",
+                cwd.clone(),
+                true,
+                Some("create login.html"),
+            )
+            .unwrap();
+        let turn_id = manager
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.active_turn.as_ref())
+            .map(|turn| turn.turn_id.clone())
+            .unwrap();
+        let request = CodingSupervisionRequest {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            agent_label: "Claude".to_string(),
+            cwd,
+            submitted_task: "create login.html".to_string(),
+            terminal_transcript: vec!["Do you want to create login.html?".to_string()],
+            workspace_delta: WorkspaceDelta {
+                added: vec!["login.html".to_string()],
+                modified: Vec::new(),
+                deleted: Vec::new(),
+            },
+            fingerprint: "fingerprint-a".to_string(),
+        };
+        let waiting = CodingSupervisorDecision {
+            state: CodingSupervisorState::WaitingUser,
+            confidence: 90,
+            action_id: "create-file:login.html".to_string(),
+            action_kind: "create_file".to_string(),
+            target: "login.html".to_string(),
+            options: vec![CodingSupervisorOption {
+                label: "允许这一次".to_string(),
+                terminal_input: "1".to_string(),
+            }],
+            completion_id: String::new(),
+            failure_id: String::new(),
+            artifacts: Vec::new(),
+            risks: Vec::new(),
+        };
+        let first = manager
+            .apply_supervision_decision(&request, waiting.clone())
+            .unwrap();
+        assert!(matches!(
+            first,
+            CodingSessionNotification::UserAction { .. }
+        ));
+        assert!(manager
+            .apply_supervision_decision(&request, waiting)
+            .is_none());
+
+        let completed = CodingSupervisorDecision {
+            state: CodingSupervisorState::Completed,
+            confidence: 92,
+            action_id: String::new(),
+            action_kind: String::new(),
+            target: String::new(),
+            options: Vec::new(),
+            completion_id: "artifact:login.html".to_string(),
+            failure_id: String::new(),
+            artifacts: vec!["login.html".to_string()],
+            risks: Vec::new(),
+        };
+        let done = manager
+            .apply_supervision_decision(&request, completed.clone())
+            .unwrap();
+        match done {
+            CodingSessionNotification::Completed { message, .. } => {
+                assert!(message.contains("已完成"));
+                assert!(message.contains("login.html"));
+                assert!(!message.contains("runtime"));
+                assert!(!message.contains("session"));
+            }
+            _ => panic!("expected completion notification"),
+        }
+        assert!(manager
+            .apply_supervision_decision(&request, completed)
+            .is_none());
+        manager.stop_session(&conn, &session_id).unwrap();
     }
 
     #[test]

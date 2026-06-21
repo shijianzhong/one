@@ -347,6 +347,7 @@
 - [x] 删除旧 `last_notified_fingerprint` 通知去重路径，避免终端 transcript 刷新导致同一语义事件反复通知。
 - [x] 用户在聊天区确认 Claude Code 选项后的反馈改为自然中间人文案，不再暴露 runtime/session id 或“发送 `1` 到 runtime”这类实现细节。
 - [x] 默认记忆目录从系统 Application Support 收敛到 `~/.one/memory`，便于用户统一管理 ONE 的本地状态。
+- [x] MainAgent 人格文件路径同步收敛到 `~/.one/soul.md`；仓库根目录 `soul.md` 只作为首次启动模板，缺失用户配置时自动初始化。
 - [x] 修复自动记忆污染 global 的根因：`remember` 默认只写 workspace；snapshot 自动蒸馏的 key facts 只写 workspace，不再写 global。
 - [x] 清理本机迁移后的错误全局记忆：移除 Desktop 保存偏好、旧 workspace 路径、一次性项目文件等不应跨项目生效的 global facts。
 - [x] 清理本机迁移后的 L3 历史片段中明确指向 `~/Desktop` 的旧 coding 输出，避免检索上下文继续诱导 Claude 写到桌面。
@@ -380,7 +381,7 @@
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test agent_runtime`，2 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，13 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test tool_dispatcher`，10 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，123 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，124 passed。
 
 ## 当前暂存任务
 

@@ -1,5 +1,3 @@
-use std::fs;
-
 use crate::agents::core::AgentTrait;
 
 pub struct MainAgent {
@@ -16,12 +14,7 @@ impl MainAgent {
         api_key: String,
         _workspace: String,
     ) -> Self {
-        let soul_path = dirs::config_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".one")
-            .join("soul.md");
-        let soul_content = fs::read_to_string(&soul_path)
-            .unwrap_or_else(|_| "你是一个通用的 AI 助手。".to_string());
+        let soul_content = crate::agents::soul::read_soul_content();
 
         let system_prompt = format!(
             "{}\n\n当前日期：{}\n操作环境：{}\n\n请严格按照上述灵魂设定和准则行动。\n\n\

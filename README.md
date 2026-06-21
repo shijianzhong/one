@@ -322,7 +322,7 @@ cargo build --manifest-path skills/system_tools/Cargo.toml
 }
 ```
 
-人格设定（soul.md）位于 `~/.one/soul.md`，可在应用内通过 `propose_soul_update` 工具发起修改草案，需用户在 UI 确认后生效。
+人格设定位于 `~/.one/soul.md`。仓库根目录的 `soul.md` 仅作为首次启动的初始化模板；如果本机 `~/.one/soul.md` 不存在，应用会自动从模板创建。后续可在应用内通过 `propose_soul_update` 工具发起修改草案，需用户在 UI 确认后生效。
 
 ---
 

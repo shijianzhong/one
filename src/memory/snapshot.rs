@@ -131,9 +131,9 @@ fn build_snapshot_prompt(messages: &[ChatMessage]) -> String {
         "You are a memory distiller. Analyze the conversation and return ONLY a valid JSON \
          object (no markdown fences) with these fields:\n\
          - \"summary\": string, 1-3 sentences overview\n\
-         - \"key_facts\": array of strings, **global, permanent facts** about the user (their name, language, \
-           profession, location, skills, important decisions). Do NOT include temporary preferences \
-           or conversation-specific details here. Max 8 items.\n\
+         - \"key_facts\": array of strings, durable facts for the current workspace/project only. \
+           Do NOT include file output paths, current working directories, task ids, one-off artifact names, \
+           temporary implementation choices, or conversation-specific details here. Max 8 items.\n\
          - \"open_loops\": array of strings, unresolved questions or pending actions (max 5)\n\
          - \"preferences\": array of strings, **temporary, task-specific preferences** (e.g. output format for \
            this task, response style for this conversation). These are NOT permanent user traits. Max 5.\n\n\
@@ -195,12 +195,11 @@ pub fn generate_snapshot_sync(
                     eprintln!("[Memory L2] save snapshot failed: {}", e);
                 }
 
-                // ── 自动提取 key_facts + preferences 写入 profile ──────────
-                // key_facts → global + workspace（全局持久事实）
-                // preferences → workspace 仅当前 workspace 可见（临时偏好）
+                // ── 自动提取 key_facts + preferences 写入 workspace profile ─
+                // 自动蒸馏内容不写 global，避免把项目路径、产物路径、一次性偏好污染成跨项目事实。
+                // 真正全局记忆只通过用户明确要求的 remember(scope=global/both) 写入。
                 for fact in &snap.key_facts {
                     if !fact.trim().is_empty() {
-                        let _ = crate::memory::profile::save_global_fact(fact, Some(task_id));
                         let _ =
                             crate::memory::profile::save_fact(workspace_name, fact, Some(task_id));
                     }

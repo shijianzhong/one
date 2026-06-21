@@ -346,6 +346,12 @@
 - [x] 主聊天区 waiting/completed/failed 通知按 turn 语义事件去重：等待按 `turn_id + action_id`，完成按 turn 只通知一次，失败按 `turn_id + failure_id`。
 - [x] 删除旧 `last_notified_fingerprint` 通知去重路径，避免终端 transcript 刷新导致同一语义事件反复通知。
 - [x] 用户在聊天区确认 Claude Code 选项后的反馈改为自然中间人文案，不再暴露 runtime/session id 或“发送 `1` 到 runtime”这类实现细节。
+- [x] 默认记忆目录从系统 Application Support 收敛到 `~/.one/memory`，便于用户统一管理 ONE 的本地状态。
+- [x] 修复自动记忆污染 global 的根因：`remember` 默认只写 workspace；snapshot 自动蒸馏的 key facts 只写 workspace，不再写 global。
+- [x] 清理本机迁移后的错误全局记忆：移除 Desktop 保存偏好、旧 workspace 路径、一次性项目文件等不应跨项目生效的 global facts。
+- [x] 清理本机迁移后的 L3 历史片段中明确指向 `~/Desktop` 的旧 coding 输出，避免检索上下文继续诱导 Claude 写到桌面。
+- [x] Claude 待确认目标路径如果不在当前 runtime cwd/workspace 内，MainAgent 不再直接代发确认；会提示这是越界操作并要求用户明确改回 workspace 或显式授权外部路径。
+- [x] 启动/发送 coding runtime 的聊天区文案去技术化，不再默认显示 session id。
 - [x] 终端刷新循环只收集 supervision request，异步调用 supervisor；聊天区只在需要用户交互、任务完成或失败时得到中间人式反馈。
 - [x] 识别 Claude Code 编号确认提示，例如 `Do you want to create index.html? 1. Yes 2. Yes, allow all edits ... 3. No`。
 - [x] 对重复的登录/信任/权限/编号选择提示做 session 级 fingerprint 去重，避免聊天区重复提醒同一个问题。
@@ -372,9 +378,9 @@
 - [x] `cargo check`
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test coding_supervisor`，2 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test agent_runtime`，2 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，12 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，13 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test tool_dispatcher`，10 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，122 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，123 passed。
 
 ## 当前暂存任务
 

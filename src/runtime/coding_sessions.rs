@@ -87,11 +87,8 @@ impl AppState {
                 self.mark_task_inactive(Some(task_id));
                 self.job_manager.clear_request_full();
                 let mut message = format!(
-                    "{} 终端 runtime 已启动，session_id=`{}`，cwd=`{}`，command=`{}`。",
-                    agent_kind.label(),
-                    session_id,
-                    cwd.to_string_lossy(),
-                    agent_kind.command_line()
+                    "{} 已在右侧终端启动。我会把整理后的工程任务交给它处理；需要你确认、登录或选择时，我会在这里提醒你。",
+                    agent_kind.label()
                 );
                 if let Ok(mut sessions) = self.coding_sessions.lock() {
                     if let Ok(inspection) = sessions.inspect_runtime(&self.db.conn, &session_id, 80)
@@ -181,7 +178,7 @@ impl AppState {
                 self.append_task_message(
                     Some(task_id),
                     "assistant",
-                    &format!("已发送到 coding session `{}`。", session_id),
+                    "我已把你的补充需求整理后交给右侧终端继续处理。",
                     cx,
                 );
             }

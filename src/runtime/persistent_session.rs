@@ -292,6 +292,8 @@ pub(crate) struct CodingTaskTurn {
     pub(crate) status: CodingTaskTurnStatus,
     pub(crate) workspace_baseline: Option<WorkspaceSnapshot>,
     pub(crate) waiting_action_id: Option<String>,
+    pub(crate) waiting_action_target: Option<String>,
+    pub(crate) waiting_action_outside_cwd: bool,
     pub(crate) waiting_notified_ids: BTreeSet<String>,
     pub(crate) completed_notified: bool,
     pub(crate) failed_notified_ids: BTreeSet<String>,
@@ -543,6 +545,8 @@ impl PersistentCliSessionManager {
                 .write_mode
                 .then(|| capture_workspace_snapshot(&session.cwd)),
             waiting_action_id: None,
+            waiting_action_target: None,
+            waiting_action_outside_cwd: false,
             waiting_notified_ids: BTreeSet::new(),
             completed_notified: false,
             failed_notified_ids: BTreeSet::new(),
@@ -590,6 +594,13 @@ impl PersistentCliSessionManager {
             _ => "已选择",
         }
         .to_string();
+        if is_allow_choice(&choice) {
+            if let Some(message) = self.block_outside_cwd_confirmation(&session_id) {
+                return Ok(Some(PendingCodingActionReply::NeedsExplicitChoice {
+                    message,
+                }));
+            }
+        }
         self.send_choice(db_conn, &session_id, &choice)?;
         if let Some(session) = self.sessions.get_mut(&session_id) {
             session.last_user_action_fingerprint = inspection.fingerprint.or_else(|| {
@@ -601,11 +612,32 @@ impl PersistentCliSessionManager {
             if let Some(turn) = &mut session.active_turn {
                 turn.status = CodingTaskTurnStatus::Running;
                 turn.waiting_action_id = None;
+                turn.waiting_action_target = None;
+                turn.waiting_action_outside_cwd = false;
             }
         }
         Ok(Some(PendingCodingActionReply::Sent {
             message: format!("已确认：{}。Claude Code 正在继续执行。", meaning),
         }))
+    }
+
+    fn block_outside_cwd_confirmation(&self, session_id: &str) -> Option<String> {
+        let session = self.sessions.get(session_id)?;
+        let turn = session.active_turn.as_ref()?;
+        if !turn.waiting_action_outside_cwd {
+            return None;
+        }
+        let target = turn
+            .waiting_action_target
+            .as_deref()
+            .filter(|target| !target.trim().is_empty())
+            .unwrap_or("当前目标路径");
+        Some(format!(
+            "{} 想操作的路径不在当前 workspace 内：`{}`。\n\n当前 workspace 是 `{}`。我不会直接替你确认这个越界操作。你可以回复“改到当前 workspace”，让我要求它写到当前目录；如果你确实要写到外部路径，请明确说明完整目标路径。",
+            session.agent_kind.label(),
+            target,
+            session.cwd.to_string_lossy()
+        ))
     }
 
     pub(crate) fn collect_supervision_requests(
@@ -714,10 +746,18 @@ impl PersistentCliSessionManager {
                 session.status = PersistentSessionStatus::WaitingInput;
                 turn.status = CodingTaskTurnStatus::WaitingUser;
                 turn.waiting_action_id = Some(action_id.clone());
+                turn.waiting_action_target = (!decision.target.trim().is_empty())
+                    .then(|| decision.target.trim().to_string());
+                turn.waiting_action_outside_cwd =
+                    target_outside_cwd(&decision.target, &request.cwd).unwrap_or(false);
                 turn.waiting_notified_ids.insert(action_id);
                 Some(CodingSessionNotification::UserAction {
                     task_id: session.task_id,
-                    message: format_waiting_user_message(session.agent_kind.label(), &decision),
+                    message: format_waiting_user_message(
+                        session.agent_kind.label(),
+                        &decision,
+                        &request.cwd,
+                    ),
                 })
             }
             CodingSupervisorState::Completed => {
@@ -806,6 +846,8 @@ impl PersistentCliSessionManager {
         if let Some(turn) = &mut session.active_turn {
             turn.status = CodingTaskTurnStatus::Running;
             turn.waiting_action_id = None;
+            turn.waiting_action_target = None;
+            turn.waiting_action_outside_cwd = false;
         }
         if let Some(run_id) = session.run_id {
             RunRecorder::attach(db_conn, run_id).record(&RunEvent::MessageDelta {
@@ -1498,8 +1540,25 @@ fn semantic_failure_id(turn_id: &str, decision: &CodingSupervisorDecision) -> St
     format!("{}:failed:{:x}", turn_id, hasher.finish())
 }
 
-fn format_waiting_user_message(agent_label: &str, decision: &CodingSupervisorDecision) -> String {
+fn format_waiting_user_message(
+    agent_label: &str,
+    decision: &CodingSupervisorDecision,
+    cwd: &Path,
+) -> String {
     let target = decision.target.trim();
+    if target_outside_cwd(target, cwd).unwrap_or(false) {
+        let target_display = if target.is_empty() {
+            "当前目标路径"
+        } else {
+            target
+        };
+        return format!(
+            "{} 想操作的路径不在当前 workspace 内：`{}`。\n\n当前 workspace 是 `{}`。我不会直接替你确认这个越界操作。你可以回复“改到当前 workspace”，让我要求它写到当前目录；如果你确实要写到外部路径，请明确说明完整目标路径。",
+            agent_label,
+            target_display,
+            cwd.to_string_lossy()
+        );
+    }
     let subject = match decision.action_kind.as_str() {
         "create_file" if !target.is_empty() => format!("创建 `{}`", target),
         "edit_file" if !target.is_empty() => format!("编辑 `{}`", target),
@@ -1566,6 +1625,34 @@ fn workspace_delta_artifacts(delta: &WorkspaceDelta) -> Vec<String> {
         .chain(delta.modified.iter())
         .cloned()
         .collect()
+}
+
+fn target_outside_cwd(target: &str, cwd: &Path) -> Option<bool> {
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let expanded = if target == "~" {
+        dirs::home_dir()?
+    } else if let Some(rest) = target.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else {
+        PathBuf::from(target)
+    };
+    if !expanded.is_absolute() {
+        return Some(false);
+    }
+    let cwd = normalize_path_for_compare(cwd);
+    let target = normalize_path_for_compare(&expanded);
+    Some(!target.starts_with(cwd))
+}
+
+fn normalize_path_for_compare(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
+fn is_allow_choice(choice: &str) -> bool {
+    matches!(choice, "1" | "2")
 }
 
 fn asks_agent_to_choose(message: &str) -> bool {
@@ -1830,6 +1917,20 @@ mod tests {
         assert_eq!(map_user_message_to_choice("拒绝").as_deref(), Some("3"));
         assert_eq!(map_user_message_to_choice("选3").as_deref(), Some("3"));
         assert_eq!(map_user_message_to_choice("你不能替我选么"), None);
+    }
+
+    #[test]
+    fn detects_absolute_targets_outside_cwd() {
+        let cwd = PathBuf::from("/Users/example/project");
+        assert_eq!(
+            target_outside_cwd("/Users/example/project/index.html", &cwd),
+            Some(false)
+        );
+        assert_eq!(
+            target_outside_cwd("/Users/example/Desktop/index.html", &cwd),
+            Some(true)
+        );
+        assert_eq!(target_outside_cwd("index.html", &cwd), Some(false));
     }
 
     #[test]

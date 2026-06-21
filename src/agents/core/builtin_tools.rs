@@ -168,7 +168,7 @@ impl Tool for RememberTool {
     }
 
     fn description(&self) -> &str {
-        "记录关于用户的长期偏好、姓名或重要背景事实。"
+        "记录关于用户的长期偏好、姓名或重要背景事实。默认只记录到当前 workspace；只有用户明确要求跨项目长期记住时才使用 global。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -179,7 +179,7 @@ impl Tool for RememberTool {
                 "scope": {
                     "type": "string",
                     "enum": ["global", "workspace", "both"],
-                    "description": "global：跨 workspace；workspace：仅当前项目；both：同时存。默认 both。"
+                    "description": "global：跨 workspace 且必须是永久用户事实；workspace：仅当前项目；both：同时存。默认 workspace。"
                 }
             },
             "required": ["fact"]
@@ -188,7 +188,7 @@ impl Tool for RememberTool {
 
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value> {
         let fact = args["fact"].as_str().unwrap_or_default();
-        let scope = args["scope"].as_str().unwrap_or("both");
+        let scope = args["scope"].as_str().unwrap_or("workspace");
 
         match scope {
             "global" => crate::memory::profile::save_global_fact(fact, None)?,

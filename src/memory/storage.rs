@@ -10,14 +10,12 @@ pub fn get_memory_base_path() -> PathBuf {
             return PathBuf::from(custom);
         }
     }
-    if let Some(data_dir) = dirs::data_dir() {
-        return data_dir.join("one").join("memory");
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        return config_dir.join(".one").join("memory");
+    if let Some(home_dir) = dirs::home_dir() {
+        return home_dir.join(".one").join("memory");
     }
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".one")
         .join("memory")
 }
 

@@ -55,7 +55,7 @@ gpui::actions!(
     ]
 );
 
-pub(crate) const NAV_WIDTH: f32 = 280.0;
+pub(crate) const NAV_WIDTH: f32 = 248.0;
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 760.0;
 pub(crate) const TITLEBAR_HEIGHT: f32 = 44.0;

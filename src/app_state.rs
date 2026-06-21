@@ -331,7 +331,7 @@ impl AppState {
             default_work_dir: dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
             sidebar_visible: false,
             terminal_visible: false,
-            right_panel_width: 500.0,
+            right_panel_width: 420.0,
             right_panel_resize_initial_mouse_x: None,
             right_panel_resize_initial_width: None,
             main_view: MainView::Chat,

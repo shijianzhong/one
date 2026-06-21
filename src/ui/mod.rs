@@ -52,8 +52,8 @@ impl gpui::Render for AppState {
 
                             let current_x = f32::from(event.event.position.x);
                             let available_width = f32::from(event.bounds.size.width);
-                            let min_width = 280.0;
-                            let max_width = (available_width - 320.0).max(min_width);
+                            let min_width = 320.0;
+                            let max_width = (available_width - 420.0).max(min_width);
                             this.right_panel_width =
                                 (start_width - (current_x - start_x)).clamp(min_width, max_width);
                             cx.notify();

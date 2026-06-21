@@ -32,7 +32,7 @@ impl AppState {
             .flex_col()
             .flex_1()
             .h_full()
-            .min_w(px(350.0))
+            .min_w(px(320.0))
             .bg(CANVAS_BG())
             .child(
                 div()
@@ -40,7 +40,7 @@ impl AppState {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .px_8()
+                    .px_5()
                     .pb_5()
                     .child(
                         div()
@@ -53,7 +53,7 @@ impl AppState {
                             .pb_6()
                             .child(
                                 div().flex().justify_center().w_full().child(
-                                    div().w_full().max_w(px(940.0)).child(
+                                    div().w_full().max_w(px(860.0)).child(
                                         self.render_chat_messages(&scroll_handle, window, cx),
                                     ),
                                 ),
@@ -84,7 +84,7 @@ impl AppState {
             .items_center()
             .justify_between()
             .h_full()
-            .px_8()
+            .px_5()
             .child(
                 div()
                     .flex()
@@ -93,7 +93,7 @@ impl AppState {
                     .flex_1()
                     .child(
                         div()
-                            .w(px(320.0))
+                            .w(px(260.0))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -272,9 +272,27 @@ impl AppState {
                             }
                         }
                         Some("terminal") => {
-                            this.terminal_visible = !this.terminal_visible;
+                            let will_show = !this.terminal_visible;
+                            this.terminal_visible = will_show;
+                            if will_show {
+                                this.right_panel_width = this.right_panel_width.max(420.0);
+                            } else if this.sidebar_visible {
+                                this.right_panel_width = 360.0;
+                            }
                         }
-                        Some("sidebar") => this.sidebar_visible = !this.sidebar_visible,
+                        Some("sidebar") => {
+                            let will_show = !this.sidebar_visible;
+                            this.sidebar_visible = will_show;
+                            if will_show {
+                                this.right_panel_width = if this.terminal_visible {
+                                    this.right_panel_width.max(420.0)
+                                } else {
+                                    360.0
+                                };
+                            } else if this.terminal_visible {
+                                this.right_panel_width = this.right_panel_width.max(420.0);
+                            }
+                        }
                         Some("skill-cleaner") => {
                             this.launch_skill_card("system.cleaner", serde_json::json!({}), cx);
                         }
@@ -376,11 +394,11 @@ impl AppState {
                                 .rounded_xl()
                                 .bg(bubble_bg)
                                 .shadow_md()
-                                .max_w(px(680.0))
+                                .max_w(px(620.0))
                                 .min_w(px(35.0))
                                 .child(
                                     div()
-                                        .text_base()
+                                        .text_sm()
                                         .text_color(text_color)
                                         .line_height(relative(1.5))
                                         .whitespace_normal()
@@ -425,11 +443,11 @@ impl AppState {
                                 .flex_col()
                                 .items_start()
                                 .gap_4()
-                                .max_w(px(840.0))
+                                .max_w(px(760.0))
                                 .min_w(px(35.0))
                                 .w_full()
-                                .px_6()
-                                .py_5()
+                                .px_5()
+                                .py_4()
                                 .rounded_xl()
                                 .bg(ASSISTANT_BUBBLE_BG())
                                 .border_1()
@@ -444,7 +462,7 @@ impl AppState {
                                                 let add_top_padding = prev_was_think;
                                                 prev_was_think = false;
                                                 let el = div()
-                                                    .text_base()
+                                                    .text_sm()
                                                     .text_color(text_color)
                                                     .line_height(relative(1.6))
                                                     .whitespace_normal()
@@ -923,7 +941,7 @@ impl AppState {
             div()
                 .flex_col()
                 .w_full()
-                .max_w(px(940.0))
+                .max_w(px(860.0))
                 .gap_3()
                 .px_4()
                 .py_3()
@@ -937,9 +955,9 @@ impl AppState {
                     div()
                         .flex()
                         .items_end()
-                        .gap_3()
-                        .px_4()
-                        .py_3()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
                         .rounded_xl()
                         .bg(INPUT_BG())
                         .border_1()

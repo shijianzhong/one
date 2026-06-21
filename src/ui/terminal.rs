@@ -461,6 +461,8 @@ impl AppState {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .min_w_0()
+                    .w_full()
                     .child(div().size(px(8.0)).rounded_full().bg(Hsla {
                         h: 0.33,
                         s: 0.7,
@@ -478,6 +480,10 @@ impl AppState {
                             .text_xs()
                             .text_color(TERTIARY_TEXT())
                             .ml_auto()
+                            .min_w_0()
+                            .max_w(px(160.0))
+                            .text_ellipsis()
+                            .overflow_hidden()
                             .child(header_text),
                     )
                     .child(self.terminal_tab_button(
@@ -719,7 +725,7 @@ impl AppState {
                     .track_scroll(&self.terminal_scroll_handle)
                     .p_2()
                     .font_family("Menlo")
-                    .text_sm()
+                    .text_size(px(12.0))
                     .children(output_lines.iter().map(|(text, has_cursor, is_think)| {
                         let display_text = if *has_cursor && !text.is_empty() {
                             // 在光标位置插入光标符号
@@ -732,7 +738,7 @@ impl AppState {
                         };
                         if has_session_term {
                             div()
-                                .h(px(18.0))
+                                .h(px(16.0))
                                 .flex()
                                 .items_center()
                                 .text_color(if *is_think {
@@ -745,7 +751,7 @@ impl AppState {
                                 .into_any_element()
                         } else {
                             div()
-                                .min_h(px(18.0))
+                                .min_h(px(16.0))
                                 .w_full()
                                 .line_height(relative(1.4))
                                 .whitespace_normal()

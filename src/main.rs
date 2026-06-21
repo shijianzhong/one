@@ -31,7 +31,7 @@ mod workspace;
 
 pub(crate) use agents::types::RequestKind;
 pub(crate) use app_state::{
-    AppState, CapabilitiesTab, MainView, TerminalLine, ToastInfo, ToastLevel,
+    AppState, CapabilitiesTab, MainView, TerminalLine, TerminalTab, ToastInfo, ToastLevel,
 };
 use services::load_config;
 pub(crate) use ui::*;

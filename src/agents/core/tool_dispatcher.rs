@@ -315,7 +315,7 @@ impl ToolDispatcher {
                 .unwrap_or(".")
                 .to_string();
             on_event(OrchestratorEvent::RunInTerminal { command, work_dir });
-            return "命令已发送到终端执行。用户可以在终端中查看实时输出。".to_string();
+            return "命令已发送到右侧终端的 Shell tab 执行。".to_string();
         }
         "请提供要执行的命令。".to_string()
     }
@@ -489,7 +489,7 @@ mod tests {
             .dispatch(&call, &mut |event| events.push(event))
             .await;
 
-        assert!(result.contains("命令已发送到终端执行"));
+        assert!(result.contains("命令已发送到右侧终端的 Shell tab 执行"));
         assert!(matches!(
             events.as_slice(),
             [OrchestratorEvent::RunInTerminal { command, work_dir }]

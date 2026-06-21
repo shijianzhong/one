@@ -7,7 +7,8 @@ use std::sync::Mutex;
 
 use crate::i18n::{t, Translations};
 use crate::runtime::{
-    configured_coding_agents, supervise_coding_session, CodingSessionNotification,
+    global_terminal_event_bus, log_runtime_event, supervise_coding_session,
+    CodingSessionNotification, CodingSupervisionRequest, RuntimeEvent,
 };
 use crate::terminal_emulator::mappings::keys::to_esc_str;
 use crate::terminal_emulator::TerminalEmulator;
@@ -15,7 +16,7 @@ use crate::ui_theme::{
     BORDER_LIGHT, CANVAS_BG, INPUT_BG, MUTED_TEXT, PRIMARY_TEXT, SECONDARY_TEXT, SURFACE_ELEVATED,
     TERTIARY_TEXT,
 };
-use crate::AppState;
+use crate::{AppState, TerminalTab};
 
 pub(crate) struct DraggedResizer;
 
@@ -32,24 +33,237 @@ fn term_bg() -> Hsla {
 }
 
 impl AppState {
+    pub(crate) fn ensure_terminal_event_subscription(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_event_subscription_running {
+            return;
+        }
+        self.terminal_event_subscription_running = true;
+        let mut rx = global_terminal_event_bus().subscribe();
+        cx.spawn(async move |this, cx| loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            let should_continue = this
+                .update(cx, |this, cx| {
+                    this.handle_runtime_event(event, cx);
+                    true
+                })
+                .unwrap_or(false);
+            if !should_continue {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn handle_runtime_event(&mut self, event: RuntimeEvent, cx: &mut Context<Self>) {
+        match event {
+            RuntimeEvent::TerminalOutputChanged { terminal_id, seq } => {
+                log_runtime_event(
+                    "app.runtime_event",
+                    format!(
+                        "received TerminalOutputChanged terminal_id={} seq={}",
+                        terminal_id, seq
+                    ),
+                );
+                if let Some(coding_event) =
+                    self.coding_sessions.lock().ok().and_then(|mut sessions| {
+                        sessions.handle_terminal_output_changed(&self.db.conn, &terminal_id, seq)
+                    })
+                {
+                    log_runtime_event(
+                        "app.runtime_event",
+                        format!(
+                            "publishing CodingOutputChanged from terminal_id={} seq={}",
+                            terminal_id, seq
+                        ),
+                    );
+                    global_terminal_event_bus().publish(coding_event);
+                } else {
+                    log_runtime_event(
+                        "app.runtime_event",
+                        format!(
+                            "ignored TerminalOutputChanged terminal_id={} seq={} reason=no_active_coding_session",
+                            terminal_id, seq
+                        ),
+                    );
+                }
+            }
+            RuntimeEvent::TerminalExited { terminal_id } => {
+                log_runtime_event(
+                    "app.runtime_event",
+                    format!("received TerminalExited terminal_id={}", terminal_id),
+                );
+                if let Ok(mut sessions) = self.coding_sessions.lock() {
+                    sessions.refresh_session_status(&self.db.conn, &terminal_id);
+                }
+            }
+            RuntimeEvent::CodingOutputChanged {
+                session_id, seq, ..
+            } => {
+                log_runtime_event(
+                    "app.runtime_event",
+                    format!(
+                        "received CodingOutputChanged session_id={} seq={}",
+                        session_id, seq
+                    ),
+                );
+                self.schedule_coding_supervision(session_id, seq, cx);
+            }
+            RuntimeEvent::TerminalTitleChanged { .. }
+            | RuntimeEvent::ShellCommandStarted { .. }
+            | RuntimeEvent::ShellCommandFinished { .. }
+            | RuntimeEvent::ShellCommandFailed { .. } => {}
+        }
+    }
+
+    fn schedule_coding_supervision(
+        &mut self,
+        session_id: String,
+        seq: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let already_scheduled = self.pending_coding_supervision.contains_key(&session_id);
+        self.pending_coding_supervision
+            .insert(session_id.clone(), seq);
+        log_runtime_event(
+            "supervision.schedule",
+            format!(
+                "session_id={} seq={} already_scheduled={}",
+                session_id, seq, already_scheduled
+            ),
+        );
+        if already_scheduled {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(600))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .pending_coding_supervision
+                    .remove(&session_id)
+                    .is_none()
+                {
+                    log_runtime_event(
+                        "supervision.schedule",
+                        format!(
+                            "session_id={} fired=false reason=removed_before_timer",
+                            session_id
+                        ),
+                    );
+                    return;
+                }
+                log_runtime_event(
+                    "supervision.schedule",
+                    format!("session_id={} fired=true", session_id),
+                );
+                let request = this.coding_sessions.lock().ok().and_then(|mut sessions| {
+                    sessions.collect_supervision_request_for_session(
+                        &this.db.conn,
+                        &session_id,
+                        120,
+                    )
+                });
+                if let Some(request) = request {
+                    this.spawn_coding_supervision_request(request, cx);
+                } else {
+                    log_runtime_event(
+                        "supervision.schedule",
+                        format!("session_id={} no_request_collected", session_id),
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn spawn_coding_supervision_request(
+        &mut self,
+        request: CodingSupervisionRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let base_url = self.model_base_url.clone();
+        let api_key = self.model_api_key.clone();
+        let model = crate::services::load_config()
+            .light_model
+            .unwrap_or_else(|| self.model_name.clone());
+        log_runtime_event(
+            "supervision.spawn",
+            format!(
+                "session_id={} turn_id={} fingerprint={} model={} transcript_lines={} workspace_delta={}",
+                request.session_id,
+                request.turn_id,
+                request.fingerprint,
+                model,
+                request.terminal_transcript.len(),
+                request.workspace_delta.describe()
+            ),
+        );
+        cx.spawn(async move |this, cx| {
+            let request_for_task = request.clone();
+            let result = gpui_tokio::Tokio::spawn(cx, async move {
+                supervise_coding_session(&base_url, &api_key, &model, &request_for_task).await
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("supervisor task join failed: {}", error)));
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(decision) => {
+                        log_runtime_event(
+                            "supervision.result",
+                            format!(
+                                "session_id={} fingerprint={} state={:?} confidence={} action_kind={} target={} artifacts={} risks={}",
+                                request.session_id,
+                                request.fingerprint,
+                                decision.state,
+                                decision.confidence,
+                                decision.action_kind,
+                                decision.target,
+                                decision.artifacts.join("|"),
+                                decision.risks.join("|")
+                            ),
+                        );
+                        let notification =
+                            this.coding_sessions.lock().ok().and_then(|mut sessions| {
+                                sessions.apply_supervision_decision(&request, decision)
+                            });
+                        if let Some(notification) = notification {
+                            append_coding_session_notification(this, notification, cx);
+                        }
+                    }
+                    Err(error) => {
+                        log_runtime_event(
+                            "supervision.result",
+                            format!(
+                                "session_id={} fingerprint={} error={}",
+                                request.session_id, request.fingerprint, error
+                            ),
+                        );
+                        if let Ok(mut sessions) = this.coding_sessions.lock() {
+                            sessions
+                                .mark_supervision_failed(&request.session_id, &request.fingerprint);
+                        }
+                        eprintln!(
+                            "[CodingSupervisor] session={} failed: {}",
+                            request.session_id, error
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn ensure_terminal(&mut self, cx: &mut Context<Self>) {
+        self.ensure_terminal_event_subscription(cx);
         if let Ok(mut sessions) = self.coding_sessions.lock() {
             sessions.refresh_all(&self.db.conn);
         }
-        if self
-            .active_task_id
-            .and_then(|task_id| {
-                self.coding_sessions
-                    .lock()
-                    .ok()
-                    .and_then(|sessions| sessions.attached_session_id_for_task(task_id))
-            })
-            .is_some()
-        {
-            self.ensure_terminal_refresh_loop(cx);
-            return;
-        }
-
         let project_dir = std::path::PathBuf::from(self.get_work_dir());
         let _ = std::fs::create_dir_all(&project_dir);
 
@@ -65,7 +279,14 @@ impl AppState {
         self.terminal_refresh_running = false;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        match TerminalEmulator::new(Some(&shell), Some(&project_dir), 80, 24) {
+        let terminal_id = format!("shell:{}", project_dir.to_string_lossy());
+        match TerminalEmulator::new_with_terminal_id(
+            terminal_id,
+            Some(&shell),
+            Some(&project_dir),
+            80,
+            24,
+        ) {
             Ok(term) => {
                 let project_dir_str = project_dir.to_string_lossy().to_string();
                 self.terminal_emulator = Some(Arc::new(Mutex::new(term)));
@@ -105,70 +326,8 @@ impl AppState {
                             t.process_events();
                         }
                     }
-                    let supervision_requests = if let Ok(mut sessions) = this.coding_sessions.lock()
-                    {
+                    if let Ok(mut sessions) = this.coding_sessions.lock() {
                         sessions.refresh_all(&this.db.conn);
-                        sessions.collect_supervision_requests(&this.db.conn, 120)
-                    } else {
-                        Vec::new()
-                    };
-                    for request in supervision_requests {
-                        let base_url = this.model_base_url.clone();
-                        let api_key = this.model_api_key.clone();
-                        let model = crate::services::load_config()
-                            .light_model
-                            .unwrap_or_else(|| this.model_name.clone());
-                        cx.spawn(async move |this, cx| {
-                            let request_for_task = request.clone();
-                            let result = gpui_tokio::Tokio::spawn(cx, async move {
-                                supervise_coding_session(
-                                    &base_url,
-                                    &api_key,
-                                    &model,
-                                    &request_for_task,
-                                )
-                                .await
-                            })
-                            .await
-                            .unwrap_or_else(|error| {
-                                Err(format!("supervisor task join failed: {}", error))
-                            });
-                            let _ = this.update(cx, |this, cx| {
-                                match result {
-                                    Ok(decision) => {
-                                        let notification = this
-                                            .coding_sessions
-                                            .lock()
-                                            .ok()
-                                            .and_then(|mut sessions| {
-                                                sessions
-                                                    .apply_supervision_decision(&request, decision)
-                                            });
-                                        if let Some(notification) = notification {
-                                            append_coding_session_notification(
-                                                this,
-                                                notification,
-                                                cx,
-                                            );
-                                        }
-                                    }
-                                    Err(error) => {
-                                        if let Ok(mut sessions) = this.coding_sessions.lock() {
-                                            sessions.mark_supervision_failed(
-                                                &request.session_id,
-                                                &request.fingerprint,
-                                            );
-                                        }
-                                        eprintln!(
-                                            "[CodingSupervisor] session={} failed: {}",
-                                            request.session_id, error
-                                        );
-                                    }
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .detach();
                     }
                     let max_scroll_y: f32 = this.terminal_scroll_handle.max_offset().y.into();
                     let current_scroll_y: f32 = this.terminal_scroll_handle.offset().y.into();
@@ -239,6 +398,13 @@ impl AppState {
     }
 
     fn terminal_header_text(&self) -> String {
+        if self.active_terminal_tab == TerminalTab::Shell {
+            return self
+                .terminal_work_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| self.get_work_dir());
+        }
         if let Some(task_id) = self.active_task_id {
             let text = self.coding_sessions.lock().ok().and_then(|sessions| {
                 sessions.session_for_task(task_id).map(|session| {
@@ -272,6 +438,16 @@ impl AppState {
                     .and_then(|sessions| sessions.attached_session_id_for_task(task_id))
             })
             .is_some();
+        let coding_label = self
+            .active_task_id
+            .and_then(|task_id| {
+                self.coding_sessions.lock().ok().and_then(|sessions| {
+                    sessions
+                        .session_for_task(task_id)
+                        .map(|session| session.agent_kind.label().to_string())
+                })
+            })
+            .unwrap_or_else(|| "Coding".to_string());
         div()
             .flex()
             .items_center()
@@ -304,43 +480,41 @@ impl AppState {
                             .ml_auto()
                             .child(header_text),
                     )
-                    .child(self.render_provider_start_buttons("", cx))
+                    .child(self.terminal_tab_button(
+                        "Shell".to_string(),
+                        self.active_terminal_tab == TerminalTab::Shell,
+                        cx,
+                        |this, cx| {
+                            this.active_terminal_tab = TerminalTab::Shell;
+                            this.terminal_scroll_handle.scroll_to_bottom();
+                            cx.notify();
+                        },
+                    ))
                     .when(has_session, |this| {
-                        this.child(self.terminal_header_button(
-                            "Stop".to_string(),
+                        this.child(self.terminal_tab_button(
+                            coding_label,
+                            self.active_terminal_tab == TerminalTab::Coding,
                             cx,
                             |this, cx| {
-                                this.stop_persistent_coding_session(None, cx);
+                                this.active_terminal_tab = TerminalTab::Coding;
+                                this.terminal_scroll_handle.scroll_to_bottom();
+                                cx.notify();
                             },
                         ))
-                    }),
+                    })
+                    .when(
+                        has_session && self.active_terminal_tab == TerminalTab::Coding,
+                        |this| {
+                            this.child(self.terminal_header_button(
+                                "Stop".to_string(),
+                                cx,
+                                |this, cx| {
+                                    this.stop_persistent_coding_session(None, cx);
+                                },
+                            ))
+                        },
+                    ),
             )
-    }
-
-    fn render_provider_start_buttons(
-        &mut self,
-        prefix: &'static str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let mut row = div().flex().gap_2();
-        for provider in configured_coding_agents() {
-            let label = if prefix.is_empty() {
-                provider.label().to_string()
-            } else {
-                format!("{} {}", prefix, provider.label())
-            };
-            let provider_for_handler = provider.clone();
-            row = row.child(self.terminal_header_button(label, cx, move |this, cx| {
-                this.start_persistent_coding_session(
-                    provider_for_handler.clone(),
-                    "请接手当前 task 的编码工作。先阅读当前 workspace，说明你准备如何推进；需要用户确认时停下来询问。"
-                        .to_string(),
-                    true,
-                    cx,
-                );
-            }));
-        }
-        row
     }
 
     fn terminal_header_button<F>(
@@ -373,18 +547,65 @@ impl AppState {
             .child(label)
     }
 
+    fn terminal_tab_button<F>(
+        &mut self,
+        label: String,
+        active: bool,
+        cx: &mut Context<Self>,
+        handler: F,
+    ) -> impl IntoElement
+    where
+        F: Fn(&mut AppState, &mut Context<AppState>) + 'static,
+    {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(if active {
+                BORDER_LIGHT().opacity(0.55)
+            } else {
+                INPUT_BG()
+            })
+            .border_1()
+            .border_color(if active {
+                SECONDARY_TEXT().opacity(0.55)
+            } else {
+                BORDER_LIGHT()
+            })
+            .text_xs()
+            .text_color(if active {
+                PRIMARY_TEXT()
+            } else {
+                SECONDARY_TEXT()
+            })
+            .cursor_pointer()
+            .hover(|this| this.bg(BORDER_LIGHT().opacity(0.45)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                    handler(this, cx);
+                    cx.notify();
+                }),
+            )
+            .child(label)
+    }
+
     fn render_terminal_body(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let session_term = self.active_task_id.and_then(|task_id| {
-            self.coding_sessions.lock().ok().and_then(|sessions| {
-                sessions
-                    .session_for_task(task_id)
-                    .map(|session| session.terminal.clone())
+        let session_term = if self.active_terminal_tab == TerminalTab::Coding {
+            self.active_task_id.and_then(|task_id| {
+                self.coding_sessions.lock().ok().and_then(|sessions| {
+                    sessions
+                        .session_for_task(task_id)
+                        .map(|session| session.terminal.clone())
+                })
             })
-        });
+        } else {
+            None
+        };
         let has_session_term = session_term.is_some();
         let term_arc = session_term.or_else(|| self.terminal_emulator.as_ref().cloned());
         let has_terminal = term_arc.is_some() || !self.terminal_output.is_empty();
@@ -463,16 +684,17 @@ impl AppState {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                let term_arc = this
-                    .active_task_id
-                    .and_then(|task_id| {
+                let term_arc = if this.active_terminal_tab == TerminalTab::Coding {
+                    this.active_task_id.and_then(|task_id| {
                         this.coding_sessions.lock().ok().and_then(|sessions| {
                             sessions
                                 .session_for_task(task_id)
                                 .map(|session| session.terminal.clone())
                         })
                     })
-                    .or_else(|| this.terminal_emulator.as_ref().cloned());
+                } else {
+                    this.terminal_emulator.as_ref().cloned()
+                };
                 if let Some(ref term_arc) = term_arc {
                     if let Ok(term) = term_arc.lock() {
                         use alacritty_terminal::term::TermMode;

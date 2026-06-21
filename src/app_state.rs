@@ -90,6 +90,7 @@ pub(crate) struct AppState {
     pub(crate) delete_confirm_workspace_id: Option<usize>,
     pub(crate) popup_position: Point<Pixels>,
     pub(crate) terminal_output: Vec<TerminalLine>,
+    pub(crate) active_terminal_tab: TerminalTab,
     pub(crate) coding_sessions:
         std::sync::Arc<std::sync::Mutex<crate::runtime::PersistentCliSessionManager>>,
     pub(crate) preview_process: Option<PreviewProcessHandle>,
@@ -122,6 +123,9 @@ pub(crate) struct AppState {
     pub(crate) terminal_refresh_generation: u64,
     /// 当前是否已有终端刷新循环在运行。
     pub(crate) terminal_refresh_running: bool,
+    /// 当前是否已有终端 runtime event 订阅循环在运行。
+    pub(crate) terminal_event_subscription_running: bool,
+    pub(crate) pending_coding_supervision: HashMap<String, u64>,
     /// 终端的焦点句柄
     pub(crate) terminal_focus_handle: FocusHandle,
     /// 终端输出滚动状态
@@ -152,6 +156,12 @@ pub(crate) struct SkillCardState {
 pub(crate) struct TerminalLine {
     pub(crate) command: Option<String>,
     pub(crate) output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalTab {
+    Shell,
+    Coding,
 }
 
 #[derive(Debug)]
@@ -351,6 +361,7 @@ impl AppState {
             chat_scroll_handle: ScrollHandle::default(),
             sandbox_backend: futures::executor::block_on(Backend::detect()),
             terminal_output: vec![],
+            active_terminal_tab: TerminalTab::Shell,
             coding_sessions: crate::runtime::global_coding_session_manager(),
             preview_process: None,
             preview_state: None,
@@ -376,6 +387,8 @@ impl AppState {
             terminal_work_dir: None,
             terminal_refresh_generation: 0,
             terminal_refresh_running: false,
+            terminal_event_subscription_running: false,
+            pending_coding_supervision: HashMap::new(),
             terminal_focus_handle: cx.focus_handle(),
             terminal_scroll_handle: ScrollHandle::default(),
             task_active_states: HashMap::new(),
@@ -395,6 +408,7 @@ impl AppState {
         }
 
         state.start_approval_pump(cx);
+        state.ensure_terminal_event_subscription(cx);
         state.init_mcp(cx);
         state
     }

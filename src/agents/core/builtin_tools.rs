@@ -287,7 +287,7 @@ impl Tool for RunInTerminalTool {
     }
 
     fn description(&self) -> &str {
-        "在右侧终端执行 shell 命令并实时显示输出。适用于运行代码、执行脚本、调用 CLI 工具等场景。"
+        "在右侧终端的独立 Shell tab 执行普通 shell 命令并显示输出。适用于查看目录、git 状态、运行脚本等非交互式命令；不要用它向 Claude/Codex/Gemini coding runtime 发送内容。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

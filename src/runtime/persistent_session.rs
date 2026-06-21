@@ -9,8 +9,10 @@ use anyhow::{anyhow, Result};
 use crate::run_log::{RunEvent, RunKind, RunRecorder, RunStatus};
 use crate::runtime::coding_supervisor::{
     capture_workspace_snapshot, diff_workspace_snapshot, CodingSupervisionRequest,
-    CodingSupervisorDecision, CodingSupervisorState, WorkspaceDelta, WorkspaceSnapshot,
+    CodingSupervisorDecision, CodingSupervisorOption, CodingSupervisorState, WorkspaceDelta,
+    WorkspaceSnapshot,
 };
+use crate::runtime::log_runtime_event;
 use crate::services::{default_coding_agents, CodingAgentConfig};
 use crate::terminal_emulator::TerminalEmulator;
 
@@ -223,6 +225,7 @@ pub(crate) struct PersistentCliSession {
     pub(crate) started_at: chrono::DateTime<chrono::Local>,
     pub(crate) last_active_at: chrono::DateTime<chrono::Local>,
     pub(crate) output_seq: u64,
+    pub(crate) terminal_output_seq: u64,
     pub(crate) terminal: Arc<Mutex<TerminalEmulator>>,
     pub(crate) git_baseline: Option<GitBaseline>,
     pub(crate) run_id: Option<usize>,
@@ -386,16 +389,6 @@ impl PersistentCliSessionManager {
         }
 
         std::fs::create_dir_all(&cwd)?;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        let terminal = TerminalEmulator::new(Some(&shell), Some(&cwd), 100, 30).map_err(|e| {
-            anyhow!(
-                "failed to start shell {} for {}: {}",
-                shell,
-                command_line,
-                e
-            )
-        })?;
-
         self.next_session_seq += 1;
         let session_id = format!(
             "{}-{}-{}",
@@ -403,6 +396,22 @@ impl PersistentCliSessionManager {
             task_id,
             self.next_session_seq
         );
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        let terminal = TerminalEmulator::new_with_terminal_id(
+            session_id.clone(),
+            Some(&shell),
+            Some(&cwd),
+            100,
+            30,
+        )
+        .map_err(|e| {
+            anyhow!(
+                "failed to start shell {} for {}: {}",
+                shell,
+                command_line,
+                e
+            )
+        })?;
         let baseline = if write_mode {
             Some(read_git_baseline(&cwd))
         } else {
@@ -453,6 +462,7 @@ impl PersistentCliSessionManager {
             started_at: now,
             last_active_at: now,
             output_seq: 0,
+            terminal_output_seq: 0,
             terminal: terminal.clone(),
             git_baseline: baseline,
             run_id,
@@ -640,83 +650,196 @@ impl PersistentCliSessionManager {
         ))
     }
 
-    pub(crate) fn collect_supervision_requests(
+    pub(crate) fn handle_terminal_output_changed(
         &mut self,
         db_conn: &sqlez::connection::Connection,
-        limit: usize,
-    ) -> Vec<CodingSupervisionRequest> {
-        let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
-        let mut requests = Vec::new();
-        for session_id in session_ids {
-            self.refresh_session_status(db_conn, &session_id);
-            let Some(session) = self.sessions.get(&session_id) else {
-                continue;
-            };
-            if !session.status.is_active() || session.supervisor_in_flight {
-                continue;
-            }
-            let Some(turn) = session.active_turn.clone() else {
-                continue;
-            };
-            if matches!(
-                turn.status,
-                CodingTaskTurnStatus::Completed | CodingTaskTurnStatus::Failed
-            ) {
-                continue;
-            }
-            let lines = match session.terminal.lock() {
-                Ok(terminal) => {
-                    let mut lines = terminal.screen_text_lines();
-                    lines.retain(|line| !line.trim().is_empty());
-                    if lines.len() > limit {
-                        lines.split_off(lines.len() - limit)
-                    } else {
-                        lines
-                    }
-                }
-                Err(_) => continue,
-            };
-            if lines.is_empty() {
-                continue;
-            }
-            let workspace_delta = session
-                .active_turn
-                .as_ref()
-                .and_then(|turn| turn.workspace_baseline.as_ref())
-                .map(|baseline| {
-                    let current = capture_workspace_snapshot(&session.cwd);
-                    diff_workspace_snapshot(baseline, &current)
-                })
-                .unwrap_or_else(|| WorkspaceDelta {
-                    added: Vec::new(),
-                    modified: Vec::new(),
-                    deleted: Vec::new(),
-                });
-            let fingerprint = supervision_fingerprint(
-                &session.session_id,
-                session.output_seq,
-                &lines,
-                &workspace_delta.describe(),
+        terminal_id: &str,
+        seq: u64,
+    ) -> Option<crate::runtime::RuntimeEvent> {
+        self.refresh_session_status(db_conn, terminal_id);
+        let Some(session) = self.sessions.get_mut(terminal_id) else {
+            log_runtime_event(
+                "coding.output_changed",
+                format!(
+                    "terminal_id={} seq={} ignored reason=session_not_found",
+                    terminal_id, seq
+                ),
             );
-            if session.last_supervised_fingerprint.as_deref() == Some(fingerprint.as_str()) {
-                continue;
-            }
-            let request = CodingSupervisionRequest {
-                session_id: session.session_id.clone(),
-                turn_id: turn.turn_id,
-                agent_label: session.agent_kind.label().to_string(),
-                cwd: turn.cwd,
-                submitted_task: turn.submitted_task,
-                terminal_transcript: lines,
-                workspace_delta,
-                fingerprint: fingerprint.clone(),
-            };
-            if let Some(session) = self.sessions.get_mut(&session_id) {
-                session.supervisor_in_flight = true;
-            }
-            requests.push(request);
+            return None;
+        };
+        if seq <= session.terminal_output_seq {
+            log_runtime_event(
+                "coding.output_changed",
+                format!(
+                    "terminal_id={} seq={} ignored reason=stale previous_seq={}",
+                    terminal_id, seq, session.terminal_output_seq
+                ),
+            );
+            return None;
         }
-        requests
+        session.terminal_output_seq = seq;
+        if !session.status.is_active() {
+            log_runtime_event(
+                "coding.output_changed",
+                format!(
+                    "terminal_id={} seq={} ignored reason=session_not_active status={}",
+                    terminal_id,
+                    seq,
+                    session.status_label()
+                ),
+            );
+            return None;
+        }
+        log_runtime_event(
+            "coding.output_changed",
+            format!(
+                "terminal_id={} session_id={} task_id={} seq={} emitted=true",
+                terminal_id, session.session_id, session.task_id, seq
+            ),
+        );
+        Some(crate::runtime::RuntimeEvent::CodingOutputChanged {
+            session_id: session.session_id.clone(),
+            task_id: session.task_id,
+            seq,
+        })
+    }
+
+    pub(crate) fn collect_supervision_request_for_session(
+        &mut self,
+        db_conn: &sqlez::connection::Connection,
+        session_id: &str,
+        limit: usize,
+    ) -> Option<CodingSupervisionRequest> {
+        self.refresh_session_status(db_conn, session_id);
+        let Some(session) = self.sessions.get(session_id) else {
+            log_runtime_event(
+                "supervision.collect",
+                format!("session_id={} skipped reason=session_not_found", session_id),
+            );
+            return None;
+        };
+        if !session.status.is_active() || session.supervisor_in_flight {
+            log_runtime_event(
+                "supervision.collect",
+                format!(
+                    "session_id={} skipped reason={} status={} in_flight={}",
+                    session_id,
+                    if !session.status.is_active() {
+                        "not_active"
+                    } else {
+                        "in_flight"
+                    },
+                    session.status_label(),
+                    session.supervisor_in_flight
+                ),
+            );
+            return None;
+        }
+        let Some(turn) = session.active_turn.clone() else {
+            log_runtime_event(
+                "supervision.collect",
+                format!("session_id={} skipped reason=no_active_turn", session_id),
+            );
+            return None;
+        };
+        if matches!(
+            turn.status,
+            CodingTaskTurnStatus::Completed | CodingTaskTurnStatus::Failed
+        ) {
+            log_runtime_event(
+                "supervision.collect",
+                format!(
+                    "session_id={} skipped reason=turn_done turn_id={} turn_status={:?}",
+                    session_id, turn.turn_id, turn.status
+                ),
+            );
+            return None;
+        }
+        let lines = match session.terminal.lock() {
+            Ok(terminal) => {
+                let mut lines = terminal.screen_text_lines();
+                lines.retain(|line| !line.trim().is_empty());
+                if lines.len() > limit {
+                    lines.split_off(lines.len() - limit)
+                } else {
+                    lines
+                }
+            }
+            Err(_) => {
+                log_runtime_event(
+                    "supervision.collect",
+                    format!(
+                        "session_id={} skipped reason=terminal_lock_poisoned",
+                        session_id
+                    ),
+                );
+                return None;
+            }
+        };
+        if lines.is_empty() {
+            log_runtime_event(
+                "supervision.collect",
+                format!(
+                    "session_id={} skipped reason=empty_terminal_lines",
+                    session_id
+                ),
+            );
+            return None;
+        }
+        let workspace_delta = session
+            .active_turn
+            .as_ref()
+            .and_then(|turn| turn.workspace_baseline.as_ref())
+            .map(|baseline| {
+                let current = capture_workspace_snapshot(&session.cwd);
+                diff_workspace_snapshot(baseline, &current)
+            })
+            .unwrap_or_else(|| WorkspaceDelta {
+                added: Vec::new(),
+                modified: Vec::new(),
+                deleted: Vec::new(),
+            });
+        let fingerprint = supervision_fingerprint(
+            &session.session_id,
+            session.output_seq,
+            &lines,
+            &workspace_delta.describe(),
+        );
+        if session.last_supervised_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+            log_runtime_event(
+                "supervision.collect",
+                format!(
+                    "session_id={} skipped reason=same_fingerprint fingerprint={}",
+                    session_id, fingerprint
+                ),
+            );
+            return None;
+        }
+        let request = CodingSupervisionRequest {
+            session_id: session.session_id.clone(),
+            turn_id: turn.turn_id,
+            agent_label: session.agent_kind.label().to_string(),
+            cwd: turn.cwd,
+            submitted_task: turn.submitted_task,
+            terminal_transcript: lines,
+            workspace_delta,
+            fingerprint: fingerprint.clone(),
+        };
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.supervisor_in_flight = true;
+        }
+        log_runtime_event(
+            "supervision.collect",
+            format!(
+                "session_id={} turn_id={} collected=true lines={} fingerprint={} workspace_delta={}",
+                request.session_id,
+                request.turn_id,
+                request.terminal_transcript.len(),
+                request.fingerprint,
+                request.workspace_delta.describe()
+            ),
+        );
+        Some(request)
     }
 
     pub(crate) fn apply_supervision_decision(
@@ -727,20 +850,69 @@ impl PersistentCliSessionManager {
         let session = self.sessions.get_mut(&request.session_id)?;
         session.supervisor_in_flight = false;
         session.last_supervised_fingerprint = Some(request.fingerprint.clone());
+        log_runtime_event(
+            "supervision.apply",
+            format!(
+                "session_id={} turn_id={} decision_state={:?} confidence={} fingerprint={}",
+                request.session_id,
+                request.turn_id,
+                decision.state,
+                decision.confidence,
+                request.fingerprint
+            ),
+        );
         if decision.confidence < 60 {
+            log_runtime_event(
+                "supervision.apply",
+                format!(
+                    "session_id={} turn_id={} ignored reason=low_confidence confidence={}",
+                    request.session_id, request.turn_id, decision.confidence
+                ),
+            );
             return None;
         }
+        let decision = Self::terminal_user_action_override(session, &request.turn_id, decision);
         let Some(turn) = session.active_turn.as_mut() else {
+            log_runtime_event(
+                "supervision.apply",
+                format!(
+                    "session_id={} turn_id={} ignored reason=no_active_turn",
+                    request.session_id, request.turn_id
+                ),
+            );
             return None;
         };
         if turn.turn_id != request.turn_id {
+            log_runtime_event(
+                "supervision.apply",
+                format!(
+                    "session_id={} request_turn_id={} ignored reason=turn_changed active_turn_id={}",
+                    request.session_id, request.turn_id, turn.turn_id
+                ),
+            );
             return None;
         }
         match decision.state {
-            CodingSupervisorState::Running | CodingSupervisorState::Unclear => None,
+            CodingSupervisorState::Running | CodingSupervisorState::Unclear => {
+                log_runtime_event(
+                    "supervision.apply",
+                    format!(
+                        "session_id={} turn_id={} applied=none state={:?}",
+                        request.session_id, request.turn_id, decision.state
+                    ),
+                );
+                None
+            }
             CodingSupervisorState::WaitingUser => {
                 let action_id = semantic_action_id(&request.turn_id, &decision);
                 if turn.waiting_notified_ids.contains(&action_id) {
+                    log_runtime_event(
+                        "supervision.apply",
+                        format!(
+                            "session_id={} turn_id={} applied=none reason=duplicate_waiting action_id={}",
+                            request.session_id, request.turn_id, action_id
+                        ),
+                    );
                     return None;
                 }
                 session.status = PersistentSessionStatus::WaitingInput;
@@ -751,6 +923,17 @@ impl PersistentCliSessionManager {
                 turn.waiting_action_outside_cwd =
                     target_outside_cwd(&decision.target, &request.cwd).unwrap_or(false);
                 turn.waiting_notified_ids.insert(action_id);
+                log_runtime_event(
+                    "supervision.apply",
+                    format!(
+                        "session_id={} turn_id={} applied=waiting_user action_kind={} target={} outside_cwd={}",
+                        request.session_id,
+                        request.turn_id,
+                        decision.action_kind,
+                        decision.target,
+                        turn.waiting_action_outside_cwd
+                    ),
+                );
                 Some(CodingSessionNotification::UserAction {
                     task_id: session.task_id,
                     message: format_waiting_user_message(
@@ -762,6 +945,13 @@ impl PersistentCliSessionManager {
             }
             CodingSupervisorState::Completed => {
                 if turn.completed_notified {
+                    log_runtime_event(
+                        "supervision.apply",
+                        format!(
+                            "session_id={} turn_id={} applied=none reason=duplicate_completed",
+                            request.session_id, request.turn_id
+                        ),
+                    );
                     return None;
                 }
                 session.status = PersistentSessionStatus::Idle;
@@ -781,6 +971,15 @@ impl PersistentCliSessionManager {
                 if release_write_owner {
                     self.workspace_write_owner.remove(&session.workspace_id);
                 }
+                log_runtime_event(
+                    "supervision.apply",
+                    format!(
+                        "session_id={} turn_id={} applied=completed artifacts={}",
+                        request.session_id,
+                        request.turn_id,
+                        turn.artifacts.join("|")
+                    ),
+                );
                 Some(CodingSessionNotification::Completed {
                     task_id: session.task_id,
                     message: format_completed_message(session.agent_kind.label(), turn),
@@ -789,13 +988,30 @@ impl PersistentCliSessionManager {
             CodingSupervisorState::Failed => {
                 let failure_id = semantic_failure_id(&request.turn_id, &decision);
                 if turn.failed_notified_ids.contains(&failure_id) {
+                    log_runtime_event(
+                        "supervision.apply",
+                        format!(
+                            "session_id={} turn_id={} applied=none reason=duplicate_failed failure_id={}",
+                            request.session_id, request.turn_id, failure_id
+                        ),
+                    );
                     return None;
                 }
                 session.status = PersistentSessionStatus::Failed;
                 turn.status = CodingTaskTurnStatus::Failed;
-                turn.failed_notified_ids.insert(failure_id);
+                turn.failed_notified_ids.insert(failure_id.clone());
                 session.last_error =
                     Some(format_failed_message(session.agent_kind.label(), &decision));
+                log_runtime_event(
+                    "supervision.apply",
+                    format!(
+                        "session_id={} turn_id={} applied=failed failure_id={} risks={}",
+                        request.session_id,
+                        request.turn_id,
+                        failure_id,
+                        decision.risks.join("|")
+                    ),
+                );
                 Some(CodingSessionNotification::Failed {
                     task_id: session.task_id,
                     message: session.last_error.clone().unwrap_or_else(|| {
@@ -806,6 +1022,86 @@ impl PersistentCliSessionManager {
                     }),
                 })
             }
+        }
+    }
+
+    fn terminal_user_action_override(
+        session: &PersistentCliSession,
+        turn_id: &str,
+        decision: CodingSupervisorDecision,
+    ) -> CodingSupervisorDecision {
+        if !matches!(
+            decision.state,
+            CodingSupervisorState::Failed | CodingSupervisorState::Completed
+        ) {
+            return decision;
+        }
+        let lines = match session.terminal.lock() {
+            Ok(terminal) => {
+                let mut lines = terminal.screen_text_lines();
+                lines.retain(|line| !line.trim().is_empty());
+                if lines.len() > 120 {
+                    lines.split_off(lines.len() - 120)
+                } else {
+                    lines
+                }
+            }
+            Err(_) => {
+                log_runtime_event(
+                    "supervision.guard",
+                    format!(
+                        "session_id={} turn_id={} skipped reason=terminal_lock_poisoned decision_state={:?}",
+                        session.session_id, turn_id, decision.state
+                    ),
+                );
+                return decision;
+            }
+        };
+        let inspection = inspect_terminal_lines(session, lines);
+        log_runtime_event(
+            "supervision.guard",
+            format!(
+                "session_id={} turn_id={} decision_state={:?} terminal_kind={} terminal_status={} fingerprint={}",
+                session.session_id,
+                turn_id,
+                decision.state,
+                inspection.kind,
+                inspection.status,
+                inspection.fingerprint.clone().unwrap_or_default()
+            ),
+        );
+        if !requires_user_action(&inspection.kind) {
+            return decision;
+        }
+        let action_id = inspection
+            .fingerprint
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", inspection.kind, inspection.summary));
+        let target = if decision.target.trim().is_empty() {
+            inspection.summary.clone()
+        } else {
+            decision.target.clone()
+        };
+        let action_kind = terminal_inspection_action_kind(&inspection.kind).to_string();
+        let options = terminal_inspection_options(&inspection.kind);
+        log_runtime_event(
+            "supervision.guard",
+            format!(
+                "session_id={} turn_id={} override=true from={:?} to=WaitingUser kind={} target={}",
+                session.session_id, turn_id, decision.state, inspection.kind, target
+            ),
+        );
+        CodingSupervisorDecision {
+            state: CodingSupervisorState::WaitingUser,
+            confidence: 100,
+            action_id,
+            action_kind,
+            target,
+            options,
+            completion_id: String::new(),
+            failure_id: String::new(),
+            artifacts: Vec::new(),
+            risks: Vec::new(),
         }
     }
 
@@ -1453,6 +1749,36 @@ fn requires_user_action(kind: &str) -> bool {
     )
 }
 
+fn terminal_inspection_action_kind(kind: &str) -> &str {
+    match kind {
+        "auth_required" => "auth",
+        "trust_required" => "trust",
+        "permission_required" => "permission",
+        "choice_required" => "menu",
+        _ => "other",
+    }
+}
+
+fn terminal_inspection_options(kind: &str) -> Vec<CodingSupervisorOption> {
+    match kind {
+        "choice_required" | "permission_required" | "trust_required" => vec![
+            CodingSupervisorOption {
+                label: "允许这一次".to_string(),
+                terminal_input: "1".to_string(),
+            },
+            CodingSupervisorOption {
+                label: "本次会话后续类似操作都允许".to_string(),
+                terminal_input: "2".to_string(),
+            },
+            CodingSupervisorOption {
+                label: "拒绝这次操作".to_string(),
+                terminal_input: "3".to_string(),
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
 fn map_user_message_to_choice(message: &str) -> Option<String> {
     let normalized = message
         .trim()
@@ -1739,7 +2065,6 @@ fn tail_lines(lines: &[String], limit: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::coding_supervisor::CodingSupervisorOption;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2023,6 +2348,108 @@ mod tests {
         assert!(manager
             .apply_supervision_decision(&request, completed)
             .is_none());
+        manager.stop_session(&conn, &session_id).unwrap();
+    }
+
+    #[test]
+    fn supervisor_failed_is_overridden_when_terminal_waits_for_choice() {
+        let conn = temp_conn();
+        let cwd = temp_dir("failed-choice-guard");
+        let mut manager = PersistentCliSessionManager::new();
+        let session_id = manager
+            .start_session_with_program(
+                &conn,
+                31,
+                41,
+                test_provider("claude"),
+                "cat",
+                cwd.clone(),
+                true,
+                None,
+            )
+            .unwrap();
+        manager
+            .send_input(&conn, &session_id, "create register.html")
+            .unwrap();
+        {
+            let terminal = manager
+                .sessions
+                .get(&session_id)
+                .unwrap()
+                .terminal
+                .lock()
+                .unwrap();
+            terminal.write(
+                b"Do you want to create register.html?\r\n1. Yes\r\n2. Yes, allow all edits during this session\r\n3. No\r\n",
+            );
+        }
+        let mut saw_choice = false;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let session = manager.sessions.get(&session_id).unwrap();
+            let lines = session.terminal.lock().unwrap().screen_text_lines();
+            if classify_terminal_lines(session.status, session.agent_kind.label(), &lines).1
+                == "choice_required"
+            {
+                saw_choice = true;
+                break;
+            }
+        }
+        assert!(saw_choice, "test terminal did not render the choice prompt");
+        let turn_id = manager
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.active_turn.as_ref())
+            .map(|turn| turn.turn_id.clone())
+            .unwrap();
+        let request = CodingSupervisionRequest {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            agent_label: "Claude".to_string(),
+            cwd,
+            submitted_task: "create register.html".to_string(),
+            terminal_transcript: vec![
+                "Do you want to create register.html?".to_string(),
+                "1. Yes".to_string(),
+                "2. Yes, allow all edits during this session".to_string(),
+                "3. No".to_string(),
+            ],
+            workspace_delta: WorkspaceDelta {
+                added: Vec::new(),
+                modified: Vec::new(),
+                deleted: Vec::new(),
+            },
+            fingerprint: "fingerprint-choice-failed".to_string(),
+        };
+        let failed = CodingSupervisorDecision {
+            state: CodingSupervisorState::Failed,
+            confidence: 95,
+            action_id: String::new(),
+            action_kind: "create_file".to_string(),
+            target: "register.html".to_string(),
+            options: Vec::new(),
+            completion_id: String::new(),
+            failure_id: "no-workspace-delta".to_string(),
+            artifacts: Vec::new(),
+            risks: vec!["workspace_delta confirms no file changes occurred".to_string()],
+        };
+        let notification = manager
+            .apply_supervision_decision(&request, failed)
+            .unwrap();
+        match notification {
+            CodingSessionNotification::UserAction { message, .. } => {
+                assert!(message.contains("需要你确认"));
+                assert!(message.contains("register.html"));
+            }
+            _ => panic!("expected failed decision to be converted to user action"),
+        }
+        let session = manager.sessions.get(&session_id).unwrap();
+        assert_eq!(session.status, PersistentSessionStatus::WaitingInput);
+        assert_eq!(
+            session.active_turn.as_ref().unwrap().status,
+            CodingTaskTurnStatus::WaitingUser
+        );
+        assert!(session.last_error.is_none());
         manager.stop_session(&conn, &session_id).unwrap();
     }
 

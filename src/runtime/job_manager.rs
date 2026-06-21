@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gpui::Context;
 
 use super::events::{GeneralAiStreamEvent, OrchestratorWrapperEvent, SummarizeEvent};
+use super::terminal_events::{global_terminal_event_bus, RuntimeEvent};
 use crate::agents::core::factory::AgentFactory;
 use crate::agents::core::OrchestratorEvent;
 use crate::agents::types::RequestKind;
@@ -91,6 +92,12 @@ impl JobManager {
         self.general_ai_show_live_bubble = false;
         self.general_ai_live_text.clear();
     }
+}
+
+fn tail_text(text: &str, max_lines: usize) -> String {
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
 }
 
 impl AppState {
@@ -673,7 +680,9 @@ impl AppState {
                             OrchestratorEvent::RunInTerminal { command, work_dir } => {
                                 // 展开终端并执行命令
                                 this.terminal_visible = true;
+                                this.active_terminal_tab = crate::TerminalTab::Shell;
                                 let task_id = active_task_id.unwrap_or(0);
+                                let event_task_id = active_task_id;
                                 let backend = this.sandbox_backend.clone();
 
                                 let base_dir = active_task_id
@@ -706,6 +715,19 @@ impl AppState {
                                 } else {
                                     command.clone()
                                 };
+                                let command_id = format!(
+                                    "shell-{}-{}",
+                                    task_id,
+                                    chrono::Local::now()
+                                        .timestamp_nanos_opt()
+                                        .unwrap_or_default()
+                                );
+                                global_terminal_event_bus().publish(RuntimeEvent::ShellCommandStarted {
+                                    task_id: event_task_id,
+                                    command_id: command_id.clone(),
+                                    command: cmd.clone(),
+                                    cwd: project_dir.clone(),
+                                });
 
                                 // 先显示命令
                                 this.terminal_output.push(TerminalLine {
@@ -729,9 +751,32 @@ impl AppState {
                                     }).await;
 
                                     let output = match exec_result {
-                                        Ok(Ok(out)) => out,
-                                        Ok(Err(e)) => format!("Error: {}", e),
-                                        Err(e) => format!("Spawn error: {}", e),
+                                        Ok(Ok(out)) => {
+                                            global_terminal_event_bus().publish(RuntimeEvent::ShellCommandFinished {
+                                                task_id: event_task_id,
+                                                command_id: command_id.clone(),
+                                                output_tail: tail_text(&out, 120),
+                                            });
+                                            out
+                                        }
+                                        Ok(Err(e)) => {
+                                            let error = e.to_string();
+                                            global_terminal_event_bus().publish(RuntimeEvent::ShellCommandFailed {
+                                                task_id: event_task_id,
+                                                command_id: command_id.clone(),
+                                                error: error.clone(),
+                                            });
+                                            format!("Error: {}", error)
+                                        }
+                                        Err(e) => {
+                                            let error = e.to_string();
+                                            global_terminal_event_bus().publish(RuntimeEvent::ShellCommandFailed {
+                                                task_id: event_task_id,
+                                                command_id: command_id.clone(),
+                                                error: error.clone(),
+                                            });
+                                            format!("Spawn error: {}", error)
+                                        }
                                     };
 
                                     let _ = this.update(cx, |this, cx| {

@@ -80,7 +80,7 @@ impl AppState {
         match start_result {
             Ok(session_id) => {
                 self.terminal_visible = true;
-                self.terminal_output.clear();
+                self.active_terminal_tab = crate::TerminalTab::Coding;
                 self.terminal_scroll_handle.scroll_to_bottom();
                 self.terminal_refresh_generation = self.terminal_refresh_generation.wrapping_add(1);
                 self.terminal_refresh_running = false;

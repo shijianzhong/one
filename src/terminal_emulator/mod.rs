@@ -5,17 +5,22 @@
 pub mod mappings;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
+use alacritty_terminal::event_loop::{EventLoopSender, Msg};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::tty::{self, Options as PtyOptions, Shell};
 use anyhow::{Context, Result};
 use log::info;
+
+use crate::runtime::{
+    global_terminal_event_bus, log_runtime_event, RuntimeEvent, TerminalEventBus,
+};
 
 /// 可渲染的终端中的一行
 pub struct RenderLine {
@@ -61,6 +66,9 @@ impl From<&TermSize> for alacritty_terminal::event::WindowSize {
 /// 事件监听器
 struct TerminalListener {
     tx: mpsc::Sender<TerminalEvent>,
+    terminal_id: String,
+    output_seq: Arc<AtomicU64>,
+    event_bus: Arc<TerminalEventBus>,
 }
 
 enum TerminalEvent {
@@ -71,8 +79,39 @@ enum TerminalEvent {
 impl EventListener for TerminalListener {
     fn send_event(&self, event: Event) {
         let ev = match event {
-            Event::Exit => TerminalEvent::Exited,
-            Event::Title(t) => TerminalEvent::Title(t),
+            Event::Wakeup => {
+                let seq = self.output_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                log_runtime_event(
+                    "terminal.raw_output_changed",
+                    format!("terminal_id={} seq={}", self.terminal_id, seq),
+                );
+                self.event_bus.publish(RuntimeEvent::TerminalOutputChanged {
+                    terminal_id: self.terminal_id.clone(),
+                    seq,
+                });
+                return;
+            }
+            Event::Exit | Event::ChildExit(_) => {
+                log_runtime_event(
+                    "terminal.exited",
+                    format!("terminal_id={}", self.terminal_id),
+                );
+                self.event_bus.publish(RuntimeEvent::TerminalExited {
+                    terminal_id: self.terminal_id.clone(),
+                });
+                TerminalEvent::Exited
+            }
+            Event::Title(t) => {
+                log_runtime_event(
+                    "terminal.title_changed",
+                    format!("terminal_id={} title={}", self.terminal_id, t),
+                );
+                self.event_bus.publish(RuntimeEvent::TerminalTitleChanged {
+                    terminal_id: self.terminal_id.clone(),
+                    title: t.clone(),
+                });
+                TerminalEvent::Title(t)
+            }
             _ => return,
         };
         let _ = self.tx.send(ev);
@@ -91,30 +130,38 @@ pub struct TerminalEmulator {
 }
 
 impl TerminalEmulator {
-    pub fn new(
+    pub fn new_with_terminal_id(
+        terminal_id: impl Into<String>,
         shell: Option<&str>,
         working_dir: Option<&Path>,
         cols: usize,
         rows: usize,
     ) -> Result<Self> {
-        Self::new_with_args(shell, &[], working_dir, cols, rows)
+        Self::new_with_args_and_terminal_id(terminal_id, shell, &[], working_dir, cols, rows)
     }
 
-    pub fn new_with_args(
+    pub fn new_with_args_and_terminal_id(
+        terminal_id: impl Into<String>,
         shell: Option<&str>,
         args: &[String],
         working_dir: Option<&Path>,
         cols: usize,
         rows: usize,
     ) -> Result<Self> {
+        let terminal_id = terminal_id.into();
         let size = TermSize { cols, rows };
         let (event_tx, event_rx) = mpsc::channel();
+        let output_seq = Arc::new(AtomicU64::new(0));
+        let event_bus = global_terminal_event_bus();
 
         let term = Term::new(
             alacritty_terminal::term::Config::default(),
             &size,
             TerminalListener {
                 tx: event_tx.clone(),
+                terminal_id: terminal_id.clone(),
+                output_seq: output_seq.clone(),
+                event_bus: event_bus.clone(),
             },
         );
         let term = Arc::new(FairMutex::new(term));
@@ -135,7 +182,12 @@ impl TerminalEmulator {
 
         let event_loop = alacritty_terminal::event_loop::EventLoop::new(
             term.clone(),
-            TerminalListener { tx: event_tx },
+            TerminalListener {
+                tx: event_tx,
+                terminal_id: terminal_id.clone(),
+                output_seq,
+                event_bus,
+            },
             pty,
             false,
             false,

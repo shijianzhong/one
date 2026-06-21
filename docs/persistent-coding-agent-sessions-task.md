@@ -353,6 +353,9 @@
 - [x] 清理本机迁移后的 L3 历史片段中明确指向 `~/Desktop` 的旧 coding 输出，避免检索上下文继续诱导 Claude 写到桌面。
 - [x] Claude 待确认目标路径如果不在当前 runtime cwd/workspace 内，MainAgent 不再直接代发确认；会提示这是越界操作并要求用户明确改回 workspace 或显式授权外部路径。
 - [x] 启动/发送 coding runtime 的聊天区文案去技术化，不再默认显示 session id。
+- [x] 右侧终端区区分 `Shell` 与 `Coding` tab：普通 `run_in_terminal` 命令切到独立 Shell tab，不再覆盖或混入 Claude/Codex/Gemini 的持久 coding runtime。
+- [x] 移除终端顶部固定 Claude/Codex 启动按钮；终端顶部改为已有会话 tab 与当前 coding runtime 的 Stop，避免把 provider 启动入口误解成终端会话。
+- [x] MainAgent prompt 与 `run_in_terminal` 工具描述同步更新：普通 shell 命令不得发送到 coding runtime，必须走 Shell tab。
 - [x] 终端刷新循环只收集 supervision request，异步调用 supervisor；聊天区只在需要用户交互、任务完成或失败时得到中间人式反馈。
 - [x] 识别 Claude Code 编号确认提示，例如 `Do you want to create index.html? 1. Yes 2. Yes, allow all edits ... 3. No`。
 - [x] 对重复的登录/信任/权限/编号选择提示做 session 级 fingerprint 去重，避免聊天区重复提醒同一个问题。
@@ -381,7 +384,7 @@
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test agent_runtime`，2 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test persistent_session`，13 passed。
 - [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test tool_dispatcher`，10 passed。
-- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，124 passed。
+- [x] `ONE_MEMORY_DIR=/private/tmp/one-memory-test cargo test`，125 passed。
 
 ## 当前暂存任务
 

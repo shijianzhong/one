@@ -11,6 +11,7 @@ pub struct Workspace {
     pub path: PathBuf,
     pub tasks: Vec<TaskItem>,
     pub expanded: bool,
+    pub default_task_id: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

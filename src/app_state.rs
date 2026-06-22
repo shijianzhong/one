@@ -49,6 +49,13 @@ pub(crate) struct ToastInfo {
     pub(crate) message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowEditState {
+    pub(crate) dirty: bool,
+    pub(crate) reason: String,
+    pub(crate) last_error: Option<String>,
+}
+
 pub(crate) struct AppState {
     pub(crate) db: task_db::Database,
     pub(crate) workspaces: Vec<Workspace>,
@@ -64,6 +71,10 @@ pub(crate) struct AppState {
     pub(crate) capabilities_tab: CapabilitiesTab,
     pub(crate) capability_run_inputs: HashMap<String, String>,
     pub(crate) editing_workflow_id: Option<String>,
+    pub(crate) selected_workflow_id: Option<String>,
+    pub(crate) selected_workflow_node_id: Option<String>,
+    pub(crate) workflow_edit_states: HashMap<String, WorkflowEditState>,
+    pub(crate) workflow_node_run_statuses: HashMap<String, HashMap<String, String>>,
     pub(crate) workflow_edit_json: String,
     pub(crate) expanded_workflow_run_id: Option<usize>,
     pub(crate) capability_import_json: String,
@@ -291,6 +302,8 @@ impl AppState {
     pub(crate) fn new(_window: &mut Window, cx: &mut Context<Self>, config: Config) -> Self {
         let db = task_db::Database::new().expect("Failed to initialize database");
         let theme_mode = config.theme_mode;
+        let last_workspace_id = config.last_workspace_id;
+        let last_task_id = config.last_task_id;
         set_theme_mode(theme_mode);
 
         let workspaces = {
@@ -318,6 +331,7 @@ impl AppState {
                         path: PathBuf::from(w.path),
                         tasks,
                         expanded: w.expanded,
+                        default_task_id: w.default_task_id,
                     }
                 })
                 .collect()
@@ -338,6 +352,10 @@ impl AppState {
             capabilities_tab: CapabilitiesTab::Library,
             capability_run_inputs: HashMap::new(),
             editing_workflow_id: None,
+            selected_workflow_id: None,
+            selected_workflow_node_id: None,
+            workflow_edit_states: HashMap::new(),
+            workflow_node_run_statuses: HashMap::new(),
             workflow_edit_json: String::new(),
             expanded_workflow_run_id: None,
             capability_import_json: String::new(),
@@ -403,9 +421,12 @@ impl AppState {
                 path: state.default_work_dir.clone(),
                 tasks: vec![],
                 expanded: true,
+                default_task_id: None,
             };
             state.workspaces.push(default_ws);
         }
+
+        state.restore_last_open_task(last_workspace_id, last_task_id);
 
         state.start_approval_pump(cx);
         state.ensure_terminal_event_subscription(cx);
@@ -642,6 +663,7 @@ impl AppState {
             path,
             tasks: vec![],
             expanded: true,
+            default_task_id: None,
         };
         self.workspaces.push(workspace);
         self.active_workspace_id = Some(id);
@@ -675,6 +697,69 @@ impl AppState {
             let _ = self.ensure_task_storage_dir(workspace_id, draft_id, &title);
         }
         Some(draft_id)
+    }
+
+    pub(crate) fn select_task(&mut self, workspace_id: usize, task_id: Option<usize>) {
+        self.active_workspace_id = Some(workspace_id);
+        self.active_task_id = task_id;
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) {
+            ws.default_task_id = task_id;
+        }
+        let _ = task_db::update_workspace_default_task(&self.db.conn, workspace_id, task_id);
+        self.persist_last_open_task(workspace_id, task_id);
+        self.restore_task_context();
+    }
+
+    fn persist_last_open_task(&self, workspace_id: usize, task_id: Option<usize>) {
+        let mut config = crate::services::load_config();
+        config.last_workspace_id = Some(workspace_id);
+        config.last_task_id = task_id;
+        if let Err(error) = crate::services::save_config(&config) {
+            eprintln!("Failed to save last open task: {}", error);
+        }
+    }
+
+    fn restore_last_open_task(
+        &mut self,
+        last_workspace_id: Option<usize>,
+        last_task_id: Option<usize>,
+    ) {
+        let workspace_index = last_workspace_id
+            .and_then(|workspace_id| {
+                self.workspaces
+                    .iter()
+                    .position(|workspace| workspace.id == workspace_id)
+            })
+            .filter(|workspace_index| {
+                last_task_id.is_none_or(|task_id| {
+                    self.workspaces[*workspace_index]
+                        .tasks
+                        .iter()
+                        .any(|task| task.id == task_id)
+                })
+            })
+            .or_else(|| {
+                self.workspaces.iter().position(|workspace| {
+                    workspace.default_task_id.is_some_and(|task_id| {
+                        workspace.tasks.iter().any(|task| task.id == task_id)
+                    })
+                })
+            });
+
+        let Some(workspace_index) = workspace_index else {
+            return;
+        };
+        let workspace_id = self.workspaces[workspace_index].id;
+        let task_id = if last_workspace_id == Some(workspace_id) {
+            last_task_id
+        } else {
+            self.workspaces[workspace_index].default_task_id
+        };
+        self.active_workspace_id = Some(workspace_id);
+        self.active_task_id = task_id;
+        self.workspaces[workspace_index].expanded = true;
+        let _ = task_db::update_workspace_expanded(&self.db.conn, workspace_id, true);
+        self.restore_task_context();
     }
 
     pub(crate) fn stop_preview_process(&mut self) {
@@ -1304,20 +1389,19 @@ impl AppState {
     pub(crate) fn handle_new_workspace_click(&mut self, cx: &mut Context<Self>) {
         if let Some((path, name)) = util::pick_folder_dialog() {
             if let Some(existing_ws) = self.workspaces.iter().find(|w| w.path == path) {
-                self.active_workspace_id = Some(existing_ws.id);
-                self.active_task_id = existing_ws
-                    .tasks
-                    .iter()
-                    .find(|t| t.is_draft)
-                    .map(|t| t.id)
+                let ws_id = existing_ws.id;
+                let task_id = existing_ws
+                    .default_task_id
+                    .filter(|id| existing_ws.tasks.iter().any(|task| task.id == *id))
+                    .or_else(|| existing_ws.tasks.iter().find(|t| t.is_draft).map(|t| t.id))
                     .or_else(|| existing_ws.tasks.first().map(|t| t.id));
-                self.restore_task_context();
+                self.select_task(ws_id, task_id);
                 cx.notify();
             } else {
                 self.add_workspace(path, name);
                 if let Some(ws_id) = self.active_workspace_id {
-                    self.active_task_id = self.ensure_workspace_draft_task(ws_id);
-                    self.restore_task_context();
+                    let task_id = self.ensure_workspace_draft_task(ws_id);
+                    self.select_task(ws_id, task_id);
                     cx.notify();
                 }
             }
@@ -1332,6 +1416,7 @@ impl AppState {
                 path: self.default_work_dir.clone(),
                 tasks: vec![],
                 expanded: true,
+                default_task_id: None,
             };
             self.workspaces.push(default_ws);
         }

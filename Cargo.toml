@@ -46,6 +46,10 @@ bcrypt = "0.19.1"
 [features]
 default = []
 sandbox = ["bollard"]
+workflow-webview = ["dep:wry"]
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry = { version = "0.53", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_linux = { path = "vendor/zed/crates/gpui_linux" }

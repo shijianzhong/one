@@ -4,6 +4,7 @@ use sqlez::{connection::Connection, statement::Statement};
 use crate::task_db::{ensure_workflow_tables, upsert_capability, CapabilityRow};
 
 use super::definition::{WorkflowDefinition, WorkflowStatus};
+use super::publish_validation::validate_publish_ready;
 
 #[derive(Debug, Clone)]
 pub struct WorkflowSummary {
@@ -256,6 +257,7 @@ impl<'a> WorkflowStore<'a> {
         if capability_name.trim().is_empty() {
             anyhow::bail!("capability name cannot be empty");
         }
+        validate_publish_ready(&definition)?;
 
         definition.status = WorkflowStatus::Published;
         let definition_json = serde_json::to_string(&definition)
@@ -395,9 +397,16 @@ mod tests {
     fn publishes_workflow_as_enabled_capability() {
         let conn = test_conn();
         let store = WorkflowStore::new(&conn).unwrap();
-        store
+        let mut definition = store
             .create_draft("workflow.research", "Research Workflow")
             .unwrap();
+        definition.nodes.push(WorkflowNode {
+            id: "output".to_string(),
+            name: "Output".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "ok": true } }),
+        });
+        store.save_draft(&definition).unwrap();
 
         store
             .publish_as_capability(
@@ -416,6 +425,58 @@ mod tests {
         assert_eq!(capabilities[0].id, "research_brief");
         assert_eq!(capabilities[0].workflow_id, "workflow.research");
         assert_eq!(capabilities[0].workflow_version, 1);
+    }
+
+    #[test]
+    fn published_version_snapshot_is_not_changed_by_later_draft_import() {
+        let conn = test_conn();
+        let store = WorkflowStore::new(&conn).unwrap();
+        let mut definition = store
+            .create_draft("workflow.snapshot", "Snapshot Workflow")
+            .unwrap();
+        definition.nodes.push(WorkflowNode {
+            id: "output".to_string(),
+            name: "Output".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "version": 1 } }),
+        });
+        store.save_draft(&definition).unwrap();
+
+        store
+            .publish_as_capability(
+                "workflow.snapshot",
+                "snapshot_capability",
+                "Snapshot Capability",
+                "Snapshot test",
+            )
+            .unwrap();
+
+        let mut later_draft = definition.clone();
+        later_draft.status = WorkflowStatus::Draft;
+        later_draft.version = 2;
+        later_draft.nodes[0].config = serde_json::json!({ "value": { "version": 2 } });
+        store.import_definition(&later_draft).unwrap();
+
+        let active = store.load("workflow.snapshot").unwrap().unwrap();
+        assert_eq!(active.version, 2);
+        assert_eq!(active.nodes[0].config["value"]["version"], 2);
+
+        let published_v1 = store.load_version("workflow.snapshot", 1).unwrap().unwrap();
+        assert_eq!(published_v1.status, WorkflowStatus::Published);
+        assert_eq!(published_v1.version, 1);
+        assert_eq!(published_v1.nodes[0].config["value"]["version"], 1);
+
+        let manifest = crate::task_db::load_enabled_capabilities(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|capability| capability.id == "snapshot_capability")
+            .unwrap();
+        let capability_definition = store
+            .load_active_or_version(&manifest.workflow_id, manifest.workflow_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(capability_definition.version, 1);
+        assert_eq!(capability_definition.nodes[0].config["value"]["version"], 1);
     }
 
     #[test]

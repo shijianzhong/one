@@ -30,6 +30,10 @@ pub struct Config {
     /// Telegram 绑定的时间
     #[serde(default)]
     pub telegram_bound_at: Option<String>,
+    #[serde(default)]
+    pub last_workspace_id: Option<usize>,
+    #[serde(default)]
+    pub last_task_id: Option<usize>,
     /// 可用的持久 coding CLI provider。
     /// 留空时使用默认 claude/codex。
     #[serde(default = "default_coding_agents")]
@@ -90,6 +94,8 @@ impl Default for Config {
             telegram_bot_token: None,
             telegram_chat_id: None,
             telegram_bound_at: None,
+            last_workspace_id: None,
+            last_task_id: None,
             coding_agents: default_coding_agents(),
         }
     }
@@ -120,4 +126,26 @@ pub fn save_config(config: &Config) -> anyhow::Result<()> {
     let content = serde_json::to_string_pretty(config)?;
     std::fs::write(&path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_last_open_fields_defaults_to_none() {
+        let raw = r#"{
+            "model_base_url": "https://api.openai.com/v1",
+            "model_api_key": "",
+            "model_name": "gpt-4",
+            "lang": "Zh",
+            "theme_mode": "Dark"
+        }"#;
+
+        let config: Config = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(config.last_workspace_id, None);
+        assert_eq!(config.last_task_id, None);
+        assert_eq!(config.coding_agents, default_coding_agents());
+    }
 }

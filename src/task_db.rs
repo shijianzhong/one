@@ -256,9 +256,8 @@ fn ensure_task_artifact_columns(conn: &Connection) -> Result<()> {
 }
 
 pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
-    let _ = (conn
-        .exec(
-            "CREATE TABLE IF NOT EXISTS workflows (
+    (conn.exec(
+        "CREATE TABLE IF NOT EXISTS workflows (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT,
@@ -268,12 +267,10 @@ pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )",
-        )
-        .unwrap())();
+    )?)()?;
 
-    let _ = (conn
-        .exec(
-            "CREATE TABLE IF NOT EXISTS workflow_versions (
+    (conn.exec(
+        "CREATE TABLE IF NOT EXISTS workflow_versions (
             id INTEGER PRIMARY KEY,
             workflow_id TEXT NOT NULL,
             version INTEGER NOT NULL,
@@ -282,21 +279,15 @@ pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workflow_id) REFERENCES workflows(id),
             UNIQUE(workflow_id, version)
         )",
-        )
-        .unwrap())();
+    )?)()?;
 
-    let _ = (conn
-        .exec("CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status)")
-        .unwrap())();
-    let _ = (conn
-        .exec(
-            "CREATE INDEX IF NOT EXISTS idx_workflow_versions_workflow_id ON workflow_versions(workflow_id)",
-        )
-        .unwrap())();
+    (conn.exec("CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status)")?)()?;
+    (conn.exec(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_versions_workflow_id ON workflow_versions(workflow_id)",
+    )?)()?;
 
-    let _ = (conn
-        .exec(
-            "CREATE TABLE IF NOT EXISTS workflow_runs (
+    (conn.exec(
+        "CREATE TABLE IF NOT EXISTS workflow_runs (
             id INTEGER PRIMARY KEY,
             workflow_id TEXT NOT NULL,
             workflow_version INTEGER NOT NULL,
@@ -306,12 +297,10 @@ pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             finished_at TIMESTAMP,
             FOREIGN KEY (workflow_id) REFERENCES workflows(id)
         )",
-        )
-        .unwrap())();
+    )?)()?;
 
-    let _ = (conn
-        .exec(
-            "CREATE TABLE IF NOT EXISTS workflow_run_events (
+    (conn.exec(
+        "CREATE TABLE IF NOT EXISTS workflow_run_events (
             id INTEGER PRIMARY KEY,
             run_id INTEGER NOT NULL,
             kind TEXT NOT NULL,
@@ -319,21 +308,17 @@ pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (run_id) REFERENCES workflow_runs(id)
         )",
-        )
-        .unwrap())();
+    )?)()?;
 
-    let _ = (conn
-        .exec("CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id)")
-        .unwrap())();
-    let _ = (conn
-        .exec(
-            "CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run_id ON workflow_run_events(run_id)",
-        )
-        .unwrap())();
+    (conn.exec(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id)",
+    )?)()?;
+    (conn.exec(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run_id ON workflow_run_events(run_id)",
+    )?)()?;
 
-    let _ = (conn
-        .exec(
-            "CREATE TABLE IF NOT EXISTS capabilities (
+    (conn.exec(
+        "CREATE TABLE IF NOT EXISTS capabilities (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT,
@@ -346,12 +331,9 @@ pub fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (workflow_id) REFERENCES workflows(id)
         )",
-        )
-        .unwrap())();
+    )?)()?;
 
-    let _ = (conn
-        .exec("CREATE INDEX IF NOT EXISTS idx_capabilities_enabled ON capabilities(enabled)")
-        .unwrap())();
+    (conn.exec("CREATE INDEX IF NOT EXISTS idx_capabilities_enabled ON capabilities(enabled)")?)()?;
 
     Ok(())
 }
@@ -754,6 +736,7 @@ pub struct WorkspaceRow {
     pub name: String,
     pub path: String,
     pub expanded: bool,
+    pub default_task_id: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -770,17 +753,25 @@ pub struct MessageRow {
 }
 
 pub fn load_workspaces(conn: &Connection) -> Result<Vec<WorkspaceRow>> {
-    let mut stmt = Statement::prepare(conn, "SELECT id, name, path, expanded FROM workspaces")?;
+    let mut stmt = Statement::prepare(
+        conn,
+        "SELECT id, name, path, expanded, COALESCE(default_task_id, 0) FROM workspaces",
+    )?;
     stmt.map(|s| {
         let id = s.column_int64(0)? as usize;
         let name = s.column_text(1)?.to_string();
         let path = s.column_text(2)?.to_string();
         let expanded = s.column_int64(3)? != 0;
+        let default_task_id = match s.column_int64(4).unwrap_or(0) {
+            id if id > 0 => Some(id as usize),
+            _ => None,
+        };
         Ok(WorkspaceRow {
             id,
             name,
             path,
             expanded,
+            default_task_id,
         })
     })
 }
@@ -965,6 +956,21 @@ pub fn update_workspace_expanded(
     let mut stmt = Statement::prepare(conn, "UPDATE workspaces SET expanded = ? WHERE id = ?")?;
     let expanded_i64 = expanded as i64;
     stmt.with_bindings(&(expanded_i64, workspace_id))?;
+    stmt.exec()?;
+    Ok(())
+}
+
+pub fn update_workspace_default_task(
+    conn: &Connection,
+    workspace_id: usize,
+    task_id: Option<usize>,
+) -> Result<()> {
+    let task_id_i64 = task_id.map(|id| id as i64).unwrap_or(0);
+    let mut stmt = Statement::prepare(
+        conn,
+        "UPDATE workspaces SET default_task_id = NULLIF(?, 0) WHERE id = ?",
+    )?;
+    stmt.with_bindings(&(task_id_i64, workspace_id))?;
     stmt.exec()?;
     Ok(())
 }
@@ -1426,6 +1432,29 @@ mod coding_workflow_tests {
         assert_eq!(latest.log_path, "/tmp/workspace/claude-2.log");
         assert_eq!(latest.approval_notes_json, "[]");
         assert_eq!(latest.last_error, "");
+    }
+
+    #[test]
+    fn workspace_default_task_round_trips() {
+        let conn = test_conn();
+        let workspace_id = insert_workspace(&conn, "Workspace", "/tmp/workspace").unwrap();
+        let task_id = insert_task(&conn, workspace_id, "Build app").unwrap();
+
+        update_workspace_default_task(&conn, workspace_id, Some(task_id)).unwrap();
+        let workspaces = load_workspaces(&conn).unwrap();
+        let workspace = workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .unwrap();
+        assert_eq!(workspace.default_task_id, Some(task_id));
+
+        update_workspace_default_task(&conn, workspace_id, None).unwrap();
+        let workspaces = load_workspaces(&conn).unwrap();
+        let workspace = workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .unwrap();
+        assert_eq!(workspace.default_task_id, None);
     }
 
     #[test]

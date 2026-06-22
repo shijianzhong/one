@@ -361,6 +361,10 @@ impl AppState {
             }
         }
 
+        if messages.is_empty() && general_ai_live_run_id.is_none() && !general_ai_pending {
+            return self.render_chat_welcome(cx).into_any_element();
+        }
+
         let mut message_list = div()
             .flex_col()
             .gap_8()
@@ -627,7 +631,201 @@ impl AppState {
             message_list = message_list.child(self.render_general_ai_pending_message());
         }
 
-        message_list
+        message_list.into_any_element()
+    }
+
+    fn render_chat_welcome(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (workspace_label, workspace_path, task_count) = self
+            .get_active_workspace()
+            .map(|workspace| {
+                (
+                    workspace.name.clone(),
+                    workspace.path.to_string_lossy().to_string(),
+                    workspace.tasks.len(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "未选择工作空间".to_string(),
+                    "选择或创建 workspace 后开始".to_string(),
+                    0,
+                )
+            });
+        let suggestions = [
+            (
+                "terminal",
+                "创建应用",
+                "从需求到可运行项目",
+                "帮我在当前 workspace 创建一个简单可运行的应用。",
+            ),
+            (
+                "folder",
+                "阅读项目",
+                "理解结构和下一步",
+                "先阅读当前 workspace，告诉我项目结构和下一步建议。",
+            ),
+            (
+                "assistant",
+                "继续任务",
+                "总结进度并推进",
+                "根据当前任务上下文，帮我总结进度并继续推进。",
+            ),
+        ];
+        let workspace_path_label =
+            escape_visible_snippet(&normalize_single_line_label(&workspace_path), 90);
+
+        div()
+            .flex()
+            .flex_1()
+            .w_full()
+            .items_center()
+            .justify_center()
+            .px_8()
+            .py_8()
+            .child(
+                div()
+                    .flex_col()
+                    .gap_6()
+                    .w_full()
+                    .max_w(px(760.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(GHOST_SURFACE_BG())
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT().opacity(0.45))
+                                    .child(render_icon_element("folder", BRAND_BLUE(), 14.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(PRIMARY_TEXT())
+                                            .child(workspace_label.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(TERTIARY_TEXT())
+                                    .child(format!("{} 个任务", task_count)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_size(px(26.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(PRIMARY_TEXT())
+                                    .line_height(relative(1.18))
+                                    .child("从这里开始一次清晰的工作"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(SECONDARY_TEXT())
+                                    .line_height(relative(1.5))
+                                    .max_w(px(600.0))
+                                    .child(format!(
+                                        "当前目录：{}。你可以选择左侧任务，也可以直接描述目标，MainAgent 会先理解需求，再把合适的工作交给终端运行时。",
+                                        workspace_path_label
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_3()
+                            .children(suggestions.into_iter().map(|(icon, title, detail, prompt)| {
+                                let prompt = prompt.to_string();
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .gap_3()
+                                    .w(px(236.0))
+                                    .min_h(px(92.0))
+                                    .p_4()
+                                    .rounded_lg()
+                                    .bg(SURFACE_ELEVATED())
+                                    .border_1()
+                                    .border_color(BORDER_LIGHT().opacity(0.75))
+                                    .cursor_pointer()
+                                    .hover(|this| {
+                                        this.bg(GHOST_SURFACE_BG())
+                                            .border_color(BRAND_BLUE().opacity(0.50))
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                                            this.route_message(prompt.clone(), cx);
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .size(px(30.0))
+                                            .rounded_md()
+                                            .bg(CANVAS_BG())
+                                            .border_1()
+                                            .border_color(BORDER_LIGHT().opacity(0.55))
+                                            .child(render_icon_element(icon, BRAND_BLUE(), 15.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .gap_1()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(PRIMARY_TEXT())
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .line_height(relative(1.4))
+                                                    .text_color(TERTIARY_TEXT())
+                                                    .child(detail),
+                                            ),
+                                    )
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(MUTED_TEXT())
+                            .child(
+                                div()
+                                    .size(px(6.0))
+                                    .rounded_full()
+                                    .bg(BRAND_BLUE().opacity(0.72)),
+                            )
+                            .child("直接在下方输入完整目标，系统会自动创建任务并保存上下文。"),
+                    ),
+            )
     }
 
     fn render_general_ai_live_message(

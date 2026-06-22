@@ -8,8 +8,15 @@ use crate::{task_db, AppState, RequestKind};
 
 impl AppState {
     pub(crate) fn route_message(&mut self, message: String, cx: &mut Context<Self>) {
-        let captured_task_id = self.active_task_id; // ✅ 入口 capture，防止切换 task 后写错 DB
+        let captured_task_id = self.ensure_active_task_for_input();
+        let is_first_message = self
+            .active_task_ref()
+            .map(|task| task.messages.is_empty())
+            .unwrap_or(false);
         if let Some(task) = self.active_task_mut() {
+            if is_first_message {
+                task.pending_summarize = true;
+            }
             task.messages.push(ChatMessage::new("user", &message));
             task.needs_auto_scroll = true;
         }
@@ -82,6 +89,25 @@ impl AppState {
 
         eprintln!("[ROUTER] No precise route, switching to Orchestrator");
         self.spawn_orchestrator_run(message, cx);
+    }
+
+    fn ensure_active_task_for_input(&mut self) -> Option<usize> {
+        self.ensure_default_workspace();
+        let workspace_id = self
+            .active_workspace_id
+            .or_else(|| self.workspaces.first().map(|workspace| workspace.id))?;
+        self.active_workspace_id = Some(workspace_id);
+        let active_task_valid = self.active_task_id.is_some_and(|task_id| {
+            self.workspaces
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+                .is_some_and(|workspace| workspace.tasks.iter().any(|task| task.id == task_id))
+        });
+        if !active_task_valid {
+            let task_id = self.ensure_workspace_draft_task(workspace_id)?;
+            self.select_task(workspace_id, Some(task_id));
+        }
+        self.active_task_id
     }
 
     fn handle_routing_decision(&mut self, decision: RoutingDecision, cx: &mut Context<Self>) {

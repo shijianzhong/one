@@ -26,12 +26,14 @@ mod triggers;
 mod ui;
 pub(crate) mod ui_theme;
 mod util;
+mod workflow_webview;
 mod workflows;
 mod workspace;
 
 pub(crate) use agents::types::RequestKind;
 pub(crate) use app_state::{
     AppState, CapabilitiesTab, MainView, TerminalLine, TerminalTab, ToastInfo, ToastLevel,
+    WorkflowEditState,
 };
 use services::load_config;
 pub(crate) use ui::*;

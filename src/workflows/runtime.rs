@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::definition::{WorkflowDefinition, WorkflowEdge, WorkflowNode, WorkflowNodeKind};
+use super::routing_policy::{ActivationCondition, RoutingMode, RoutingPolicy};
 use crate::agents::core::{
     tool_dispatcher::ToolDispatcher, tool_registry, AgentDefinition, AgentRunContext, AgentRuntime,
     AgentTrait, MainAgent, OrchestratorEvent,
@@ -29,6 +30,264 @@ pub struct WorkflowRun {
 
 pub struct WorkflowRuntime;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRunStatus {
+    Pending,
+    Ready,
+    Running,
+    WaitingUser,
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GraphExecutionState {
+    pub node_status: std::collections::HashMap<String, NodeRunStatus>,
+    pub node_outputs: std::collections::HashMap<String, Value>,
+}
+
+impl GraphExecutionState {
+    fn new(definition: &WorkflowDefinition) -> Self {
+        Self {
+            node_status: definition
+                .nodes
+                .iter()
+                .map(|node| (node.id.clone(), NodeRunStatus::Pending))
+                .collect(),
+            node_outputs: std::collections::HashMap::new(),
+        }
+    }
+
+    fn set_status(&mut self, node_id: &str, status: NodeRunStatus) {
+        self.node_status.insert(node_id.to_string(), status);
+    }
+
+    fn set_output(&mut self, node_id: &str, output: Value) {
+        self.node_outputs.insert(node_id.to_string(), output);
+    }
+}
+
+pub struct WorkflowScheduler<'a> {
+    definition: &'a WorkflowDefinition,
+    state: GraphExecutionState,
+}
+
+impl<'a> WorkflowScheduler<'a> {
+    pub fn new(definition: &'a WorkflowDefinition) -> Self {
+        Self {
+            definition,
+            state: GraphExecutionState::new(definition),
+        }
+    }
+
+    pub fn state(&self) -> &GraphExecutionState {
+        &self.state
+    }
+
+    pub async fn execute(&mut self, input: Value) -> Result<Value> {
+        if self.definition.nodes.is_empty() {
+            return Ok(input);
+        }
+
+        let policy = self.workflow_policy()?;
+        match policy.mode {
+            RoutingMode::Parallel => self.execute_parallel(input, policy).await,
+            RoutingMode::Graph | RoutingMode::Selector | RoutingMode::Handoff => {
+                if self.definition.edges.is_empty() {
+                    self.execute_linear(&self.definition.nodes, input).await
+                } else {
+                    self.execute_graph(input).await
+                }
+            }
+            RoutingMode::Sequential => {
+                if self.definition.edges.is_empty() {
+                    self.execute_linear(&self.definition.nodes, input).await
+                } else {
+                    self.execute_graph(input).await
+                }
+            }
+        }
+    }
+
+    async fn execute_linear(&mut self, nodes: &[WorkflowNode], input: Value) -> Result<Value> {
+        let mut current = input;
+        for node in nodes {
+            current = self.execute_node_with_status(node, current).await?;
+            if is_awaiting_human_approval(&current) {
+                return Ok(current);
+            }
+            if should_terminate(self.definition, &current) {
+                return Ok(termination_result(self.definition, current));
+            }
+        }
+        Ok(current)
+    }
+
+    async fn execute_graph(&mut self, input: Value) -> Result<Value> {
+        let current_node_id = first_graph_node_id(self.definition)?;
+        self.execute_graph_from_node(current_node_id, input).await
+    }
+
+    async fn execute_graph_from_node(
+        &mut self,
+        mut current_node_id: String,
+        input: Value,
+    ) -> Result<Value> {
+        let mut current = input;
+        let max_steps = self
+            .definition
+            .metadata
+            .get("max_steps")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize)
+            .unwrap_or_else(|| {
+                self.definition
+                    .nodes
+                    .len()
+                    .saturating_mul(4)
+                    .saturating_add(16)
+            });
+
+        for _ in 0..max_steps {
+            let node = self
+                .definition
+                .nodes
+                .iter()
+                .find(|node| node.id == current_node_id)
+                .ok_or_else(|| anyhow::anyhow!("workflow node '{}' not found", current_node_id))?;
+            current = self.execute_node_with_status(node, current).await?;
+            if is_awaiting_human_approval(&current) {
+                return Ok(current);
+            }
+            if should_terminate(self.definition, &current) {
+                return Ok(termination_result(self.definition, current));
+            }
+
+            let Some(next_node_id) =
+                select_next_node_id(&self.definition.edges, &node.id, &current)
+            else {
+                return Ok(current);
+            };
+            current_node_id = next_node_id;
+        }
+
+        anyhow::bail!(
+            "workflow '{}' exceeded max_steps while executing graph",
+            self.definition.id
+        );
+    }
+
+    async fn execute_parallel(&mut self, input: Value, policy: RoutingPolicy) -> Result<Value> {
+        let activation = policy.activation.unwrap_or(ActivationCondition::All);
+        let node_ids = parallel_entry_node_ids(self.definition);
+        for node_id in &node_ids {
+            self.state.set_status(node_id, NodeRunStatus::Running);
+        }
+
+        let futures = node_ids.iter().filter_map(|node_id| {
+            self.definition
+                .nodes
+                .iter()
+                .find(|node| node.id == *node_id)
+                .map(|node| async {
+                    let result = execute_node(node, input.clone()).await;
+                    (node.id.clone(), result)
+                })
+        });
+        let results = futures::future::join_all(futures).await;
+
+        let mut output = serde_json::Map::new();
+        let mut success_count = 0usize;
+        let mut first_error = None;
+        for (node_id, result) in results {
+            match result {
+                Ok(value) => {
+                    if is_awaiting_human_approval(&value) {
+                        self.state.set_status(&node_id, NodeRunStatus::WaitingUser);
+                    } else {
+                        self.state.set_status(&node_id, NodeRunStatus::Succeeded);
+                    }
+                    self.state.set_output(&node_id, value.clone());
+                    output.insert(node_id, value);
+                    success_count += 1;
+                }
+                Err(err) => {
+                    self.state.set_status(&node_id, NodeRunStatus::Failed);
+                    output.insert(
+                        node_id,
+                        serde_json::json!({
+                            "status": "failed",
+                            "error": err.to_string(),
+                        }),
+                    );
+                    first_error.get_or_insert_with(|| err.to_string());
+                }
+            }
+        }
+
+        match activation {
+            ActivationCondition::All if success_count != output.len() => {
+                anyhow::bail!(
+                    "parallel workflow '{}' failed: {}",
+                    self.definition.id,
+                    first_error.unwrap_or_else(|| "one or more nodes failed".to_string())
+                );
+            }
+            ActivationCondition::Any if success_count == 0 => {
+                anyhow::bail!(
+                    "parallel workflow '{}' failed: {}",
+                    self.definition.id,
+                    first_error.unwrap_or_else(|| "all nodes failed".to_string())
+                );
+            }
+            _ => {}
+        }
+
+        Ok(serde_json::json!({
+            "status": "parallel_completed",
+            "activation": activation,
+            "results": Value::Object(output),
+        }))
+    }
+
+    async fn execute_node_with_status(
+        &mut self,
+        node: &WorkflowNode,
+        input: Value,
+    ) -> Result<Value> {
+        self.state.set_status(&node.id, NodeRunStatus::Running);
+        match execute_node(node, input).await {
+            Ok(value) => {
+                if is_awaiting_human_approval(&value) {
+                    self.state.set_status(&node.id, NodeRunStatus::WaitingUser);
+                } else {
+                    self.state.set_status(&node.id, NodeRunStatus::Succeeded);
+                }
+                self.state.set_output(&node.id, value.clone());
+                Ok(value)
+            }
+            Err(err) => {
+                self.state.set_status(&node.id, NodeRunStatus::Failed);
+                Err(err)
+            }
+        }
+    }
+
+    fn workflow_policy(&self) -> Result<RoutingPolicy> {
+        let policy = self
+            .definition
+            .metadata
+            .get("routing")
+            .map(RoutingPolicy::from_value)
+            .transpose()?
+            .unwrap_or_else(RoutingPolicy::sequential);
+        policy.validate(Some(self.definition))?;
+        Ok(policy)
+    }
+}
+
 impl WorkflowRuntime {
     pub fn new() -> Self {
         Self
@@ -39,22 +298,25 @@ impl WorkflowRuntime {
         definition: &WorkflowDefinition,
         input: Value,
     ) -> Result<Value> {
-        let result = match workflow_timeout(definition) {
-            Some(timeout) => tokio::time::timeout(timeout, self.execute_nodes(definition, input))
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "workflow '{}' timed out after {}ms",
-                        definition.id,
-                        timeout.as_millis()
-                    )
-                })??,
-            None => self.execute_nodes(definition, input).await?,
+        let (result, state) = match workflow_timeout(definition) {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, self.execute_scheduled_nodes(definition, input))
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "workflow '{}' timed out after {}ms",
+                            definition.id,
+                            timeout.as_millis()
+                        )
+                    })??
+            }
+            None => self.execute_scheduled_nodes(definition, input).await?,
         };
         Ok(serde_json::json!({
             "status": "succeeded",
             "workflow_id": definition.id,
             "workflow_version": definition.version,
+            "node_status": node_status_json(&state),
             "result": result,
         }))
     }
@@ -92,16 +354,14 @@ impl WorkflowRuntime {
         }))
     }
 
-    async fn execute_nodes(&self, definition: &WorkflowDefinition, input: Value) -> Result<Value> {
-        if definition.nodes.is_empty() {
-            return Ok(input);
-        }
-
-        if !definition.edges.is_empty() {
-            return execute_graph(definition, input).await;
-        }
-
-        execute_linear(definition, &definition.nodes, input).await
+    async fn execute_scheduled_nodes(
+        &self,
+        definition: &WorkflowDefinition,
+        input: Value,
+    ) -> Result<(Value, GraphExecutionState)> {
+        let mut scheduler = WorkflowScheduler::new(definition);
+        let result = scheduler.execute(input).await?;
+        Ok((result, scheduler.state().clone()))
     }
 
     async fn resume_nodes(
@@ -160,11 +420,6 @@ async fn execute_linear(
         }
     }
     Ok(current)
-}
-
-async fn execute_graph(definition: &WorkflowDefinition, input: Value) -> Result<Value> {
-    let current_node_id = first_graph_node_id(definition)?;
-    execute_graph_from_node(definition, current_node_id, input).await
 }
 
 async fn execute_graph_from_node(
@@ -255,6 +510,10 @@ fn is_awaiting_human_approval(value: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn node_status_json(state: &GraphExecutionState) -> Value {
+    serde_json::to_value(&state.node_status).unwrap_or_else(|_| serde_json::json!({}))
+}
+
 async fn execute_node(node: &WorkflowNode, input: Value) -> Result<Value> {
     match &node.kind {
         WorkflowNodeKind::Agent { agent_id } => {
@@ -297,6 +556,37 @@ fn first_graph_node_id(definition: &WorkflowDefinition) -> Result<String> {
         .or_else(|| definition.nodes.first())
         .map(|node| node.id.clone())
         .ok_or_else(|| anyhow::anyhow!("workflow '{}' has no nodes", definition.id))
+}
+
+fn parallel_entry_node_ids(definition: &WorkflowDefinition) -> Vec<String> {
+    if definition.edges.is_empty() {
+        return definition
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+    }
+
+    let incoming: std::collections::HashSet<&str> = definition
+        .edges
+        .iter()
+        .map(|edge| edge.to_node_id.as_str())
+        .collect();
+    let ids = definition
+        .nodes
+        .iter()
+        .filter(|node| !incoming.contains(node.id.as_str()))
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        definition
+            .nodes
+            .first()
+            .map(|node| vec![node.id.clone()])
+            .unwrap_or_default()
+    } else {
+        ids
+    }
 }
 
 fn select_next_node_id(
@@ -560,6 +850,110 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["result"], serde_json::json!({ "branch": "b" }));
+    }
+
+    #[tokio::test]
+    async fn scheduler_tracks_sequential_node_status() {
+        let mut definition = WorkflowDefinition::new_draft("workflow.sequential", "Sequential");
+        definition.nodes.push(WorkflowNode {
+            id: "first".to_string(),
+            name: "First".to_string(),
+            kind: WorkflowNodeKind::Condition,
+            config: serde_json::Value::Null,
+        });
+        definition.nodes.push(WorkflowNode {
+            id: "output".to_string(),
+            name: "Output".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "ok": true } }),
+        });
+        let mut scheduler = WorkflowScheduler::new(&definition);
+
+        let result = scheduler
+            .execute(serde_json::json!({ "ok": false }))
+            .await
+            .unwrap();
+
+        assert_eq!(result, serde_json::json!({ "ok": true }));
+        assert_eq!(
+            scheduler.state().node_status["first"],
+            NodeRunStatus::Succeeded
+        );
+        assert_eq!(
+            scheduler.state().node_status["output"],
+            NodeRunStatus::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_executes_parallel_all_join() {
+        let mut definition = WorkflowDefinition::new_draft("workflow.parallel", "Parallel");
+        definition.metadata = serde_json::json!({
+            "routing": {
+                "mode": "parallel",
+                "activation": "all"
+            }
+        });
+        definition.nodes.push(WorkflowNode {
+            id: "a".to_string(),
+            name: "A".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "branch": "a" } }),
+        });
+        definition.nodes.push(WorkflowNode {
+            id: "b".to_string(),
+            name: "B".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "branch": "b" } }),
+        });
+        let mut scheduler = WorkflowScheduler::new(&definition);
+
+        let result = scheduler.execute(serde_json::json!({})).await.unwrap();
+
+        assert_eq!(result["status"], "parallel_completed");
+        assert_eq!(result["activation"], "all");
+        assert_eq!(result["results"]["a"], serde_json::json!({ "branch": "a" }));
+        assert_eq!(result["results"]["b"], serde_json::json!({ "branch": "b" }));
+        assert_eq!(scheduler.state().node_status["a"], NodeRunStatus::Succeeded);
+        assert_eq!(scheduler.state().node_status["b"], NodeRunStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn scheduler_executes_parallel_any_join_with_partial_failure() {
+        let mut definition = WorkflowDefinition::new_draft("workflow.parallel_any", "Parallel Any");
+        definition.metadata = serde_json::json!({
+            "routing": {
+                "mode": "parallel",
+                "activation": "any"
+            }
+        });
+        definition.nodes.push(WorkflowNode {
+            id: "ok".to_string(),
+            name: "OK".to_string(),
+            kind: WorkflowNodeKind::Output,
+            config: serde_json::json!({ "value": { "branch": "ok" } }),
+        });
+        definition.nodes.push(WorkflowNode {
+            id: "missing_skill".to_string(),
+            name: "Missing Skill".to_string(),
+            kind: WorkflowNodeKind::Skill {
+                skill_id: "missing.skill".to_string(),
+            },
+            config: serde_json::Value::Null,
+        });
+        let mut scheduler = WorkflowScheduler::new(&definition);
+
+        let result = scheduler.execute(serde_json::json!({})).await.unwrap();
+
+        assert_eq!(result["status"], "parallel_completed");
+        assert_eq!(
+            result["results"]["ok"],
+            serde_json::json!({ "branch": "ok" })
+        );
+        assert_eq!(
+            scheduler.state().node_status["missing_skill"],
+            NodeRunStatus::Failed
+        );
     }
 
     #[tokio::test]

@@ -17,6 +17,16 @@ use crate::{
     ToggleLang, ToggleTheme, NAV_WIDTH, TITLEBAR_HEIGHT,
 };
 
+fn compact_task_title(title: &str, max_chars: usize) -> String {
+    let title = title.trim();
+    if title.chars().count() <= max_chars {
+        return title.to_string();
+    }
+    let mut compact = title.chars().take(max_chars).collect::<String>();
+    compact.push('…');
+    compact
+}
+
 impl AppState {
     pub(crate) fn render_task_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_default_workspace();
@@ -76,9 +86,9 @@ impl AppState {
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
                         cx.stop_propagation();
-                        this.active_workspace_id = Some(ws_id);
-                        this.active_task_id = this.ensure_workspace_draft_task(ws_id);
-                        this.restore_task_context();
+                        let task_id = this.ensure_workspace_draft_task(ws_id);
+                        this.select_task(ws_id, task_id);
+                        this.main_view = MainView::Chat;
                         cx.notify();
                     }),
                 );
@@ -176,8 +186,8 @@ impl AppState {
             if workspace.expanded {
                 let mut tasks_container = div()
                     .flex_col()
-                    .ml_4()
-                    .pl_3()
+                    .ml_2()
+                    .pl_2()
                     .border_l_1()
                     .border_color(GHOST_SURFACE_BG())
                     .gap_1();
@@ -208,7 +218,7 @@ impl AppState {
                     let title_display = if task.title.trim().is_empty() {
                         t(lang, Translations::NEW_TASK).to_string()
                     } else {
-                        task.title.trim().to_string()
+                        compact_task_title(task.title.trim(), 12)
                     };
                     let session_badge = self.coding_sessions.lock().ok().and_then(|sessions| {
                         sessions.session_for_task(task.id).map(|session| {
@@ -229,9 +239,7 @@ impl AppState {
                     task_div = task_div.on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                            this.active_workspace_id = Some(ws_id);
-                            this.active_task_id = Some(task_id);
-                            this.restore_task_context();
+                            this.select_task(ws_id, Some(task_id));
                             this.main_view = MainView::Chat;
                             cx.notify();
                         }),
@@ -259,8 +267,9 @@ impl AppState {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
                                     .overflow_hidden()
-                                    .text_sm()
+                                    .text_xs()
                                     .text_color(if is_active_task {
                                         PRIMARY_TEXT()
                                     } else {
@@ -304,17 +313,13 @@ impl AppState {
                                                     return;
                                                 }
 
-                                                let (was_draft, was_active, task_title) = this
+                                                let (was_active, task_title) = this
                                                     .workspaces
                                                     .iter()
                                                     .find(|w| w.id == ws_id)
                                                     .and_then(|w| w.tasks.iter().find(|t| t.id == task_id))
                                                     .map(|t| {
-                                                        (
-                                                            t.is_draft,
-                                                            this.active_task_id == Some(task_id),
-                                                            t.title.clone(),
-                                                        )
+                                                        (this.active_task_id == Some(task_id), t.title.clone())
                                                     })
                                                     .unwrap_or_default();
 
@@ -403,22 +408,40 @@ impl AppState {
                                                     }
                                                 }
 
-                                                // ── 删除后切换 active task ─────────
-                                                if was_active {
-                                                    this.active_task_id = if let Some(ws) = this
-                                                        .workspaces
-                                                        .iter()
-                                                        .find(|w| w.id == ws_id)
-                                                    {
+                                                let next_task_id = this
+                                                    .workspaces
+                                                    .iter()
+                                                    .find(|w| w.id == ws_id)
+                                                    .and_then(|ws| {
                                                         ws.tasks
                                                             .iter()
                                                             .find(|t| t.is_draft)
                                                             .map(|t| t.id)
-                                                            .or_else(|| ws.tasks.first().map(|t| t.id))
-                                                    } else {
-                                                        None
-                                                    };
-                                                    this.restore_task_context();
+                                                            .or_else(|| {
+                                                                ws.tasks.first().map(|t| t.id)
+                                                            })
+                                                    });
+                                                if was_active {
+                                                    this.select_task(ws_id, next_task_id);
+                                                } else if this
+                                                    .workspaces
+                                                    .iter()
+                                                    .find(|w| w.id == ws_id)
+                                                    .and_then(|w| w.default_task_id)
+                                                    == Some(task_id)
+                                                {
+                                                    if let Some(ws) = this
+                                                        .workspaces
+                                                        .iter_mut()
+                                                        .find(|w| w.id == ws_id)
+                                                    {
+                                                        ws.default_task_id = next_task_id;
+                                                    }
+                                                    let _ = task_db::update_workspace_default_task(
+                                                        &this.db.conn,
+                                                        ws_id,
+                                                        next_task_id,
+                                                    );
                                                 }
                                                 cx.notify();
                                             },

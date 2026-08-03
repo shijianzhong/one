@@ -56,6 +56,12 @@ pub(crate) struct WorkflowEditState {
     pub(crate) last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowActivityState {
+    pub(crate) level: String,
+    pub(crate) message: String,
+}
+
 pub(crate) struct AppState {
     pub(crate) db: task_db::Database,
     pub(crate) workspaces: Vec<Workspace>,
@@ -74,6 +80,7 @@ pub(crate) struct AppState {
     pub(crate) selected_workflow_id: Option<String>,
     pub(crate) selected_workflow_node_id: Option<String>,
     pub(crate) workflow_edit_states: HashMap<String, WorkflowEditState>,
+    pub(crate) workflow_activity_states: HashMap<String, WorkflowActivityState>,
     pub(crate) workflow_node_run_statuses: HashMap<String, HashMap<String, String>>,
     pub(crate) workflow_edit_json: String,
     pub(crate) expanded_workflow_run_id: Option<usize>,
@@ -355,6 +362,7 @@ impl AppState {
             selected_workflow_id: None,
             selected_workflow_node_id: None,
             workflow_edit_states: HashMap::new(),
+            workflow_activity_states: HashMap::new(),
             workflow_node_run_statuses: HashMap::new(),
             workflow_edit_json: String::new(),
             expanded_workflow_run_id: None,

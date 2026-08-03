@@ -12,9 +12,11 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::workflows::{WorkflowDefinition, WorkflowNodeKind};
 
-pub(crate) fn workflow_canvas_poc(workflow: Option<CanvasWorkflow>) -> WorkflowWebviewElement {
+pub(crate) fn workflow_builder_webview(
+    state: Option<WorkflowBuilderState>,
+) -> WorkflowWebviewElement {
     WorkflowWebviewElement {
-        workflow,
+        state,
         style: StyleRefinement::default(),
     }
 }
@@ -31,25 +33,71 @@ pub(crate) fn webview_status_label() -> &'static str {
     allow(dead_code)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum WorkflowCanvasEvent {
+pub(crate) enum WorkflowWebviewEvent {
+    AddAgent {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+    },
+    Save {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+    },
+    Run {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+    },
+    Publish {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+    },
+    CopilotGenerate {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+        brief: String,
+    },
+    SelectWorkflow {
+        request_id: Option<String>,
+        workflow_id: String,
+    },
+    CreateFromTemplate {
+        request_id: Option<String>,
+        template_id: String,
+    },
+    UpdateJson {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+        json: String,
+    },
+    UpdateAgent {
+        request_id: Option<String>,
+        workflow_id: Option<String>,
+        node_id: String,
+        update: WorkflowAgentUpdateView,
+    },
     NodeSelected {
+        request_id: Option<String>,
         workflow_id: Option<String>,
         node_id: String,
     },
     EdgeCreated {
+        request_id: Option<String>,
         workflow_id: Option<String>,
         source_node_id: String,
         target_node_id: String,
     },
     EdgeDeleted {
+        request_id: Option<String>,
         workflow_id: Option<String>,
         edge_id: String,
     },
     Error {
+        request_id: Option<String>,
         workflow_id: Option<String>,
         message: String,
     },
 }
+
+pub(crate) type WorkflowCanvasEvent = WorkflowWebviewEvent;
 
 #[cfg(all(
     feature = "workflow-webview",
@@ -57,16 +105,88 @@ pub(crate) enum WorkflowCanvasEvent {
 ))]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-enum CanvasIpcMessage {
+pub(crate) enum WorkflowWebviewCommand {
     #[serde(rename = "workflow:ready")]
     WorkflowReady,
     #[serde(rename = "workflow:loaded")]
     WorkflowLoaded {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
         #[serde(default, rename = "workflowId")]
         workflow_id: Option<String>,
     },
+    #[serde(rename = "workflow:add_agent")]
+    AddAgent {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+    },
+    #[serde(rename = "workflow:save")]
+    Save {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+    },
+    #[serde(rename = "workflow:run")]
+    Run {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+    },
+    #[serde(rename = "workflow:publish")]
+    Publish {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+    },
+    #[serde(rename = "workflow:copilot_generate")]
+    CopilotGenerate {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+        brief: String,
+    },
+    #[serde(rename = "workflow:select")]
+    SelectWorkflow {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(rename = "workflowId")]
+        workflow_id: String,
+    },
+    #[serde(rename = "workflow:create_from_template")]
+    CreateFromTemplate {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(rename = "templateId")]
+        template_id: String,
+    },
+    #[serde(rename = "workflow:update_json")]
+    UpdateJson {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+        json: String,
+    },
+    #[serde(rename = "workflow:update_agent")]
+    UpdateAgent {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
+        #[serde(default, rename = "workflowId")]
+        workflow_id: Option<String>,
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        update: WorkflowAgentUpdateView,
+    },
     #[serde(rename = "node:selected")]
     NodeSelected {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
         #[serde(default, rename = "workflowId")]
         workflow_id: Option<String>,
         #[serde(rename = "nodeId")]
@@ -74,6 +194,8 @@ enum CanvasIpcMessage {
     },
     #[serde(rename = "edge:created")]
     EdgeCreated {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
         #[serde(default, rename = "workflowId")]
         workflow_id: Option<String>,
         #[serde(rename = "sourceNodeId")]
@@ -83,6 +205,8 @@ enum CanvasIpcMessage {
     },
     #[serde(rename = "edge:deleted")]
     EdgeDeleted {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
         #[serde(default, rename = "workflowId")]
         workflow_id: Option<String>,
         #[serde(rename = "edgeId")]
@@ -90,9 +214,35 @@ enum CanvasIpcMessage {
     },
     #[serde(rename = "canvas:error")]
     CanvasError {
+        #[serde(default, rename = "requestId")]
+        request_id: Option<String>,
         #[serde(default, rename = "workflowId")]
         workflow_id: Option<String>,
         message: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum WorkflowBuilderHostMessage<'a> {
+    #[serde(rename = "workflow:load")]
+    WorkflowLoad {
+        workflow: Option<&'a CanvasWorkflow>,
+    },
+    #[serde(rename = "workflows:hydrate")]
+    WorkflowsHydrate {
+        state: Option<&'a WorkflowBuilderState>,
+    },
+    #[serde(rename = "workflow:command_result")]
+    CommandResult {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -129,8 +279,9 @@ fn push_workflow_canvas_event(event: WorkflowCanvasEvent) {
     any(target_os = "macos", target_os = "windows")
 ))]
 fn handle_ipc_message(payload: &str) {
-    match serde_json::from_str::<CanvasIpcMessage>(payload) {
-        Ok(CanvasIpcMessage::NodeSelected {
+    match serde_json::from_str::<WorkflowWebviewCommand>(payload) {
+        Ok(WorkflowWebviewCommand::NodeSelected {
+            request_id,
             workflow_id,
             node_id,
         }) => {
@@ -141,11 +292,13 @@ fn handle_ipc_message(payload: &str) {
                 node_id
             );
             push_workflow_canvas_event(WorkflowCanvasEvent::NodeSelected {
+                request_id,
                 workflow_id,
                 node_id,
             });
         }
-        Ok(CanvasIpcMessage::EdgeCreated {
+        Ok(WorkflowWebviewCommand::EdgeCreated {
+            request_id,
             workflow_id,
             source_node_id,
             target_node_id,
@@ -158,12 +311,14 @@ fn handle_ipc_message(payload: &str) {
                 target_node_id
             );
             push_workflow_canvas_event(WorkflowCanvasEvent::EdgeCreated {
+                request_id,
                 workflow_id,
                 source_node_id,
                 target_node_id,
             });
         }
-        Ok(CanvasIpcMessage::EdgeDeleted {
+        Ok(WorkflowWebviewCommand::EdgeDeleted {
+            request_id,
             workflow_id,
             edge_id,
         }) => {
@@ -174,31 +329,175 @@ fn handle_ipc_message(payload: &str) {
                 edge_id
             );
             push_workflow_canvas_event(WorkflowCanvasEvent::EdgeDeleted {
+                request_id,
                 workflow_id,
                 edge_id,
             });
         }
-        Ok(CanvasIpcMessage::WorkflowReady) => {
-            log::info!(target: "workflow_webview", "workflow canvas ready");
+        Ok(WorkflowWebviewCommand::WorkflowReady) => {
+            log::info!(target: "workflow_webview", "workflow builder ready");
         }
-        Ok(CanvasIpcMessage::WorkflowLoaded { workflow_id }) => {
+        Ok(WorkflowWebviewCommand::WorkflowLoaded {
+            request_id,
+            workflow_id,
+        }) => {
             log::info!(
                 target: "workflow_webview",
-                "workflow canvas loaded workflow_id={:?}",
+                "workflow builder loaded request_id={:?} workflow_id={:?}",
+                request_id,
                 workflow_id
             );
         }
-        Ok(CanvasIpcMessage::CanvasError {
+        Ok(WorkflowWebviewCommand::AddAgent {
+            request_id,
+            workflow_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "add agent requested workflow_id={:?}",
+                workflow_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::AddAgent {
+                request_id,
+                workflow_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::Save {
+            request_id,
+            workflow_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "save requested workflow_id={:?}",
+                workflow_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::Save {
+                request_id,
+                workflow_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::Run {
+            request_id,
+            workflow_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "run requested workflow_id={:?}",
+                workflow_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::Run {
+                request_id,
+                workflow_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::Publish {
+            request_id,
+            workflow_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "publish requested workflow_id={:?}",
+                workflow_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::Publish {
+                request_id,
+                workflow_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::CopilotGenerate {
+            request_id,
+            workflow_id,
+            brief,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "copilot generate requested workflow_id={:?} brief_len={}",
+                workflow_id,
+                brief.len()
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::CopilotGenerate {
+                request_id,
+                workflow_id,
+                brief,
+            });
+        }
+        Ok(WorkflowWebviewCommand::SelectWorkflow {
+            request_id,
+            workflow_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "workflow select requested workflow_id={}",
+                workflow_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::SelectWorkflow {
+                request_id,
+                workflow_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::CreateFromTemplate {
+            request_id,
+            template_id,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "create workflow from template requested template_id={}",
+                template_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::CreateFromTemplate {
+                request_id,
+                template_id,
+            });
+        }
+        Ok(WorkflowWebviewCommand::UpdateJson {
+            request_id,
+            workflow_id,
+            json,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "workflow json update requested workflow_id={:?} json_len={}",
+                workflow_id,
+                json.len()
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::UpdateJson {
+                request_id,
+                workflow_id,
+                json,
+            });
+        }
+        Ok(WorkflowWebviewCommand::UpdateAgent {
+            request_id,
+            workflow_id,
+            node_id,
+            update,
+        }) => {
+            log::info!(
+                target: "workflow_webview",
+                "agent update requested workflow_id={:?} node_id={}",
+                workflow_id,
+                node_id
+            );
+            push_workflow_canvas_event(WorkflowCanvasEvent::UpdateAgent {
+                request_id,
+                workflow_id,
+                node_id,
+                update,
+            });
+        }
+        Ok(WorkflowWebviewCommand::CanvasError {
+            request_id,
             workflow_id,
             message,
         }) => {
             log::warn!(
                 target: "workflow_webview",
-                "workflow canvas reported error workflow_id={:?}: {}",
+                "workflow builder reported error workflow_id={:?}: {}",
                 workflow_id,
                 message
             );
             push_workflow_canvas_event(WorkflowCanvasEvent::Error {
+                request_id,
                 workflow_id,
                 message,
             });
@@ -206,19 +505,228 @@ fn handle_ipc_message(payload: &str) {
         Err(err) => {
             log::warn!(
                 target: "workflow_webview",
-                "failed to parse workflow canvas ipc payload: {err}; payload={payload}"
+                "failed to parse workflow builder ipc payload: {err}; payload={payload}"
             );
             push_workflow_canvas_event(WorkflowCanvasEvent::Error {
+                request_id: None,
                 workflow_id: None,
-                message: format!("Invalid canvas IPC payload: {err}"),
+                message: format!("Invalid workflow builder IPC payload: {err}"),
             });
         }
     }
 }
 
 pub(crate) struct WorkflowWebviewElement {
-    workflow: Option<CanvasWorkflow>,
+    state: Option<WorkflowBuilderState>,
     style: StyleRefinement,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowBuilderState {
+    workflows: Vec<WorkflowSummaryView>,
+    selected_workflow_id: Option<String>,
+    workflow: Option<CanvasWorkflow>,
+    workflow_json: Option<String>,
+    selected_agent: Option<WorkflowAgentInspectorView>,
+    edit_state: Option<WorkflowEditStateView>,
+    activity: Option<WorkflowActivityView>,
+    templates: Vec<WorkflowTemplateView>,
+    run_statuses: std::collections::HashMap<String, String>,
+    webview_status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowSummaryView {
+    id: String,
+    name: String,
+    description: String,
+    status: String,
+    version: i64,
+    updated_at: String,
+    edit_state: WorkflowEditStateView,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowEditStateView {
+    status: String,
+    dirty: bool,
+    reason: String,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowTemplateView {
+    id: String,
+    name: String,
+    description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowActivityView {
+    level: String,
+    message: String,
+}
+
+#[cfg_attr(
+    all(
+        feature = "workflow-webview",
+        any(target_os = "macos", target_os = "windows")
+    ),
+    derive(Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowAgentUpdateView {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) category: String,
+    pub(crate) tags: String,
+    pub(crate) version: String,
+    pub(crate) model_provider: String,
+    pub(crate) model_name: String,
+    pub(crate) temperature: String,
+    pub(crate) max_tokens: String,
+    pub(crate) timeout_seconds: String,
+    pub(crate) system_prompt: String,
+    pub(crate) instructions: String,
+    pub(crate) output_format: String,
+    pub(crate) output_schema: String,
+    pub(crate) summarize_with_mainagent: String,
+    pub(crate) skills_json: String,
+    pub(crate) mcp_tools_json: String,
+    pub(crate) system_tools_json: String,
+    pub(crate) coding_runtimes_json: String,
+    pub(crate) retry: String,
+    pub(crate) settings_timeout_seconds: String,
+    pub(crate) human_confirmation: String,
+    pub(crate) routing_policy_json: String,
+    pub(crate) permissions: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowAgentInspectorView {
+    workflow_id: String,
+    node_id: String,
+    node_kind: String,
+    routing_mode: String,
+    tool_summary: String,
+    update: WorkflowAgentUpdateView,
+}
+
+impl WorkflowBuilderState {
+    pub(crate) fn new(
+        workflows: Vec<WorkflowSummaryView>,
+        selected_workflow_id: Option<String>,
+        workflow: Option<CanvasWorkflow>,
+        workflow_json: Option<String>,
+        selected_agent: Option<WorkflowAgentInspectorView>,
+        edit_state: Option<WorkflowEditStateView>,
+        activity: Option<WorkflowActivityView>,
+        templates: Vec<WorkflowTemplateView>,
+        run_statuses: std::collections::HashMap<String, String>,
+    ) -> Self {
+        Self {
+            workflows,
+            selected_workflow_id,
+            workflow,
+            workflow_json,
+            selected_agent,
+            edit_state,
+            activity,
+            templates,
+            run_statuses,
+            webview_status: webview_status_label().to_string(),
+        }
+    }
+}
+
+impl WorkflowSummaryView {
+    pub(crate) fn new(
+        summary: &crate::workflows::WorkflowSummary,
+        edit_state: WorkflowEditStateView,
+    ) -> Self {
+        Self {
+            id: summary.id.clone(),
+            name: summary.name.clone(),
+            description: summary.description.clone(),
+            status: format!("{:?}", summary.status),
+            version: summary.version,
+            updated_at: summary.updated_at.clone(),
+            edit_state,
+        }
+    }
+}
+
+impl WorkflowEditStateView {
+    pub(crate) fn saved() -> Self {
+        Self {
+            status: "saved".to_string(),
+            dirty: false,
+            reason: String::new(),
+            last_error: None,
+        }
+    }
+
+    pub(crate) fn from_parts(dirty: bool, reason: String, last_error: Option<String>) -> Self {
+        let status = if dirty && last_error.is_some() {
+            "save_failed"
+        } else if dirty {
+            "dirty"
+        } else if last_error.is_some() {
+            "save_failed"
+        } else {
+            "saved"
+        };
+
+        Self {
+            status: status.to_string(),
+            dirty,
+            reason,
+            last_error,
+        }
+    }
+}
+
+impl WorkflowTemplateView {
+    pub(crate) fn new(id: &'static str, name: &'static str, description: &'static str) -> Self {
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+        }
+    }
+}
+
+impl WorkflowActivityView {
+    pub(crate) fn new(level: String, message: String) -> Self {
+        Self { level, message }
+    }
+}
+
+impl WorkflowAgentInspectorView {
+    pub(crate) fn new(
+        workflow_id: String,
+        node_id: String,
+        node_kind: String,
+        routing_mode: String,
+        tool_summary: String,
+        update: WorkflowAgentUpdateView,
+    ) -> Self {
+        Self {
+            workflow_id,
+            node_id,
+            node_kind,
+            routing_mode,
+            tool_summary,
+            update,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -378,7 +886,7 @@ impl Element for WorkflowWebviewElement {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some("workflow-webview-poc".into())
+        Some("workflow-builder-webview".into())
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -408,10 +916,10 @@ impl Element for WorkflowWebviewElement {
         _cx: &mut App,
     ) -> Self::PrepaintState {
         if let Some(id) = id {
-            let workflow = self.workflow.clone();
+            let state_payload = self.state.clone();
             window.with_element_state::<native::WorkflowWebviewState, _>(id, |state, window| {
                 let mut state = state.unwrap_or_default();
-                state.sync(bounds, workflow, window);
+                state.sync(bounds, state_payload, window);
                 ((), state)
             });
         }
@@ -437,7 +945,8 @@ impl Styled for WorkflowWebviewElement {
     }
 }
 
-fn poc_html(workflow_count: usize) -> String {
+#[allow(dead_code)]
+fn fallback_html(workflow_count: usize) -> String {
     format!(
         r#"<!doctype html>
 <html>
@@ -569,35 +1078,38 @@ mod native {
     pub(crate) struct WorkflowWebviewState {
         webview: Option<WebView>,
         last_bounds: Option<Bounds<Pixels>>,
-        last_workflow_json: Option<String>,
+        last_state_json: Option<String>,
     }
 
     pub(crate) fn status_label() -> &'static str {
-        "WebView POC"
+        "WebView builder"
     }
 
     impl WorkflowWebviewState {
         pub(crate) fn sync(
             &mut self,
             bounds: Bounds<Pixels>,
-            workflow: Option<CanvasWorkflow>,
+            state: Option<WorkflowBuilderState>,
             window: &mut Window,
         ) {
-            let workflow_json = serialize_workflow_message(workflow.as_ref());
-            let workflow_count = workflow.as_ref().map(|w| w.nodes.len()).unwrap_or(0);
+            let state_json = serialize_builder_state_message(state.as_ref());
+            let workflow_count = state
+                .as_ref()
+                .and_then(|state| state.workflow.as_ref())
+                .map(|workflow| workflow.nodes.len())
+                .unwrap_or(0);
 
-            if self.webview.is_none() || self.last_workflow_json.as_deref() != Some(&workflow_json)
-            {
-                let html = super::poc_html(workflow_count);
-                match build_webview(window, &html, &workflow_json, workflow_count) {
+            if self.webview.is_none() || self.last_state_json.as_deref() != Some(&state_json) {
+                let html = super::fallback_html(workflow_count);
+                match build_webview(window, &html, &state_json, workflow_count) {
                     Ok(webview) => {
                         log::info!(
                             target: "workflow_webview",
-                            "initialized workflow WebView POC with workflow_count={workflow_count}"
+                            "initialized workflow builder WebView with workflow_count={workflow_count}"
                         );
                         self.webview = Some(webview);
                         self.last_bounds = None;
-                        self.last_workflow_json = Some(workflow_json);
+                        self.last_state_json = Some(state_json);
                     }
                     Err(err) => {
                         log::error!(target: "workflow_webview", "failed to initialize WebView: {err}");
@@ -621,7 +1133,7 @@ mod native {
     fn build_webview(
         window: &mut Window,
         html: &str,
-        workflow_json: &str,
+        state_json: &str,
         workflow_count: usize,
     ) -> wry::Result<WebView> {
         let builder = wry::WebViewBuilder::new().with_ipc_handler(|request| {
@@ -630,36 +1142,33 @@ mod native {
             handle_ipc_message(payload);
         });
         let builder = if let Some(url) = workflow_canvas_dist_url() {
-            log::info!(target: "workflow_webview", "loading workflow canvas dist: {url}");
+            log::info!(target: "workflow_webview", "loading workflow builder dist: {url}");
             builder.with_url(url)
         } else {
-            log::info!(target: "workflow_webview", "loading embedded workflow canvas POC html");
+            log::info!(target: "workflow_webview", "loading embedded workflow builder fallback html");
             builder.with_html(html)
         };
         let webview = builder.build_as_child(window)?;
 
         let script = format!(
             "window.dispatchEvent(new CustomEvent('one-message', {{ detail: {} }}));",
-            workflow_json
+            state_json
         );
         if let Err(err) = webview.evaluate_script(&script) {
-            log::warn!(target: "workflow_webview", "failed to send workflow:load: {err}");
+            log::warn!(target: "workflow_webview", "failed to send workflows:hydrate: {err}");
         } else {
             log::info!(
                 target: "workflow_webview",
-                "sent workflow:load to WebView with workflow_count={workflow_count}"
+                "sent workflows:hydrate to WebView with workflow_count={workflow_count}"
             );
         }
 
         Ok(webview)
     }
 
-    fn serialize_workflow_message(workflow: Option<&CanvasWorkflow>) -> String {
-        serde_json::to_string(&serde_json::json!({
-            "type": "workflow:load",
-            "workflow": workflow,
-        }))
-        .unwrap_or_else(|_| r#"{"type":"workflow:load","workflow":null}"#.to_string())
+    fn serialize_builder_state_message(state: Option<&WorkflowBuilderState>) -> String {
+        serde_json::to_string(&WorkflowBuilderHostMessage::WorkflowsHydrate { state })
+            .unwrap_or_else(|_| r#"{"type":"workflows:hydrate","state":null}"#.to_string())
     }
 
     fn workflow_canvas_dist_url() -> Option<String> {
@@ -713,14 +1222,18 @@ mod native {
         pub(crate) fn sync(
             &mut self,
             bounds: Bounds<Pixels>,
-            workflow: Option<CanvasWorkflow>,
+            state: Option<WorkflowBuilderState>,
             _window: &mut Window,
         ) {
             if !self.logged {
-                let workflow_count = workflow.as_ref().map(|w| w.nodes.len()).unwrap_or(0);
+                let workflow_count = state
+                    .as_ref()
+                    .and_then(|state| state.workflow.as_ref())
+                    .map(|workflow| workflow.nodes.len())
+                    .unwrap_or(0);
                 log::info!(
                     target: "workflow_webview",
-                    "workflow WebView POC fallback active; bounds={:?}, workflow_count={workflow_count}",
+                    "workflow builder WebView fallback active; bounds={:?}, workflow_count={workflow_count}",
                     bounds
                 );
                 self.logged = true;
@@ -732,8 +1245,8 @@ mod native {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn poc_html_contains_minimum_ipc_events() {
-        let html = super::poc_html(3);
+    fn fallback_html_contains_minimum_ipc_events() {
+        let html = super::fallback_html(3);
 
         assert!(html.contains("workflow:ready"));
         assert!(html.contains("workflow:load"));

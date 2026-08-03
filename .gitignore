@@ -1,4 +1,4 @@
 target/
 stitch_ai_task_management
 *.dmg
-web/workflow-canvas/node_modules/
+web/workflow-canvas/node_modules/.DS_Store

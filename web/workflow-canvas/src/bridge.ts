@@ -34,7 +34,11 @@ export function subscribeHostMessages(
     }
 
     const message = detail as HostMessage;
-    if (message.type === "workflow:load") {
+    if (
+      message.type === "workflow:load" ||
+      message.type === "workflows:hydrate" ||
+      message.type === "workflow:command_result"
+    ) {
       callback(message);
     }
   };

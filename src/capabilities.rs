@@ -1,6 +1,6 @@
 use editor::Editor;
 use gpui::{
-    div, prelude::*, px, relative, AnyElement, ClipboardItem, Context, Div, InteractiveElement,
+    div, prelude::*, px, relative, AnyElement, ClipboardItem, Context, InteractiveElement,
     ParentElement, Styled, Window,
 };
 
@@ -10,7 +10,9 @@ use crate::ui_theme::{
     SECONDARY_TEXT, SURFACE_PANEL,
 };
 use crate::workflows::{WorkflowDefinition, WorkflowEdge, WorkflowNode, WorkflowNodeKind};
-use crate::{AppState, CapabilitiesTab, ToastLevel, WorkflowEditState};
+use crate::{
+    app_state::WorkflowActivityState, AppState, CapabilitiesTab, ToastLevel, WorkflowEditState,
+};
 
 pub(crate) fn render_capabilities_titlebar(
     app: &AppState,
@@ -169,7 +171,499 @@ pub(crate) fn render_capabilities(
                 cx.defer_in(window, move |this, _window, cx| {
                     for event in pending_canvas_events {
                         match event {
+                            crate::workflow_webview::WorkflowCanvasEvent::AddAgent {
+                                request_id: _,
+                                workflow_id,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before adding agents."
+                                            .to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                match append_empty_agent_node(&workflow_id) {
+                                    Ok(node_id) => {
+                                        this.editing_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_node_id = Some(node_id.clone());
+                                        mark_workflow_dirty(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            format!("Added local Agent {}", node_id),
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Added local Agent {}", node_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Added local Agent {}", node_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to add Agent: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to add Agent: {}", err),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::Save {
+                                request_id: _,
+                                workflow_id,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before saving.".to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                match validate_and_save_workflow_definition(&workflow_id) {
+                                    Ok(()) => {
+                                        mark_workflow_saved(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Saved workflow {}", workflow_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Saved workflow {}", workflow_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        mark_workflow_save_failed(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            err.to_string(),
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to save workflow: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to save workflow: {}", err),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::Run {
+                                request_id: _,
+                                workflow_id,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before running.".to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                this.push_toast(
+                                    ToastLevel::Info,
+                                    format!("Running draft workflow {}...", workflow_id),
+                                    cx,
+                                );
+                                mark_workflow_activity(
+                                    &mut this.workflow_activity_states,
+                                    &workflow_id,
+                                    "pending",
+                                    format!("Running draft workflow {}...", workflow_id),
+                                );
+                                cx.spawn(async move |this, cx| {
+                                    let result = run_workflow_draft(workflow_id.clone()).await;
+                                    let _ = this.update(cx, |this, cx| match result {
+                                        Ok(value) => {
+                                            this.workflow_node_run_statuses.insert(
+                                                workflow_id.clone(),
+                                                workflow_node_statuses_from_run(&value),
+                                            );
+                                            mark_workflow_activity(
+                                                &mut this.workflow_activity_states,
+                                                &workflow_id,
+                                                "success",
+                                                format!(
+                                                    "Draft workflow finished: {}",
+                                                    value["status"]
+                                                ),
+                                            );
+                                            this.push_toast(
+                                                ToastLevel::Success,
+                                                format!(
+                                                    "Draft workflow finished: {}",
+                                                    value["status"]
+                                                ),
+                                                cx,
+                                            );
+                                        }
+                                        Err(err) => {
+                                            mark_workflow_activity(
+                                                &mut this.workflow_activity_states,
+                                                &workflow_id,
+                                                "error",
+                                                format!("Draft workflow failed: {}", err),
+                                            );
+                                            this.push_toast(
+                                                ToastLevel::Error,
+                                                format!("Draft workflow failed: {}", err),
+                                                cx,
+                                            );
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::Publish {
+                                request_id: _,
+                                workflow_id,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before publishing."
+                                            .to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                match load_workflow_definition(&workflow_id).and_then(
+                                    |definition| {
+                                        publish_workflow_as_capability(
+                                            &definition.id,
+                                            &definition.name,
+                                            &definition.description,
+                                        )
+                                    },
+                                ) {
+                                    Ok(capability_id) => {
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Published capability {}", capability_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Published capability {}", capability_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to publish workflow: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to publish workflow: {}", err),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::CopilotGenerate {
+                                request_id: _,
+                                workflow_id,
+                                brief,
+                            } => {
+                                let brief = brief.trim().to_string();
+                                if brief.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Describe the workflow you want Copilot to generate."
+                                            .to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                this.push_toast(
+                                    ToastLevel::Info,
+                                    "Generating workflow draft with AI Copilot...".to_string(),
+                                    cx,
+                                );
+                                if let Some(workflow_id) = workflow_id.as_deref() {
+                                    mark_workflow_activity(
+                                        &mut this.workflow_activity_states,
+                                        workflow_id,
+                                        "pending",
+                                        "Generating workflow draft with AI Copilot...",
+                                    );
+                                }
+                                cx.spawn(async move |this, cx| {
+                                    let result =
+                                        create_workflow_from_copilot_brief(&brief, workflow_id)
+                                            .await;
+                                    let _ = this.update(cx, |this, cx| match result {
+                                        Ok(workflow_id) => {
+                                            this.editing_workflow_id = Some(workflow_id.clone());
+                                            this.selected_workflow_id = Some(workflow_id.clone());
+                                            this.selected_workflow_node_id = None;
+                                            mark_workflow_dirty(
+                                                &mut this.workflow_edit_states,
+                                                &workflow_id,
+                                                "Generated by AI Copilot",
+                                            );
+                                            mark_workflow_activity(
+                                                &mut this.workflow_activity_states,
+                                                &workflow_id,
+                                                "success",
+                                                format!("Generated workflow draft {}", workflow_id),
+                                            );
+                                            this.push_toast(
+                                                ToastLevel::Success,
+                                                format!("Generated workflow draft {}", workflow_id),
+                                                cx,
+                                            );
+                                        }
+                                        Err(err) => {
+                                            let workflow_id = this
+                                                .selected_workflow_id
+                                                .clone()
+                                                .or_else(|| this.editing_workflow_id.clone())
+                                                .unwrap_or_default();
+                                            if !workflow_id.is_empty() {
+                                                mark_workflow_activity(
+                                                    &mut this.workflow_activity_states,
+                                                    &workflow_id,
+                                                    "error",
+                                                    format!("AI Copilot failed: {}", err),
+                                                );
+                                            }
+                                            this.push_toast(
+                                                ToastLevel::Error,
+                                                format!("AI Copilot failed: {}", err),
+                                                cx,
+                                            );
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::SelectWorkflow {
+                                request_id: _,
+                                workflow_id,
+                            } => match load_workflow_definition_json(&workflow_id) {
+                                Ok(json) => {
+                                    this.editing_workflow_id = Some(workflow_id.clone());
+                                    this.selected_workflow_id = Some(workflow_id.clone());
+                                    this.selected_workflow_node_id = None;
+                                    this.workflow_edit_json = json;
+                                    mark_workflow_activity(
+                                        &mut this.workflow_activity_states,
+                                        &workflow_id,
+                                        "info",
+                                        format!("Selected workflow {}", workflow_id),
+                                    );
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        format!("Selected workflow {}", workflow_id),
+                                        cx,
+                                    );
+                                }
+                                Err(err) => this.push_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to select workflow: {}", err),
+                                    cx,
+                                ),
+                            },
+                            crate::workflow_webview::WorkflowCanvasEvent::CreateFromTemplate {
+                                request_id: _,
+                                template_id,
+                            } => {
+                                match workflow_template_kind_from_id(&template_id)
+                                    .and_then(create_workflow_from_template)
+                                {
+                                    Ok(workflow_id) => {
+                                        this.editing_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_node_id = None;
+                                        mark_workflow_dirty(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            "Created from template",
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Created workflow {}", workflow_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Created workflow {}", workflow_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => this.push_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to create workflow: {}", err),
+                                        cx,
+                                    ),
+                                }
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::UpdateJson {
+                                request_id: _,
+                                workflow_id,
+                                json,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before editing JSON."
+                                            .to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                match save_workflow_definition_json(&json) {
+                                    Ok(saved_id) => {
+                                        this.workflow_edit_json = json;
+                                        this.editing_workflow_id = Some(saved_id.clone());
+                                        this.selected_workflow_id = Some(saved_id.clone());
+                                        this.selected_workflow_node_id = None;
+                                        mark_workflow_saved(
+                                            &mut this.workflow_edit_states,
+                                            &saved_id,
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &saved_id,
+                                            "success",
+                                            format!("Saved workflow {}", saved_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Saved workflow {}", saved_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        mark_workflow_save_failed(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            err.to_string(),
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to save workflow JSON: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to save workflow JSON: {}", err),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                            crate::workflow_webview::WorkflowCanvasEvent::UpdateAgent {
+                                request_id: _,
+                                workflow_id,
+                                node_id,
+                                update,
+                            } => {
+                                let workflow_id = workflow_id
+                                    .or_else(|| fallback_workflow_id.clone())
+                                    .unwrap_or_default();
+                                if workflow_id.is_empty() {
+                                    this.push_toast(
+                                        ToastLevel::Info,
+                                        "Create or select a workflow before editing agents."
+                                            .to_string(),
+                                        cx,
+                                    );
+                                    continue;
+                                }
+                                match save_workflow_agent_node_update(
+                                    &workflow_id,
+                                    &node_id,
+                                    WorkflowAgentNodeUpdate::from(update),
+                                ) {
+                                    Ok(()) => {
+                                        this.editing_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_id = Some(workflow_id.clone());
+                                        this.selected_workflow_node_id = Some(node_id.clone());
+                                        mark_workflow_dirty(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            format!("Saved Agent {}", node_id),
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Saved Agent {}", node_id),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Success,
+                                            format!("Saved Agent {}", node_id),
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        mark_workflow_save_failed(
+                                            &mut this.workflow_edit_states,
+                                            &workflow_id,
+                                            err.to_string(),
+                                        );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to save Agent: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to save Agent: {}", err),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
                             crate::workflow_webview::WorkflowCanvasEvent::NodeSelected {
+                                request_id: _,
                                 workflow_id,
                                 node_id,
                             } => {
@@ -184,6 +678,7 @@ pub(crate) fn render_capabilities(
                                 this.selected_workflow_node_id = Some(node_id);
                             }
                             crate::workflow_webview::WorkflowCanvasEvent::EdgeCreated {
+                                request_id: _,
                                 workflow_id,
                                 source_node_id,
                                 target_node_id,
@@ -205,20 +700,35 @@ pub(crate) fn render_capabilities(
                                             &workflow_id,
                                             format!("Created route {}", edge_id),
                                         );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Created route {}", edge_id),
+                                        );
                                         this.push_toast(
                                             ToastLevel::Success,
                                             format!("Created route {}", edge_id),
                                             cx,
                                         );
                                     }
-                                    Err(err) => this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("Failed to create route: {}", err),
-                                        cx,
-                                    ),
+                                    Err(err) => {
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to create route: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to create route: {}", err),
+                                            cx,
+                                        );
+                                    }
                                 }
                             }
                             crate::workflow_webview::WorkflowCanvasEvent::EdgeDeleted {
+                                request_id: _,
                                 workflow_id,
                                 edge_id,
                             } => {
@@ -235,20 +745,35 @@ pub(crate) fn render_capabilities(
                                             &workflow_id,
                                             format!("Deleted route {}", edge_id),
                                         );
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "success",
+                                            format!("Deleted route {}", edge_id),
+                                        );
                                         this.push_toast(
                                             ToastLevel::Success,
                                             format!("Deleted route {}", edge_id),
                                             cx,
                                         );
                                     }
-                                    Err(err) => this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("Failed to delete route: {}", err),
-                                        cx,
-                                    ),
+                                    Err(err) => {
+                                        mark_workflow_activity(
+                                            &mut this.workflow_activity_states,
+                                            &workflow_id,
+                                            "error",
+                                            format!("Failed to delete route: {}", err),
+                                        );
+                                        this.push_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to delete route: {}", err),
+                                            cx,
+                                        );
+                                    }
                                 }
                             }
                             crate::workflow_webview::WorkflowCanvasEvent::Error {
+                                request_id: _,
                                 workflow_id,
                                 message,
                             } => {
@@ -260,6 +785,12 @@ pub(crate) fn render_capabilities(
                                         &mut this.workflow_edit_states,
                                         &workflow_id,
                                         message.clone(),
+                                    );
+                                    mark_workflow_activity(
+                                        &mut this.workflow_activity_states,
+                                        &workflow_id,
+                                        "error",
+                                        format!("Workflow canvas error: {}", message),
                                     );
                                 }
                                 this.push_toast(
@@ -273,45 +804,37 @@ pub(crate) fn render_capabilities(
                     cx.notify();
                 });
             }
-            let canvas_workflow = selected_definition.as_ref().map(|definition| {
-                crate::workflow_webview::CanvasWorkflow::from_definition_with_statuses(
-                    definition,
-                    app.workflow_node_run_statuses.get(&definition.id),
-                )
-            });
+            let builder_state = workflows
+                .as_ref()
+                .ok()
+                .map(|items| workflow_builder_state(app, items, selected_definition.as_ref()));
 
             content = content.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_6()
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(PRIMARY_TEXT())
-                                    .child(t(lang, Translations::WORKFLOW_BUILDER)),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .line_height(relative(1.5))
-                                    .text_color(SECONDARY_TEXT())
-                                    .child(t(lang, Translations::WORKFLOWS_HINT)),
-                            ),
-                    )
-                    .child(workflow_template_gallery(cx)),
+                div().flex().items_start().justify_between().gap_6().child(
+                    div()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_2xl()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(PRIMARY_TEXT())
+                                .child(t(lang, Translations::WORKFLOW_BUILDER)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .line_height(relative(1.5))
+                                .text_color(SECONDARY_TEXT())
+                                .child(t(lang, Translations::WORKFLOWS_HINT)),
+                        ),
+                ),
             );
 
-            content = content.child(workflow_builder_shell(
+            content = content.child(workflow_builder_webview_host(
                 app,
                 selected_definition.as_ref(),
-                canvas_workflow,
+                builder_state,
                 window,
                 cx,
             ));
@@ -324,13 +847,7 @@ pub(crate) fn render_capabilities(
                         t(lang, Translations::WORKFLOWS_HINT),
                     ));
                 }
-                Ok(workflows) => {
-                    let mut list = div().flex_col().gap_3();
-                    for workflow in workflows {
-                        list = list.child(workflow_card(app, window, workflow, cx));
-                    }
-                    content = content.child(list);
-                }
+                Ok(_) => {}
                 Err(err) => {
                     content = content.child(
                         div()
@@ -351,20 +868,13 @@ pub(crate) fn render_capabilities(
     content.into_any_element()
 }
 
-fn workflow_builder_shell(
+fn workflow_builder_webview_host(
     app: &AppState,
     definition: Option<&WorkflowDefinition>,
-    workflow: Option<crate::workflow_webview::CanvasWorkflow>,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
+    builder_state: Option<crate::workflow_webview::WorkflowBuilderState>,
+    _window: &mut Window,
+    _cx: &mut Context<AppState>,
 ) -> impl IntoElement {
-    let publish_definition = definition.cloned();
-    let add_agent_definition = definition.cloned();
-    let save_definition = definition.cloned();
-    let run_definition = definition.cloned();
-    let copilot_definition = definition.cloned();
-    let copilot_brief_editor = workflow_copilot_brief_editor(window, cx);
-    let weak_copilot_brief = copilot_brief_editor.downgrade();
     let save_status = definition
         .map(|definition| workflow_edit_state_label(app, &definition.id))
         .unwrap_or_else(|| "No workflow selected".to_string());
@@ -403,895 +913,21 @@ fn workflow_builder_shell(
                             crate::workflow_webview::webview_status_label(),
                             save_status
                         ))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(small_button("Publish", cx, move |this, cx| {
-                            if let Some(definition) = publish_definition.as_ref() {
-                                match publish_workflow_as_capability(
-                                    &definition.id,
-                                    &definition.name,
-                                    &definition.description,
-                                ) {
-                                    Ok(capability_id) => this.push_toast(
-                                        ToastLevel::Success,
-                                        format!("Published capability {}", capability_id),
-                                        cx,
-                                    ),
-                                    Err(err) => this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("Failed to publish workflow: {}", err),
-                                        cx,
-                                    ),
-                                }
-                            } else {
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    "Create or select a workflow before publishing.".to_string(),
-                                    cx,
-                                );
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Add Agent", cx, move |this, cx| {
-                            if let Some(definition) = add_agent_definition.as_ref() {
-                                match append_empty_agent_node(&definition.id) {
-                                    Ok(node_id) => {
-                                        this.editing_workflow_id = Some(definition.id.clone());
-                                        mark_workflow_dirty(
-                                            &mut this.workflow_edit_states,
-                                            &definition.id,
-                                            format!("Added local Agent {}", node_id),
-                                        );
-                                        this.push_toast(
-                                            ToastLevel::Success,
-                                            format!("Added local Agent {}", node_id),
-                                            cx,
-                                        );
-                                    }
-                                    Err(err) => this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("Failed to add Agent: {}", err),
-                                        cx,
-                                    ),
-                                }
-                            } else {
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    "Create or select a workflow before adding agents.".to_string(),
-                                    cx,
-                                );
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Save", cx, move |this, cx| {
-                            if let Some(definition) = save_definition.as_ref() {
-                                match validate_and_save_workflow_definition(&definition.id) {
-                                    Ok(()) => {
-                                        mark_workflow_saved(
-                                            &mut this.workflow_edit_states,
-                                            &definition.id,
-                                        );
-                                        this.push_toast(
-                                            ToastLevel::Success,
-                                            format!("Saved workflow {}", definition.id),
-                                            cx,
-                                        );
-                                    }
-                                    Err(err) => {
-                                        mark_workflow_save_failed(
-                                            &mut this.workflow_edit_states,
-                                            &definition.id,
-                                            err.to_string(),
-                                        );
-                                        this.push_toast(
-                                            ToastLevel::Error,
-                                            format!("Failed to save workflow: {}", err),
-                                            cx,
-                                        );
-                                    }
-                                }
-                            } else {
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    "Create or select a workflow before saving.".to_string(),
-                                    cx,
-                                );
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Run", cx, move |this, cx| {
-                            if let Some(definition) = run_definition.as_ref() {
-                                let workflow_id = definition.id.clone();
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    format!("Running draft workflow {}...", workflow_id),
-                                    cx,
-                                );
-                                cx.spawn(async move |this, cx| {
-                                    let result = run_workflow_draft(workflow_id.clone()).await;
-                                    let _ = this.update(cx, |this, cx| match result {
-                                        Ok(value) => {
-                                            this.workflow_node_run_statuses.insert(
-                                                workflow_id.clone(),
-                                                workflow_node_statuses_from_run(&value),
-                                            );
-                                            this.push_toast(
-                                                ToastLevel::Success,
-                                                format!(
-                                                    "Draft workflow finished: {}",
-                                                    value["status"]
-                                                ),
-                                                cx,
-                                            );
-                                        }
-                                        Err(err) => this.push_toast(
-                                            ToastLevel::Error,
-                                            format!("Draft workflow failed: {}", err),
-                                            cx,
-                                        ),
-                                    });
-                                })
-                                .detach();
-                            } else {
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    "Create or select a workflow before running.".to_string(),
-                                    cx,
-                                );
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("AI Copilot", cx, move |this, cx| {
-                            let brief = weak_copilot_brief
-                                .upgrade()
-                                .map(|editor| editor.read_with(cx, |editor, cx| editor.text(cx)))
-                                .unwrap_or_default();
-                            if brief.trim().is_empty() {
-                                this.push_toast(
-                                    ToastLevel::Info,
-                                    "Describe the workflow you want Copilot to generate."
-                                        .to_string(),
-                                    cx,
-                                );
-                                cx.notify();
-                                return;
-                            }
-                            let source_workflow_id = copilot_definition
-                                .as_ref()
-                                .map(|definition| definition.id.clone());
-                            this.push_toast(
-                                ToastLevel::Info,
-                                "Generating workflow draft with AI Copilot...".to_string(),
-                                cx,
-                            );
-                            cx.spawn(async move |this, cx| {
-                                let result =
-                                    create_workflow_from_copilot_brief(&brief, source_workflow_id)
-                                        .await;
-                                let _ = this.update(cx, |this, cx| match result {
-                                    Ok(workflow_id) => {
-                                        this.editing_workflow_id = Some(workflow_id.clone());
-                                        this.selected_workflow_id = Some(workflow_id.clone());
-                                        this.selected_workflow_node_id = None;
-                                        mark_workflow_dirty(
-                                            &mut this.workflow_edit_states,
-                                            &workflow_id,
-                                            "Generated by AI Copilot",
-                                        );
-                                        this.push_toast(
-                                            ToastLevel::Success,
-                                            format!("Generated workflow draft {}", workflow_id),
-                                            cx,
-                                        );
-                                    }
-                                    Err(err) => this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("AI Copilot failed: {}", err),
-                                        cx,
-                                    ),
-                                });
-                            })
-                            .detach();
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .px_4()
-                .py_1()
-                .border_b_1()
-                .border_color(BORDER_LIGHT())
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(MUTED_TEXT())
-                        .child("Copilot brief"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .px_3()
-                        .py_0p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(BORDER_LIGHT())
-                        .bg(CANVAS_BG())
-                        .text_sm()
-                        .text_color(PRIMARY_TEXT())
-                        .child(copilot_brief_editor),
                 ),
         )
         .child(
             div()
                 .flex_1()
-                .min_h(px(332.0))
-                .flex()
+                .min_h(px(520.0))
+                .overflow_hidden()
+                .bg(CANVAS_BG())
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .bg(CANVAS_BG())
-                        .child(
-                            crate::workflow_webview::workflow_canvas_poc(workflow)
-                                .w_full()
-                                .h_full()
-                                .bg(CANVAS_BG()),
-                        ),
-                )
-                .child(workflow_inspector_panel(
-                    definition,
-                    app.selected_workflow_id.as_deref(),
-                    app.selected_workflow_node_id.as_deref(),
-                    window,
-                    cx,
-                )),
-        )
-}
-
-fn workflow_inspector_panel(
-    definition: Option<&WorkflowDefinition>,
-    selected_workflow_id: Option<&str>,
-    selected_node_id: Option<&str>,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    let mut panel = div()
-        .w(px(300.0))
-        .flex_none()
-        .p_4()
-        .border_l_1()
-        .border_color(BORDER_LIGHT())
-        .bg(GHOST_SURFACE_BG())
-        .flex_col()
-        .gap_4();
-
-    if let Some(definition) = definition {
-        let selected_node = selected_node_id
-            .filter(|_| selected_workflow_id == Some(definition.id.as_str()))
-            .and_then(|node_id| {
-                definition
-                    .nodes
-                    .iter()
-                    .find(|node| node.id.as_str() == node_id)
-            });
-        if let Some(node) = selected_node {
-            let workflow_id = definition.id.clone();
-            let node_id = node.id.clone();
-            let name_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "name",
-                &node.name,
-                false,
-                window,
-                cx,
-            );
-            let description_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "description",
-                &workflow_node_config_string(node, &["description"], ""),
-                true,
-                window,
-                cx,
-            );
-            let category_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "category",
-                &workflow_node_config_string(node, &["metadata", "category"], ""),
-                false,
-                window,
-                cx,
-            );
-            let tags_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "tags",
-                &workflow_node_config_tags(node),
-                false,
-                window,
-                cx,
-            );
-            let version_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "version",
-                &workflow_node_config_string(node, &["metadata", "version"], "0.1.0"),
-                false,
-                window,
-                cx,
-            );
-            let model_provider_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "model_provider",
-                &workflow_node_config_string(node, &["model", "provider"], "default"),
-                false,
-                window,
-                cx,
-            );
-            let model_name_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "model_name",
-                &workflow_node_config_string(node, &["model", "model"], "default"),
-                false,
-                window,
-                cx,
-            );
-            let temperature_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "temperature",
-                &workflow_node_config_number(node, &["model", "temperature"], "0.2"),
-                false,
-                window,
-                cx,
-            );
-            let max_tokens_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "max_tokens",
-                &workflow_node_config_number(node, &["model", "max_tokens"], "4096"),
-                false,
-                window,
-                cx,
-            );
-            let timeout_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "timeout",
-                &workflow_node_config_number(node, &["model", "timeout_seconds"], "120"),
-                false,
-                window,
-                cx,
-            );
-            let system_prompt_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "system_prompt",
-                &workflow_node_config_string(node, &["prompt", "system"], ""),
-                true,
-                window,
-                cx,
-            );
-            let instructions_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "instructions",
-                &workflow_node_config_string(node, &["prompt", "instructions"], ""),
-                true,
-                window,
-                cx,
-            );
-            let output_format_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "output_format",
-                &workflow_node_config_string(node, &["output", "format"], "text"),
-                false,
-                window,
-                cx,
-            );
-            let output_schema_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "output_schema",
-                &workflow_node_config_json_text(node, &["output", "schema"], "null"),
-                true,
-                window,
-                cx,
-            );
-            let summarize_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "summarize",
-                &workflow_node_config_bool(node, &["output", "summarize_with_mainagent"], true)
-                    .to_string(),
-                false,
-                window,
-                cx,
-            );
-            let skills_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "skills",
-                &workflow_node_config_json_text(node, &["tools", "skills"], "[]"),
-                true,
-                window,
-                cx,
-            );
-            let mcp_tools_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "mcp_tools",
-                &workflow_node_config_json_text(node, &["tools", "mcp_tools"], "[]"),
-                true,
-                window,
-                cx,
-            );
-            let system_tools_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "system_tools",
-                &workflow_node_config_json_text(node, &["tools", "system_tools"], "[]"),
-                true,
-                window,
-                cx,
-            );
-            let coding_runtimes_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "coding_runtimes",
-                &workflow_node_config_json_text(node, &["tools", "coding_runtimes"], "[]"),
-                true,
-                window,
-                cx,
-            );
-            let retry_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "retry",
-                &workflow_node_config_number(node, &["settings", "retry"], "0"),
-                false,
-                window,
-                cx,
-            );
-            let settings_timeout_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "settings_timeout",
-                &workflow_node_config_number(node, &["settings", "timeout_seconds"], "120"),
-                false,
-                window,
-                cx,
-            );
-            let human_confirmation_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "human_confirmation",
-                &workflow_node_config_bool(node, &["settings", "human_confirmation"], false)
-                    .to_string(),
-                false,
-                window,
-                cx,
-            );
-            let routing_policy_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "routing_policy",
-                &workflow_node_config_json_text(node, &["routing"], r#"{"mode":"sequential"}"#),
-                true,
-                window,
-                cx,
-            );
-            let permissions_editor = workflow_agent_field_editor(
-                &workflow_id,
-                &node_id,
-                "permissions",
-                &workflow_node_config_string(node, &["settings", "permissions"], "ask"),
-                false,
-                window,
-                cx,
-            );
-
-            let weak_name = name_editor.downgrade();
-            let weak_description = description_editor.downgrade();
-            let weak_category = category_editor.downgrade();
-            let weak_tags = tags_editor.downgrade();
-            let weak_version = version_editor.downgrade();
-            let weak_model_provider = model_provider_editor.downgrade();
-            let weak_model_name = model_name_editor.downgrade();
-            let weak_temperature = temperature_editor.downgrade();
-            let weak_max_tokens = max_tokens_editor.downgrade();
-            let weak_timeout = timeout_editor.downgrade();
-            let weak_system_prompt = system_prompt_editor.downgrade();
-            let weak_instructions = instructions_editor.downgrade();
-            let weak_output_format = output_format_editor.downgrade();
-            let weak_output_schema = output_schema_editor.downgrade();
-            let weak_summarize = summarize_editor.downgrade();
-            let weak_skills = skills_editor.downgrade();
-            let weak_mcp_tools = mcp_tools_editor.downgrade();
-            let weak_system_tools = system_tools_editor.downgrade();
-            let weak_coding_runtimes = coding_runtimes_editor.downgrade();
-            let weak_retry = retry_editor.downgrade();
-            let weak_settings_timeout = settings_timeout_editor.downgrade();
-            let weak_human_confirmation = human_confirmation_editor.downgrade();
-            let weak_routing_policy = routing_policy_editor.downgrade();
-            let weak_permissions = permissions_editor.downgrade();
-            let save_workflow_id = workflow_id.clone();
-            let save_node_id = node_id.clone();
-
-            return panel
-                .child(
-                    div()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(PRIMARY_TEXT())
-                                .child("Agent Inspector"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(MUTED_TEXT())
-                                .child("Workflow-local node instance"),
-                        ),
-                )
-                .child(workflow_inspector_row(
-                    "Node",
-                    format!("{} / {}", node.id, workflow_node_kind_label(&node.kind)),
-                ))
-                .child(
-                    workflow_editor_section("Basic")
-                        .child(workflow_editor_field("Name", name_editor, false))
-                        .child(workflow_editor_field(
-                            "Description",
-                            description_editor,
-                            true,
-                        ))
-                        .child(workflow_editor_field("Category", category_editor, false))
-                        .child(workflow_editor_field("Tags", tags_editor, false))
-                        .child(workflow_editor_field("Version", version_editor, false)),
-                )
-                .child(
-                    workflow_editor_section("Model")
-                        .child(workflow_editor_field(
-                            "Provider",
-                            model_provider_editor,
-                            false,
-                        ))
-                        .child(workflow_editor_field("Model", model_name_editor, false))
-                        .child(workflow_editor_field(
-                            "Temperature",
-                            temperature_editor,
-                            false,
-                        ))
-                        .child(workflow_editor_field(
-                            "Max tokens",
-                            max_tokens_editor,
-                            false,
-                        ))
-                        .child(workflow_editor_field(
-                            "Timeout seconds",
-                            timeout_editor,
-                            false,
-                        )),
-                )
-                .child(
-                    workflow_editor_section("Prompt")
-                        .child(workflow_editor_field("System", system_prompt_editor, true))
-                        .child(workflow_editor_field(
-                            "Instructions",
-                            instructions_editor,
-                            true,
-                        )),
-                )
-                .child(
-                    workflow_editor_section("Output")
-                        .child(workflow_editor_field("Format", output_format_editor, false))
-                        .child(workflow_editor_field(
-                            "Schema JSON",
-                            output_schema_editor,
-                            true,
-                        ))
-                        .child(workflow_editor_field(
-                            "Summarize with MainAgent",
-                            summarize_editor,
-                            false,
-                        )),
-                )
-                .child(
-                    workflow_editor_section("Tools")
-                        .child(workflow_editor_field("Skills JSON", skills_editor, true))
-                        .child(workflow_editor_field(
-                            "MCP tools JSON",
-                            mcp_tools_editor,
-                            true,
-                        ))
-                        .child(workflow_editor_field(
-                            "System tools JSON",
-                            system_tools_editor,
-                            true,
-                        ))
-                        .child(workflow_editor_field(
-                            "Coding runtimes JSON",
-                            coding_runtimes_editor,
-                            true,
-                        )),
-                )
-                .child(
-                    workflow_editor_section("Settings")
-                        .child(workflow_editor_field("Retry", retry_editor, false))
-                        .child(workflow_editor_field(
-                            "Timeout seconds",
-                            settings_timeout_editor,
-                            false,
-                        ))
-                        .child(workflow_editor_field(
-                            "Human confirmation",
-                            human_confirmation_editor,
-                            false,
-                        ))
-                        .child(workflow_editor_field(
-                            "Routing policy JSON",
-                            routing_policy_editor,
-                            true,
-                        ))
-                        .child(workflow_editor_field(
-                            "Permissions",
-                            permissions_editor,
-                            false,
-                        ))
-                        .child(workflow_inspector_row(
-                            "Routing",
-                            workflow_node_routing_mode(node),
-                        ))
-                        .child(workflow_inspector_row(
-                            "Tools",
-                            workflow_node_tool_summary(node),
-                        )),
-                )
-                .child(small_button("Save Agent", cx, move |this, cx| {
-                    let read = |editor: &gpui::WeakEntity<Editor>, cx: &mut Context<AppState>| {
-                        editor
-                            .upgrade()
-                            .map(|editor| editor.read_with(cx, |editor, cx| editor.text(cx)))
-                            .unwrap_or_default()
-                    };
-                    let update = WorkflowAgentNodeUpdate {
-                        name: read(&weak_name, cx),
-                        description: read(&weak_description, cx),
-                        category: read(&weak_category, cx),
-                        tags: read(&weak_tags, cx),
-                        version: read(&weak_version, cx),
-                        model_provider: read(&weak_model_provider, cx),
-                        model_name: read(&weak_model_name, cx),
-                        temperature: read(&weak_temperature, cx),
-                        max_tokens: read(&weak_max_tokens, cx),
-                        timeout_seconds: read(&weak_timeout, cx),
-                        system_prompt: read(&weak_system_prompt, cx),
-                        instructions: read(&weak_instructions, cx),
-                        output_format: read(&weak_output_format, cx),
-                        output_schema: read(&weak_output_schema, cx),
-                        summarize_with_mainagent: read(&weak_summarize, cx),
-                        skills_json: read(&weak_skills, cx),
-                        mcp_tools_json: read(&weak_mcp_tools, cx),
-                        system_tools_json: read(&weak_system_tools, cx),
-                        coding_runtimes_json: read(&weak_coding_runtimes, cx),
-                        retry: read(&weak_retry, cx),
-                        settings_timeout_seconds: read(&weak_settings_timeout, cx),
-                        human_confirmation: read(&weak_human_confirmation, cx),
-                        routing_policy_json: read(&weak_routing_policy, cx),
-                        permissions: read(&weak_permissions, cx),
-                    };
-                    match save_workflow_agent_node_update(&save_workflow_id, &save_node_id, update)
-                    {
-                        Ok(()) => {
-                            mark_workflow_dirty(
-                                &mut this.workflow_edit_states,
-                                &save_workflow_id,
-                                format!("Saved Agent {}", save_node_id),
-                            );
-                            this.push_toast(
-                                ToastLevel::Success,
-                                format!("Saved Agent {}", save_node_id),
-                                cx,
-                            );
-                        }
-                        Err(err) => {
-                            mark_workflow_save_failed(
-                                &mut this.workflow_edit_states,
-                                &save_workflow_id,
-                                err.to_string(),
-                            );
-                            this.push_toast(
-                                ToastLevel::Error,
-                                format!("Failed to save Agent: {}", err),
-                                cx,
-                            );
-                        }
-                    }
-                    cx.notify();
-                }));
-        }
-        panel = panel
-            .child(
-                div()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(PRIMARY_TEXT())
-                            .child("Workflow Inspector"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(MUTED_TEXT())
-                            .child("No node selected"),
-                    ),
-            )
-            .child(workflow_inspector_row("Name", definition.name.clone()))
-            .child(workflow_inspector_row("ID", definition.id.clone()))
-            .child(workflow_inspector_row(
-                "Description",
-                if definition.description.is_empty() {
-                    "No description".to_string()
-                } else {
-                    definition.description.clone()
-                },
-            ))
-            .child(workflow_inspector_row(
-                "Nodes",
-                definition.nodes.len().to_string(),
-            ))
-            .child(workflow_inspector_row(
-                "Edges",
-                definition.edges.len().to_string(),
-            ))
-            .child(workflow_inspector_row(
-                "Status",
-                format!("{:?}", definition.status),
-            ));
-    } else {
-        panel = panel.child(
-            div()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(PRIMARY_TEXT())
-                        .child("Workflow Inspector"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .line_height(relative(1.45))
-                        .text_color(MUTED_TEXT())
-                        .child("Create a workflow from a template to inspect and edit it here."),
+                    crate::workflow_webview::workflow_builder_webview(builder_state)
+                        .w_full()
+                        .h_full()
+                        .bg(CANVAS_BG()),
                 ),
-        );
-    }
-
-    panel
-}
-
-fn workflow_inspector_row(label: &'static str, value: String) -> impl IntoElement {
-    div()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(MUTED_TEXT())
-                .child(label),
         )
-        .child(
-            div()
-                .text_sm()
-                .line_height(relative(1.35))
-                .text_color(PRIMARY_TEXT())
-                .child(value),
-        )
-}
-
-fn workflow_editor_section(title: &'static str) -> Div {
-    div()
-        .flex_col()
-        .gap_2()
-        .pt_3()
-        .border_t_1()
-        .border_color(BORDER_LIGHT())
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(MUTED_TEXT())
-                .child(title),
-        )
-}
-
-fn workflow_editor_field(
-    label: &'static str,
-    editor: gpui::Entity<Editor>,
-    multiline: bool,
-) -> impl IntoElement {
-    div()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(MUTED_TEXT())
-                .child(label),
-        )
-        .child(
-            div()
-                .h(if multiline { px(78.0) } else { px(32.0) })
-                .p_2()
-                .rounded_lg()
-                .border_1()
-                .border_color(BORDER_LIGHT())
-                .bg(SURFACE_PANEL())
-                .text_xs()
-                .text_color(PRIMARY_TEXT())
-                .child(editor),
-        )
-}
-
-fn workflow_agent_field_editor(
-    workflow_id: &str,
-    node_id: &str,
-    field: &'static str,
-    initial_text: &str,
-    multiline: bool,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> gpui::Entity<Editor> {
-    let key = format!("workflow_agent_{workflow_id}_{node_id}_{field}");
-    let initial_text = initial_text.to_string();
-    window.use_keyed_state(key, &mut *cx, |window, cx| {
-        let mut editor = if multiline {
-            Editor::multi_line(window, cx)
-        } else {
-            Editor::single_line(window, cx)
-        };
-        editor.set_text(initial_text, window, cx);
-        editor
-    })
-}
-
-fn workflow_copilot_brief_editor(
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> gpui::Entity<Editor> {
-    window.use_keyed_state("workflow_copilot_brief", &mut *cx, |window, cx| {
-        let mut editor = Editor::single_line(window, cx);
-        editor.set_placeholder_text("例：帮我设计一个多 Agent 会员管理系统开发流程", window, cx);
-        editor
-    })
 }
 
 fn import_capability_panel(
@@ -1910,6 +1546,198 @@ fn load_workflow_drafts() -> anyhow::Result<Vec<crate::workflows::WorkflowSummar
     store.list_drafts()
 }
 
+fn workflow_builder_state(
+    app: &AppState,
+    workflows: &[crate::workflows::WorkflowSummary],
+    selected_definition: Option<&WorkflowDefinition>,
+) -> crate::workflow_webview::WorkflowBuilderState {
+    let selected_workflow_id = selected_definition.map(|definition| definition.id.clone());
+    let workflow = selected_definition.map(|definition| {
+        crate::workflow_webview::CanvasWorkflow::from_definition_with_statuses(
+            definition,
+            app.workflow_node_run_statuses.get(&definition.id),
+        )
+    });
+    let workflow_json =
+        selected_definition.and_then(|definition| serde_json::to_string_pretty(definition).ok());
+    let selected_agent =
+        selected_definition.and_then(|definition| selected_agent_view(app, definition));
+    let edit_state = selected_workflow_id
+        .as_deref()
+        .map(|workflow_id| workflow_edit_state_view(app, workflow_id));
+    let activity = selected_workflow_id
+        .as_deref()
+        .and_then(|workflow_id| workflow_activity_view(app, workflow_id));
+    let run_statuses = selected_workflow_id
+        .as_deref()
+        .and_then(|workflow_id| app.workflow_node_run_statuses.get(workflow_id))
+        .cloned()
+        .unwrap_or_default();
+    let summaries = workflows
+        .iter()
+        .map(|summary| {
+            crate::workflow_webview::WorkflowSummaryView::new(
+                summary,
+                workflow_edit_state_view(app, &summary.id),
+            )
+        })
+        .collect();
+
+    crate::workflow_webview::WorkflowBuilderState::new(
+        summaries,
+        selected_workflow_id,
+        workflow,
+        workflow_json,
+        selected_agent,
+        edit_state,
+        activity,
+        workflow_template_views(),
+        run_statuses,
+    )
+}
+
+fn selected_agent_view(
+    app: &AppState,
+    definition: &WorkflowDefinition,
+) -> Option<crate::workflow_webview::WorkflowAgentInspectorView> {
+    let selected_node_id = app.selected_workflow_node_id.as_deref()?;
+    if app.selected_workflow_id.as_deref() != Some(definition.id.as_str()) {
+        return None;
+    }
+    let node = definition
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == selected_node_id)?;
+    if !matches!(node.kind, WorkflowNodeKind::Agent { .. }) {
+        return None;
+    }
+    Some(crate::workflow_webview::WorkflowAgentInspectorView::new(
+        definition.id.clone(),
+        node.id.clone(),
+        workflow_node_kind_label(&node.kind),
+        workflow_node_routing_mode(node),
+        workflow_node_tool_summary(node),
+        workflow_agent_update_view(node),
+    ))
+}
+
+fn workflow_agent_update_view(
+    node: &WorkflowNode,
+) -> crate::workflow_webview::WorkflowAgentUpdateView {
+    crate::workflow_webview::WorkflowAgentUpdateView {
+        name: node.name.clone(),
+        description: workflow_node_config_string(node, &["description"], ""),
+        category: workflow_node_config_string(node, &["metadata", "category"], ""),
+        tags: workflow_node_config_tags(node),
+        version: workflow_node_config_string(node, &["metadata", "version"], "0.1.0"),
+        model_provider: workflow_node_config_string(node, &["model", "provider"], "default"),
+        model_name: workflow_node_config_string(node, &["model", "model"], "default"),
+        temperature: workflow_node_config_number(node, &["model", "temperature"], "0.2"),
+        max_tokens: workflow_node_config_number(node, &["model", "max_tokens"], "4096"),
+        timeout_seconds: workflow_node_config_number(node, &["model", "timeout_seconds"], "120"),
+        system_prompt: workflow_node_config_string(node, &["prompt", "system"], ""),
+        instructions: workflow_node_config_string(node, &["prompt", "instructions"], ""),
+        output_format: workflow_node_config_string(node, &["output", "format"], "text"),
+        output_schema: workflow_node_config_json_text(node, &["output", "schema"], "null"),
+        summarize_with_mainagent: workflow_node_config_bool(
+            node,
+            &["output", "summarize_with_mainagent"],
+            true,
+        )
+        .to_string(),
+        skills_json: workflow_node_config_json_text(node, &["tools", "skills"], "[]"),
+        mcp_tools_json: workflow_node_config_json_text(node, &["tools", "mcp_tools"], "[]"),
+        system_tools_json: workflow_node_config_json_text(node, &["tools", "system_tools"], "[]"),
+        coding_runtimes_json: workflow_node_config_json_text(
+            node,
+            &["tools", "coding_runtimes"],
+            "[]",
+        ),
+        retry: workflow_node_config_number(node, &["settings", "retry"], "0"),
+        settings_timeout_seconds: workflow_node_config_number(
+            node,
+            &["settings", "timeout_seconds"],
+            "120",
+        ),
+        human_confirmation: workflow_node_config_bool(
+            node,
+            &["settings", "human_confirmation"],
+            false,
+        )
+        .to_string(),
+        routing_policy_json: workflow_node_config_json_text(
+            node,
+            &["routing"],
+            r#"{"mode":"sequential"}"#,
+        ),
+        permissions: workflow_node_config_string(node, &["settings", "permissions"], "ask"),
+    }
+}
+
+fn workflow_edit_state_view(
+    app: &AppState,
+    workflow_id: &str,
+) -> crate::workflow_webview::WorkflowEditStateView {
+    app.workflow_edit_states
+        .get(workflow_id)
+        .map(|state| {
+            crate::workflow_webview::WorkflowEditStateView::from_parts(
+                state.dirty,
+                state.reason.clone(),
+                state.last_error.clone(),
+            )
+        })
+        .unwrap_or_else(crate::workflow_webview::WorkflowEditStateView::saved)
+}
+
+fn workflow_activity_view(
+    app: &AppState,
+    workflow_id: &str,
+) -> Option<crate::workflow_webview::WorkflowActivityView> {
+    app.workflow_activity_states.get(workflow_id).map(|state| {
+        crate::workflow_webview::WorkflowActivityView::new(
+            state.level.clone(),
+            state.message.clone(),
+        )
+    })
+}
+
+fn workflow_template_views() -> Vec<crate::workflow_webview::WorkflowTemplateView> {
+    vec![
+        crate::workflow_webview::WorkflowTemplateView::new(
+            "echo",
+            "Echo Output",
+            "Return input through an output node.",
+        ),
+        crate::workflow_webview::WorkflowTemplateView::new(
+            "mainagent",
+            "MainAgent Task",
+            "Route work through the main Agent.",
+        ),
+        crate::workflow_webview::WorkflowTemplateView::new(
+            "approval",
+            "Human Approval",
+            "Pause for confirmation before producing output.",
+        ),
+    ]
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorkflowTemplateKind {
+    EchoOutput,
+    MainAgentTask,
+    HumanApproval,
+}
+
+fn workflow_template_kind_from_id(template_id: &str) -> anyhow::Result<WorkflowTemplateKind> {
+    match template_id {
+        "echo" => Ok(WorkflowTemplateKind::EchoOutput),
+        "mainagent" => Ok(WorkflowTemplateKind::MainAgentTask),
+        "approval" => Ok(WorkflowTemplateKind::HumanApproval),
+        other => anyhow::bail!("unknown workflow template '{}'", other),
+    }
+}
+
 fn load_recent_runs() -> anyhow::Result<Vec<crate::task_db::WorkflowRunRow>> {
     let db = crate::task_db::Database::new()?;
     crate::task_db::load_recent_workflow_runs(&db.conn, 8)
@@ -2115,75 +1943,28 @@ fn run_status_color(status: &str) -> gpui::Hsla {
     }
 }
 
-fn workflow_template_gallery(cx: &mut Context<AppState>) -> impl IntoElement {
+fn small_button<F>(label: &'static str, cx: &mut Context<AppState>, handler: F) -> impl IntoElement
+where
+    F: Fn(&mut AppState, &mut Context<AppState>) + Send + Sync + 'static,
+{
     div()
-        .w(px(420.0))
-        .p_4()
-        .rounded_xl()
+        .px_3()
+        .py_1()
+        .rounded_lg()
+        .bg(GHOST_SURFACE_BG())
         .border_1()
         .border_color(BORDER_LIGHT())
-        .bg(SURFACE_PANEL())
-        .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(PRIMARY_TEXT())
-                .child("Template gallery"),
+        .text_xs()
+        .text_color(ACCENT_TEXT())
+        .font_weight(gpui::FontWeight::BOLD)
+        .cursor_pointer()
+        .child(label)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                handler(this, cx);
+            }),
         )
-        .child(
-            div()
-                .text_xs()
-                .line_height(relative(1.4))
-                .text_color(SECONDARY_TEXT())
-                .child("Create editable draft workflows from common capability patterns."),
-        )
-        .child(template_button(
-            "Echo output",
-            WorkflowTemplateKind::EchoOutput,
-            cx,
-        ))
-        .child(template_button(
-            "MainAgent task",
-            WorkflowTemplateKind::MainAgentTask,
-            cx,
-        ))
-        .child(template_button(
-            "Human approval",
-            WorkflowTemplateKind::HumanApproval,
-            cx,
-        ))
-}
-
-fn template_button(
-    label: &'static str,
-    template: WorkflowTemplateKind,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    small_button(label, cx, move |this, cx| {
-        let result = create_workflow_from_template(template);
-        match result {
-            Ok(id) => {
-                this.editing_workflow_id = Some(id.clone());
-                mark_workflow_dirty(&mut this.workflow_edit_states, &id, "Created from template");
-                this.push_toast(ToastLevel::Success, format!("Created workflow {}", id), cx);
-            }
-            Err(err) => this.push_toast(
-                ToastLevel::Error,
-                format!("Failed to create workflow: {}", err),
-                cx,
-            ),
-        }
-        cx.notify();
-    })
-}
-
-#[derive(Debug, Clone, Copy)]
-enum WorkflowTemplateKind {
-    EchoOutput,
-    MainAgentTask,
-    HumanApproval,
 }
 
 fn run_details_button(
@@ -2317,416 +2098,6 @@ fn approval_button(
     })
 }
 
-fn workflow_card(
-    app: &AppState,
-    window: &mut Window,
-    workflow: crate::workflows::WorkflowSummary,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    let workflow_id = workflow.id.clone();
-    let workflow_id_for_edit = workflow.id.clone();
-    let workflow_name = workflow.name.clone();
-    let workflow_description = workflow.description.clone();
-    let is_editing = app.editing_workflow_id.as_deref() == Some(workflow.id.as_str());
-    let active_workflow_id = app.editing_workflow_id.clone();
-    let switching_from_dirty_workflow = active_workflow_id
-        .as_deref()
-        .filter(|active_id| *active_id != workflow_id_for_edit.as_str())
-        .map(|active_id| workflow_has_dirty_state(app, active_id))
-        .unwrap_or(false);
-
-    let mut card = div()
-        .p_5()
-        .rounded_xl()
-        .border_1()
-        .border_color(BORDER_LIGHT())
-        .bg(SURFACE_PANEL())
-        .flex_col()
-        .gap_4()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_6()
-                .child(
-                    div()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_base()
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .text_color(PRIMARY_TEXT())
-                                        .child(workflow.name),
-                                )
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_md()
-                                        .bg(GHOST_SURFACE_BG())
-                                        .text_xs()
-                                        .text_color(BRAND_BLUE())
-                                        .child(format!("draft v{}", workflow.version)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .line_height(relative(1.4))
-                                .text_color(SECONDARY_TEXT())
-                                .child(if workflow.description.is_empty() {
-                                    "No description".to_string()
-                                } else {
-                                    workflow.description
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(MUTED_TEXT())
-                                .child(format!("workflow: {}", workflow.id)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(small_button("Edit", cx, move |this, cx| {
-                            if switching_from_dirty_workflow {
-                                if let Some(active_id) = active_workflow_id.as_ref() {
-                                    this.push_toast(
-                                        ToastLevel::Warning,
-                                        format!("Workflow {} has unsaved changes.", active_id),
-                                        cx,
-                                    );
-                                }
-                            }
-                            match load_workflow_definition_json(&workflow_id_for_edit) {
-                                Ok(json) => {
-                                    this.editing_workflow_id = Some(workflow_id_for_edit.clone());
-                                    this.workflow_edit_json = json;
-                                    this.push_toast(
-                                        ToastLevel::Info,
-                                        format!("Editing workflow {}", workflow_id_for_edit),
-                                        cx,
-                                    );
-                                }
-                                Err(err) => this.push_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to load workflow: {}", err),
-                                    cx,
-                                ),
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Publish", cx, move |this, cx| {
-                            let result = publish_workflow_as_capability(
-                                &workflow_id,
-                                &workflow_name,
-                                &workflow_description,
-                            );
-                            match result {
-                                Ok(capability_id) => this.push_toast(
-                                    ToastLevel::Success,
-                                    format!("Published capability {}", capability_id),
-                                    cx,
-                                ),
-                                Err(err) => this.push_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to publish workflow: {}", err),
-                                    cx,
-                                ),
-                            }
-                            cx.notify();
-                        })),
-                ),
-        );
-
-    if is_editing {
-        let editor = workflow_json_editor(app, window, cx, &workflow.id);
-        card = card.child(workflow_editor_panel(workflow.id, editor, cx));
-    } else {
-        card = card.child(workflow_graph_preview(&workflow.id, window, cx));
-    }
-
-    card
-}
-
-fn workflow_graph_preview(
-    workflow_id: &str,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    let workflow_id_for_output = workflow_id.to_string();
-    let workflow_id_for_approval = workflow_id.to_string();
-    let workflow_id_for_agent = workflow_id.to_string();
-    let mut panel = div()
-        .pt_4()
-        .border_t_1()
-        .border_color(BORDER_LIGHT())
-        .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(PRIMARY_TEXT())
-                        .child("Graph preview"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(small_button("Add output", cx, move |this, cx| {
-                            match append_workflow_node(
-                                &workflow_id_for_output,
-                                WorkflowQuickNodeKind::Output,
-                            ) {
-                                Ok(node_id) => this.push_toast(
-                                    ToastLevel::Success,
-                                    format!("Added node {}", node_id),
-                                    cx,
-                                ),
-                                Err(err) => this.push_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to add node: {}", err),
-                                    cx,
-                                ),
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Add approval", cx, move |this, cx| {
-                            match append_workflow_node(
-                                &workflow_id_for_approval,
-                                WorkflowQuickNodeKind::HumanApproval,
-                            ) {
-                                Ok(node_id) => this.push_toast(
-                                    ToastLevel::Success,
-                                    format!("Added node {}", node_id),
-                                    cx,
-                                ),
-                                Err(err) => this.push_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to add node: {}", err),
-                                    cx,
-                                ),
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Add MainAgent", cx, move |this, cx| {
-                            match append_workflow_node(
-                                &workflow_id_for_agent,
-                                WorkflowQuickNodeKind::MainAgent,
-                            ) {
-                                Ok(node_id) => this.push_toast(
-                                    ToastLevel::Success,
-                                    format!("Added node {}", node_id),
-                                    cx,
-                                ),
-                                Err(err) => this.push_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to add node: {}", err),
-                                    cx,
-                                ),
-                            }
-                            cx.notify();
-                        })),
-                ),
-        );
-
-    match load_workflow_definition(workflow_id) {
-        Ok(definition) if definition.nodes.is_empty() => {
-            panel = panel.child(
-                div()
-                    .text_xs()
-                    .text_color(MUTED_TEXT())
-                    .child("No nodes defined."),
-            );
-        }
-        Ok(definition) => {
-            panel = panel.child(workflow_node_chain(&definition));
-            panel = panel.child(workflow_edge_list(&definition, window, cx));
-        }
-        Err(err) => {
-            panel = panel.child(
-                div()
-                    .text_xs()
-                    .text_color(crate::ui_theme::ERROR_TEXT())
-                    .child(format!("Failed to load graph: {}", err)),
-            );
-        }
-    }
-
-    panel
-}
-
-fn workflow_node_chain(definition: &WorkflowDefinition) -> impl IntoElement {
-    let mut row = div().flex().flex_wrap().items_center().gap_2();
-    for (index, node) in definition.nodes.iter().enumerate() {
-        row = row.child(workflow_node_chip(node));
-        if index + 1 < definition.nodes.len() {
-            row = row.child(
-                div()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(MUTED_TEXT())
-                    .child("->"),
-            );
-        }
-    }
-    row
-}
-
-fn workflow_node_chip(node: &WorkflowNode) -> impl IntoElement {
-    div()
-        .min_w(px(150.0))
-        .p_3()
-        .rounded_lg()
-        .bg(GHOST_SURFACE_BG())
-        .border_1()
-        .border_color(BORDER_LIGHT())
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(PRIMARY_TEXT())
-                .child(if node.name.is_empty() {
-                    node.id.clone()
-                } else {
-                    node.name.clone()
-                }),
-        )
-        .child(
-            div()
-                .text_size(px(10.0))
-                .text_color(BRAND_BLUE())
-                .child(workflow_node_kind_label(&node.kind)),
-        )
-        .child(
-            div()
-                .text_size(px(10.0))
-                .text_color(MUTED_TEXT())
-                .child(node.id.clone()),
-        )
-}
-
-fn workflow_edge_list(
-    definition: &WorkflowDefinition,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    let mut panel = div().flex_col().gap_2().child(
-        div()
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::BOLD)
-            .text_color(MUTED_TEXT())
-            .child("Edges"),
-    );
-
-    if definition.edges.is_empty() {
-        return panel.child(
-            div()
-                .text_xs()
-                .text_color(SECONDARY_TEXT())
-                .child("Linear execution order; no explicit edges."),
-        );
-    }
-
-    for edge in &definition.edges {
-        let condition_editor = workflow_edge_condition_editor(definition, edge, window, cx);
-        let weak_condition_editor = condition_editor.downgrade();
-        let workflow_id = definition.id.clone();
-        let edge_id = edge.id.clone();
-        panel = panel.child(
-            div()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(GHOST_SURFACE_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .min_w(px(180.0))
-                        .text_xs()
-                        .text_color(PRIMARY_TEXT())
-                        .child(format!("{} -> {}", edge.from_node_id, edge.to_node_id)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(SURFACE_PANEL())
-                        .border_1()
-                        .border_color(BORDER_LIGHT())
-                        .text_xs()
-                        .text_color(PRIMARY_TEXT())
-                        .child(condition_editor),
-                )
-                .child(small_button("Save", cx, move |this, cx| {
-                    let condition = weak_condition_editor
-                        .upgrade()
-                        .map(|editor| editor.read_with(cx, |editor, cx| editor.text(cx)))
-                        .unwrap_or_default();
-                    match update_workflow_edge_condition(&workflow_id, &edge_id, &condition) {
-                        Ok(()) => this.push_toast(
-                            ToastLevel::Success,
-                            format!("Saved edge {}", edge_id),
-                            cx,
-                        ),
-                        Err(err) => this.push_toast(
-                            ToastLevel::Error,
-                            format!("Failed to save edge condition: {}", err),
-                            cx,
-                        ),
-                    }
-                    cx.notify();
-                })),
-        );
-    }
-
-    panel
-}
-
-fn workflow_edge_condition_editor(
-    definition: &WorkflowDefinition,
-    edge: &WorkflowEdge,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-) -> gpui::Entity<Editor> {
-    let key = format!("workflow_edge_condition_{}_{}", definition.id, edge.id);
-    let initial_text = edge.condition.clone();
-    window.use_keyed_state(key, &mut *cx, |window, cx| {
-        let mut editor = Editor::single_line(window, cx);
-        editor.set_placeholder_text("default | always | approved == true", window, cx);
-        editor.set_text(initial_text, window, cx);
-        editor
-    })
-}
-
 fn workflow_node_kind_label(kind: &WorkflowNodeKind) -> String {
     match kind {
         WorkflowNodeKind::Agent { agent_id } => format!("agent: {}", agent_id),
@@ -2831,13 +2202,6 @@ fn workflow_node_tool_summary(node: &WorkflowNode) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum WorkflowQuickNodeKind {
-    Output,
-    HumanApproval,
-    MainAgent,
-}
-
 #[derive(Debug, Clone)]
 struct WorkflowAgentNodeUpdate {
     name: String,
@@ -2864,6 +2228,37 @@ struct WorkflowAgentNodeUpdate {
     human_confirmation: String,
     routing_policy_json: String,
     permissions: String,
+}
+
+impl From<crate::workflow_webview::WorkflowAgentUpdateView> for WorkflowAgentNodeUpdate {
+    fn from(update: crate::workflow_webview::WorkflowAgentUpdateView) -> Self {
+        Self {
+            name: update.name,
+            description: update.description,
+            category: update.category,
+            tags: update.tags,
+            version: update.version,
+            model_provider: update.model_provider,
+            model_name: update.model_name,
+            temperature: update.temperature,
+            max_tokens: update.max_tokens,
+            timeout_seconds: update.timeout_seconds,
+            system_prompt: update.system_prompt,
+            instructions: update.instructions,
+            output_format: update.output_format,
+            output_schema: update.output_schema,
+            summarize_with_mainagent: update.summarize_with_mainagent,
+            skills_json: update.skills_json,
+            mcp_tools_json: update.mcp_tools_json,
+            system_tools_json: update.system_tools_json,
+            coding_runtimes_json: update.coding_runtimes_json,
+            retry: update.retry,
+            settings_timeout_seconds: update.settings_timeout_seconds,
+            human_confirmation: update.human_confirmation,
+            routing_policy_json: update.routing_policy_json,
+            permissions: update.permissions,
+        }
+    }
 }
 
 fn append_empty_agent_node(workflow_id: &str) -> anyhow::Result<String> {
@@ -3154,51 +2549,6 @@ fn empty_local_agent_config() -> serde_json::Value {
     })
 }
 
-fn append_workflow_node(
-    workflow_id: &str,
-    quick_kind: WorkflowQuickNodeKind,
-) -> anyhow::Result<String> {
-    let mut definition = load_workflow_definition(workflow_id)?;
-    let previous_node_id = definition.nodes.last().map(|node| node.id.clone());
-    let node_id = next_workflow_node_id(&definition, workflow_quick_node_base(quick_kind));
-    definition
-        .nodes
-        .push(workflow_quick_node(&node_id, quick_kind));
-
-    if !definition.edges.is_empty() {
-        if let Some(previous_node_id) = previous_node_id {
-            let edge_id = next_workflow_edge_id(&definition, &previous_node_id, &node_id);
-            definition.edges.push(WorkflowEdge {
-                id: edge_id,
-                from_node_id: previous_node_id,
-                to_node_id: node_id.clone(),
-                condition: "always".to_string(),
-            });
-        }
-    }
-
-    let db = crate::task_db::Database::new()?;
-    let store = crate::workflows::WorkflowStore::new(&db.conn)?;
-    store.save_draft(&definition)?;
-    Ok(node_id)
-}
-
-fn update_workflow_edge_condition(
-    workflow_id: &str,
-    edge_id: &str,
-    condition: &str,
-) -> anyhow::Result<()> {
-    let mut definition = load_workflow_definition(workflow_id)?;
-    let Some(edge) = definition.edges.iter_mut().find(|edge| edge.id == edge_id) else {
-        anyhow::bail!("workflow edge '{}' not found", edge_id);
-    };
-    edge.condition = condition.trim().to_string();
-
-    let db = crate::task_db::Database::new()?;
-    let store = crate::workflows::WorkflowStore::new(&db.conn)?;
-    store.save_draft(&definition)
-}
-
 fn create_workflow_edge(
     workflow_id: &str,
     from_node_id: &str,
@@ -3267,46 +2617,6 @@ fn apply_delete_workflow_edge(
     Ok(())
 }
 
-fn workflow_quick_node_base(kind: WorkflowQuickNodeKind) -> &'static str {
-    match kind {
-        WorkflowQuickNodeKind::Output => "output",
-        WorkflowQuickNodeKind::HumanApproval => "approval",
-        WorkflowQuickNodeKind::MainAgent => "mainagent",
-    }
-}
-
-fn workflow_quick_node(node_id: &str, kind: WorkflowQuickNodeKind) -> WorkflowNode {
-    match kind {
-        WorkflowQuickNodeKind::Output => WorkflowNode {
-            id: node_id.to_string(),
-            name: "Output".to_string(),
-            kind: WorkflowNodeKind::Output,
-            config: serde_json::json!({
-                "value": {
-                    "status": "ok"
-                }
-            }),
-        },
-        WorkflowQuickNodeKind::HumanApproval => WorkflowNode {
-            id: node_id.to_string(),
-            name: "Approval".to_string(),
-            kind: WorkflowNodeKind::HumanApproval,
-            config: serde_json::Value::Null,
-        },
-        WorkflowQuickNodeKind::MainAgent => WorkflowNode {
-            id: node_id.to_string(),
-            name: "MainAgent".to_string(),
-            kind: WorkflowNodeKind::Agent {
-                agent_id: "mainagent".to_string(),
-            },
-            config: serde_json::json!({
-                "workspace": "workflow",
-                "prompt": "Use the workflow input as the task brief. Return a concise result."
-            }),
-        },
-    }
-}
-
 fn next_workflow_node_id(definition: &WorkflowDefinition, base: &str) -> String {
     if !definition.nodes.iter().any(|node| node.id == base) {
         return base.to_string();
@@ -3338,129 +2648,6 @@ fn next_workflow_edge_id(
     unreachable!("unbounded edge id search should always find a candidate")
 }
 
-fn workflow_json_editor(
-    app: &AppState,
-    window: &mut Window,
-    cx: &mut Context<AppState>,
-    workflow_id: &str,
-) -> gpui::Entity<Editor> {
-    let key = format!("workflow_json_editor_{}", workflow_id);
-    let initial_text = app.workflow_edit_json.clone();
-    window.use_keyed_state(key, &mut *cx, |window, cx| {
-        let mut editor = Editor::multi_line(window, cx);
-        editor.set_text(initial_text, window, cx);
-        editor
-    })
-}
-
-fn workflow_editor_panel(
-    workflow_id: String,
-    editor: gpui::Entity<Editor>,
-    cx: &mut Context<AppState>,
-) -> impl IntoElement {
-    let weak_editor_for_save = editor.downgrade();
-    let workflow_id_for_save = workflow_id.clone();
-    div()
-        .mt_4()
-        .pt_4()
-        .border_t_1()
-        .border_color(BORDER_LIGHT())
-        .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(PRIMARY_TEXT())
-                        .child("Workflow JSON"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(small_button("Save JSON", cx, move |this, cx| {
-                            let text = weak_editor_for_save
-                                .upgrade()
-                                .map(|editor| editor.read_with(cx, |editor, cx| editor.text(cx)))
-                                .unwrap_or_default();
-                            match save_workflow_definition_json(&text) {
-                                Ok(saved_id) => {
-                                    this.workflow_edit_json = text;
-                                    mark_workflow_saved(&mut this.workflow_edit_states, &saved_id);
-                                    this.push_toast(
-                                        ToastLevel::Success,
-                                        format!("Saved workflow {}", saved_id),
-                                        cx,
-                                    );
-                                }
-                                Err(err) => {
-                                    mark_workflow_save_failed(
-                                        &mut this.workflow_edit_states,
-                                        &workflow_id_for_save,
-                                        err.to_string(),
-                                    );
-                                    this.push_toast(
-                                        ToastLevel::Error,
-                                        format!("Failed to save workflow JSON: {}", err),
-                                        cx,
-                                    );
-                                }
-                            }
-                            cx.notify();
-                        }))
-                        .child(small_button("Close", cx, move |this, cx| {
-                            if this.editing_workflow_id.as_deref() == Some(workflow_id.as_str()) {
-                                this.editing_workflow_id = None;
-                                this.workflow_edit_json.clear();
-                            }
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .h(px(360.0))
-                .p_3()
-                .rounded_lg()
-                .bg(GHOST_SURFACE_BG())
-                .border_1()
-                .border_color(BORDER_LIGHT())
-                .text_xs()
-                .text_color(PRIMARY_TEXT())
-                .child(editor),
-        )
-}
-
-fn small_button<F>(label: &'static str, cx: &mut Context<AppState>, handler: F) -> impl IntoElement
-where
-    F: Fn(&mut AppState, &mut Context<AppState>) + Send + Sync + 'static,
-{
-    div()
-        .px_3()
-        .py_1()
-        .rounded_lg()
-        .bg(GHOST_SURFACE_BG())
-        .border_1()
-        .border_color(BORDER_LIGHT())
-        .text_xs()
-        .text_color(ACCENT_TEXT())
-        .font_weight(gpui::FontWeight::BOLD)
-        .cursor_pointer()
-        .child(label)
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
-                handler(this, cx);
-            }),
-        )
-}
-
 fn create_workflow_from_template(template: WorkflowTemplateKind) -> anyhow::Result<String> {
     let definition = match template {
         WorkflowTemplateKind::EchoOutput => echo_output_template(),
@@ -3480,8 +2667,8 @@ async fn create_workflow_from_copilot_brief(
 ) -> anyhow::Result<String> {
     let context = workflow_copilot_context();
     let mut definition = crate::workflows::design_workflow_from_brief(brief, context).await?;
-    if let Some(source_workflow_id) = source_workflow_id {
-        definition.metadata = merge_metadata(
+    definition.metadata = if let Some(source_workflow_id) = source_workflow_id {
+        merge_metadata(
             definition.metadata,
             serde_json::json!({
                 "copilot": {
@@ -3489,17 +2676,17 @@ async fn create_workflow_from_copilot_brief(
                     "brief": brief.trim()
                 }
             }),
-        );
+        )
     } else {
-        definition.metadata = merge_metadata(
+        merge_metadata(
             definition.metadata,
             serde_json::json!({
                 "copilot": {
                     "brief": brief.trim()
                 }
             }),
-        );
-    }
+        )
+    };
     crate::workflows::validate_definition_routing(&definition)?;
     let id = definition.id.clone();
     let db = crate::task_db::Database::new()?;
@@ -3633,7 +2820,6 @@ fn human_approval_template() -> WorkflowDefinition {
         to_node_id: "rejected".to_string(),
         condition: "approved == false".to_string(),
     });
-
     definition
 }
 
@@ -3850,6 +3036,21 @@ fn mark_workflow_dirty(
             dirty: true,
             reason,
             last_error: None,
+        },
+    );
+}
+
+fn mark_workflow_activity(
+    states: &mut std::collections::HashMap<String, WorkflowActivityState>,
+    workflow_id: &str,
+    level: impl Into<String>,
+    message: impl Into<String>,
+) {
+    states.insert(
+        workflow_id.to_string(),
+        WorkflowActivityState {
+            level: level.into(),
+            message: message.into(),
         },
     );
 }

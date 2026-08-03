@@ -1,4 +1,15 @@
+# Build artifacts
 target/
+
+# macOS system files
+.DS_Store
+
+# Node / web
+node_modules/
+web/workflow-canvas/node_modules/
+
+# Local task tracking
 stitch_ai_task_management
+
+# Disk images
 *.dmg
-web/workflow-canvas/node_modules/.DS_Store
